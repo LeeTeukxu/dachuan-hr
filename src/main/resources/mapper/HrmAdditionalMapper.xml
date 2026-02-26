@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.tianye.hrsystem.modules.additional.mapper.HrmAdditionalMapper">
+
+    <select id="queryAdditionalList" resultType="com.tianye.hrsystem.modules.additional.vo.QueryAdditionalVO">
+        select a.*, b.employee_name from hrm_additional as a left join hrm_employee as b
+        on a.employee_id = b.employee_id
+        WHERE 1=1
+        <if test="data.employeeName != ''">
+            AND a.employee_id in (select employee_id from hrm_employee where employee_Name like concat('%',#{data.employeeName},'%'))
+        </if>
+    </select>
+
+    <select id="getEmployeeAdditional" parameterType="java.util.HashMap" resultType="com.tianye.hrsystem.modules.additional.vo.QueryAdditionalVO">
+        select * from  hrm_additional where  employee_id=#{employeeId} and `year`=#{year} and `month`=#{month}
+    </select>
+</mapper>

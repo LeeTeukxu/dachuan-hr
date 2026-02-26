@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.tianye.hrsystem.mapper.HrmProduceAttendanceMapper">
+    <select id="getOvertimeAllowanceStatistics" parameterType="java.util.HashMap" resultType="com.tianye.hrsystem.entity.po.HrmProduceAttendance">
+        select * from hrm_produce_attendance where `year`=#{year} and `month`=#{month}
+    </select>
+
+    <select id="queryProduceAttendanceList" resultType="com.tianye.hrsystem.entity.vo.QueryMonthAttendanceVO">
+        select * from hrm_produce_attendance where 1=1
+        <if test="data.employeeName != null and data.employeeName != ''">
+            AND employee_Name = #{data.employeeName}
+        </if>
+        <if test="data.year != null and data.year != '' and data.year != 0">
+            AND year = #{data.year}
+        </if>
+        <if test="data.month != null and data.month != '' and data.month != 0">
+            AND month = #{data.month}
+        </if>
+        <if test="data.department != null and data.department != '' and data.department != 0">
+            AND department = #{data.department}
+        </if>
+    </select>
+</mapper>

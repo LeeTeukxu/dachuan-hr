@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.tianye.hrsystem.modules.holiday.mapper.HrmHolidayDeductionMapper">
+
+    <select id="queryHolidayDeductionList" resultType="com.tianye.hrsystem.modules.holiday.vo.QueryHolidayDeductionVO">
+        select * from hrm_holiday_deduction AS a LEFT JOIN
+            hrm_remaining_vacation AS b ON a.holiday_id = b.holiday_id WHERE 1=1
+        <if test="data.employeeId != null and data.employeeId != ''">
+            AND b.employee_id = #{data.employeeId}
+        </if>
+        <if test="data.type != null and data.type != 0">
+            AND a.type = #{data.type}
+        </if>
+        <if test="data.year != null and data.year != 0">
+            AND a.year = #{data.year}
+        </if>
+        <if test="data.month != null and data.month != 0">
+            AND a.month = #{data.month}
+        </if>
+    </select>
+
+    <select id="queryHolidayDeduction" resultType="com.tianye.hrsystem.modules.holiday.vo.QueryHolidayDeductionVO">
+        SELECT b.deduction_time as deductionTime,type FROM (
+        SELECT * FROM hrm_remaining_vacation WHERE 1=1
+        <if test="data.employeeId != null">
+            AND employee_id = #{data.employeeId}
+        </if>
+        ) as a
+        LEFT JOIN hrm_holiday_deduction AS b ON a.holiday_id = b.holiday_id
+        WHERE 1=1
+        <if test="data.year != null and data.month != null">
+            AND b.year = #{data.year}
+            AND b.month = #{data.month}
+
+        </if>
+        <if test="data.type != null">
+            AND b.type = #{data.type}
+        </if>
+
+    </select>
+</mapper>

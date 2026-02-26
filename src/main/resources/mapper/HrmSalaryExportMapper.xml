@@ -1,0 +1,358 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.tianye.hrsystem.modules.salary.mapper.HrmSalaryExportMapper">
+
+    <resultMap type="com.tianye.hrsystem.modules.salary.entity.HrmSalaryExport" id="HrmSalaryExportMap">
+        <result property="id" column="id" jdbcType="INTEGER"/>
+        <result property="xh" column="xh" jdbcType="VARCHAR"/>
+        <result property="year" column="year" jdbcType="INTEGER"/>
+        <result property="month" column="month" jdbcType="INTEGER"/>
+        <result property="years" column="years" jdbcType="VARCHAR"/>
+        <result property="empname" column="empname" jdbcType="VARCHAR"/>
+        <result property="sex" column="sex" jdbcType="VARCHAR"/>
+        <result property="entrytime" column="entrytime" jdbcType="VARCHAR"/>
+        <result property="dept" column="dept" jdbcType="VARCHAR"/>
+        <result property="post" column="post" jdbcType="VARCHAR"/>
+        <result property="normaldays" column="normaldays" jdbcType="VARCHAR"/>
+        <result property="absencehours" column="absencehours" jdbcType="VARCHAR"/>
+        <result property="overtime" column="overtime" jdbcType="VARCHAR"/>
+        <result property="basicsalary" column="basicsalary" jdbcType="VARCHAR"/>
+        <result property="postsalary" column="postsalary" jdbcType="VARCHAR"/>
+        <result property="dutiessalary" column="dutiessalary" jdbcType="VARCHAR"/>
+        <result property="hightempsalary" column="hightempsalary" jdbcType="VARCHAR"/>
+        <result property="lowtempsalary" column="lowtempsalary" jdbcType="VARCHAR"/>
+        <result property="nightshiftsalary" column="nightshiftsalary" jdbcType="VARCHAR"/>
+        <result property="othersalary" column="othersalary" jdbcType="VARCHAR"/>
+        <result property="fullattendancesalary" column="fullattendancesalary" jdbcType="VARCHAR"/>
+        <result property="absencesalary" column="absencesalary" jdbcType="VARCHAR"/>
+        <result property="totalsalary" column="totalsalary" jdbcType="VARCHAR"/>
+        <result property="tax" column="tax" jdbcType="VARCHAR"/>
+        <result property="social" column="social" jdbcType="VARCHAR"/>
+        <result property="accumulation" column="accumulation" jdbcType="VARCHAR"/>
+        <result property="otherdeduction" column="otherdeduction" jdbcType="VARCHAR"/>
+        <result property="unionfees" column="unionfees" jdbcType="VARCHAR"/>
+        <result property="actualitysalary" column="actualitysalary" jdbcType="VARCHAR"/>
+        <result property="signuser" column="signuser" jdbcType="VARCHAR"/>
+        <result property="createtime" column="createtime" jdbcType="TIMESTAMP"/>
+    </resultMap>
+
+    <!--查询单个-->
+    <select id="queryById" resultMap="HrmSalaryExportMap">
+        select
+          id, xh, year, month, years, empname, sex, entrytime, dept, post, normaldays, absencehours, overtime, basicsalary, postsalary, dutiessalary, hightempsalary, lowtempsalary, nightshiftsalary, othersalary, fullattendancesalary, absencesalary, totalsalary, tax, social, accumulation, otherdeduction, unionfees, actualitysalary, signuser, createtime
+        from hrm_salary_export
+        where id = #{id}
+    </select>
+
+
+
+    <!--统计总行数-->
+    <select id="count" resultType="java.lang.Long">
+        select count(1)
+        from hrm_salary_export
+        <where>
+            <if test="id != null">
+                and id = #{id}
+            </if>
+            <if test="xh != null and xh != ''">
+                and xh = #{xh}
+            </if>
+            <if test="year != null">
+                and year = #{year}
+            </if>
+            <if test="month != null">
+                and month = #{month}
+            </if>
+            <if test="years != null and years != ''">
+                and years = #{years}
+            </if>
+            <if test="empname != null and empname != ''">
+                and empname = #{empname}
+            </if>
+            <if test="sex != null and sex != ''">
+                and sex = #{sex}
+            </if>
+            <if test="entrytime != null and entrytime != ''">
+                and entrytime = #{entrytime}
+            </if>
+            <if test="dept != null and dept != ''">
+                and dept = #{dept}
+            </if>
+            <if test="post != null and post != ''">
+                and post = #{post}
+            </if>
+            <if test="normaldays != null and normaldays != ''">
+                and normaldays = #{normaldays}
+            </if>
+            <if test="absencehours != null and absencehours != ''">
+                and absencehours = #{absencehours}
+            </if>
+            <if test="overtime != null and overtime != ''">
+                and overtime = #{overtime}
+            </if>
+            <if test="basicsalary != null and basicsalary != ''">
+                and basicsalary = #{basicsalary}
+            </if>
+            <if test="postsalary != null and postsalary != ''">
+                and postsalary = #{postsalary}
+            </if>
+            <if test="dutiessalary != null and dutiessalary != ''">
+                and dutiessalary = #{dutiessalary}
+            </if>
+            <if test="hightempsalary != null and hightempsalary != ''">
+                and hightempsalary = #{hightempsalary}
+            </if>
+            <if test="lowtempsalary != null and lowtempsalary != ''">
+                and lowtempsalary = #{lowtempsalary}
+            </if>
+            <if test="nightshiftsalary != null and nightshiftsalary != ''">
+                and nightshiftsalary = #{nightshiftsalary}
+            </if>
+            <if test="othersalary != null and othersalary != ''">
+                and othersalary = #{othersalary}
+            </if>
+            <if test="fullattendancesalary != null and fullattendancesalary != ''">
+                and fullattendancesalary = #{fullattendancesalary}
+            </if>
+            <if test="absencesalary != null and absencesalary != ''">
+                and absencesalary = #{absencesalary}
+            </if>
+            <if test="totalsalary != null and totalsalary != ''">
+                and totalsalary = #{totalsalary}
+            </if>
+            <if test="tax != null and tax != ''">
+                and tax = #{tax}
+            </if>
+            <if test="social != null and social != ''">
+                and social = #{social}
+            </if>
+            <if test="accumulation != null and accumulation != ''">
+                and accumulation = #{accumulation}
+            </if>
+            <if test="otherdeduction != null and otherdeduction != ''">
+                and otherdeduction = #{otherdeduction}
+            </if>
+            <if test="unionfees != null and unionfees != ''">
+                and unionfees = #{unionfees}
+            </if>
+            <if test="actualitysalary != null and actualitysalary != ''">
+                and actualitysalary = #{actualitysalary}
+            </if>
+            <if test="signuser != null and signuser != ''">
+                and signuser = #{signuser}
+            </if>
+            <if test="createtime != null">
+                and createtime = #{createtime}
+            </if>
+        </where>
+    </select>
+
+    <!--新增所有列-->
+    <insert id="insert" keyProperty="id" useGeneratedKeys="true">
+        insert into hrm_salary_export(xh, year, month, years, empname, sex, entrytime, dept, post, normaldays, absencehours, overtime, basicsalary, postsalary, dutiessalary, hightempsalary, lowtempsalary, nightshiftsalary, othersalary, fullattendancesalary, absencesalary, totalsalary, tax, social, accumulation, otherdeduction, unionfees, actualitysalary, signuser, createtime,overtimesalary)
+        values (#{xh}, #{year}, #{month}, #{years}, #{empname}, #{sex}, #{entrytime}, #{dept}, #{post}, #{normaldays}, #{absencehours}, #{overtime}, #{basicsalary}, #{postsalary}, #{dutiessalary}, #{hightempsalary}, #{lowtempsalary}, #{nightshiftsalary}, #{othersalary}, #{fullattendancesalary}, #{absencesalary}, #{totalsalary}, #{tax}, #{social}, #{accumulation}, #{otherdeduction}, #{unionfees}, #{actualitysalary}, #{signuser}, getdate(),#{overtimesalary})
+    </insert>
+
+    <insert id="insertBatch" keyProperty="id" useGeneratedKeys="true">
+        insert into hrm_salary_export(xh, year, month, years, empname, sex, entrytime, dept, post, normaldays, absencehours, overtime, basicsalary, postsalary, dutiessalary, hightempsalary, lowtempsalary, nightshiftsalary, othersalary, fullattendancesalary, absencesalary, totalsalary, tax, social, accumulation, otherdeduction, unionfees, actualitysalary,performance, signuser, createtime)
+        values
+        <foreach collection="entities" item="entity" separator=",">
+        (#{entity.xh}, #{entity.year}, #{entity.month}, #{entity.years}, #{entity.empname}, #{entity.sex}, #{entity.entrytime}, #{entity.dept}, #{entity.post}, #{entity.normaldays}, #{entity.absencehours}, #{entity.overtime}, #{entity.basicsalary}, #{entity.postsalary}, #{entity.dutiessalary}, #{entity.hightempsalary}, #{entity.lowtempsalary}, #{entity.nightshiftsalary}, #{entity.othersalary}, #{entity.fullattendancesalary}, #{entity.absencesalary}, #{entity.totalsalary}, #{entity.tax}, #{entity.social}, #{entity.accumulation}, #{entity.otherdeduction}, #{entity.unionfees}, #{entity.actualitysalary},#{entity.performance}, #{entity.signuser}, now())
+        </foreach>
+    </insert>
+
+    <insert id="insertOrUpdateBatch" keyProperty="id" useGeneratedKeys="true">
+        insert into hrm_salary_export(xh, year, month, years, empname, sex, entrytime, dept, post, normaldays, absencehours, overtime, basicsalary, postsalary, dutiessalary, hightempsalary, lowtempsalary, nightshiftsalary, othersalary, fullattendancesalary, absencesalary, totalsalary, tax, social, accumulation, otherdeduction, unionfees, actualitysalary, signuser, createtime)
+        values
+        <foreach collection="entities" item="entity" separator=",">
+            (#{entity.xh}, #{entity.year}, #{entity.month}, #{entity.years}, #{entity.empname}, #{entity.sex}, #{entity.entrytime}, #{entity.dept}, #{entity.post}, #{entity.normaldays}, #{entity.absencehours}, #{entity.overtime}, #{entity.basicsalary}, #{entity.postsalary}, #{entity.dutiessalary}, #{entity.hightempsalary}, #{entity.lowtempsalary}, #{entity.nightshiftsalary}, #{entity.othersalary}, #{entity.fullattendancesalary}, #{entity.absencesalary}, #{entity.totalsalary}, #{entity.tax}, #{entity.social}, #{entity.accumulation}, #{entity.otherdeduction}, #{entity.unionfees}, #{entity.actualitysalary}, #{entity.signuser}, #{entity.createtime})
+        </foreach>
+        on duplicate key update
+        xh = values(xh),
+        year = values(year),
+        month = values(month),
+        years = values(years),
+        empname = values(empname),
+        sex = values(sex),
+        entrytime = values(entrytime),
+        dept = values(dept),
+        post = values(post),
+        normaldays = values(normaldays),
+        absencehours = values(absencehours),
+        overtime = values(overtime),
+        basicsalary = values(basicsalary),
+        postsalary = values(postsalary),
+        dutiessalary = values(dutiessalary),
+        hightempsalary = values(hightempsalary),
+        lowtempsalary = values(lowtempsalary),
+        nightshiftsalary = values(nightshiftsalary),
+        othersalary = values(othersalary),
+        fullattendancesalary = values(fullattendancesalary),
+        absencesalary = values(absencesalary),
+        totalsalary = values(totalsalary),
+        tax = values(tax),
+        social = values(social),
+        accumulation = values(accumulation),
+        otherdeduction = values(otherdeduction),
+        unionfees = values(unionfees),
+        actualitysalary = values(actualitysalary),
+        signuser = values(signuser),
+        createtime = values(createtime)
+    </insert>
+
+    <!--通过主键修改数据-->
+    <update id="update">
+        update hrm_salary_export
+        <set>
+            <if test="xh != null and xh != ''">
+                xh = #{xh},
+            </if>
+            <if test="year != null">
+                year = #{year},
+            </if>
+            <if test="month != null">
+                month = #{month},
+            </if>
+            <if test="years != null and years != ''">
+                years = #{years},
+            </if>
+            <if test="empname != null and empname != ''">
+                empname = #{empname},
+            </if>
+            <if test="sex != null and sex != ''">
+                sex = #{sex},
+            </if>
+            <if test="entrytime != null and entrytime != ''">
+                entrytime = #{entrytime},
+            </if>
+            <if test="dept != null and dept != ''">
+                dept = #{dept},
+            </if>
+            <if test="post != null and post != ''">
+                post = #{post},
+            </if>
+            <if test="normaldays != null and normaldays != ''">
+                normaldays = #{normaldays},
+            </if>
+            <if test="absencehours != null and absencehours != ''">
+                absencehours = #{absencehours},
+            </if>
+            <if test="overtime != null and overtime != ''">
+                overtime = #{overtime},
+            </if>
+            <if test="basicsalary != null and basicsalary != ''">
+                basicsalary = #{basicsalary},
+            </if>
+            <if test="postsalary != null and postsalary != ''">
+                postsalary = #{postsalary},
+            </if>
+            <if test="dutiessalary != null and dutiessalary != ''">
+                dutiessalary = #{dutiessalary},
+            </if>
+            <if test="hightempsalary != null and hightempsalary != ''">
+                hightempsalary = #{hightempsalary},
+            </if>
+            <if test="lowtempsalary != null and lowtempsalary != ''">
+                lowtempsalary = #{lowtempsalary},
+            </if>
+            <if test="nightshiftsalary != null and nightshiftsalary != ''">
+                nightshiftsalary = #{nightshiftsalary},
+            </if>
+            <if test="othersalary != null and othersalary != ''">
+                othersalary = #{othersalary},
+            </if>
+            <if test="fullattendancesalary != null and fullattendancesalary != ''">
+                fullattendancesalary = #{fullattendancesalary},
+            </if>
+            <if test="absencesalary != null and absencesalary != ''">
+                absencesalary = #{absencesalary},
+            </if>
+            <if test="totalsalary != null and totalsalary != ''">
+                totalsalary = #{totalsalary},
+            </if>
+            <if test="tax != null and tax != ''">
+                tax = #{tax},
+            </if>
+            <if test="social != null and social != ''">
+                social = #{social},
+            </if>
+            <if test="accumulation != null and accumulation != ''">
+                accumulation = #{accumulation},
+            </if>
+            <if test="otherdeduction != null and otherdeduction != ''">
+                otherdeduction = #{otherdeduction},
+            </if>
+            <if test="unionfees != null and unionfees != ''">
+                unionfees = #{unionfees},
+            </if>
+            <if test="actualitysalary != null and actualitysalary != ''">
+                actualitysalary = #{actualitysalary},
+            </if>
+            <if test="signuser != null and signuser != ''">
+                signuser = #{signuser},
+            </if>
+            <if test="createtime != null">
+                createtime = #{createtime},
+            </if>
+        </set>
+        where id = #{id}
+    </update>
+
+    <!--通过主键删除-->
+    <delete id="deleteById">
+        delete from hrm_salary_export where id = #{id}
+    </delete>
+
+    <delete id="deleteByYears">
+        delete from hrm_salary_export where year = #{year} and month=#{month}
+    </delete>
+
+    <select id="queryExportData" resultType="com.tianye.hrsystem.modules.salary.entity.HrmSalaryExport">
+        select * from
+            (
+                select xh, year, month, years, empname, sex, entrytime,
+                    dept as deptname,
+                    post,
+                    normaldays,
+                    absencehours as absencehours,
+                    overtime as overtime,
+                    basicsalary, postsalary, dutiessalary, hightempsalary, lowtempsalary, nightshiftsalary, othersalary, fullattendancesalary, overtimesalary, absencesalary, totalsalary, tax, social, accumulation, otherdeduction, unionfees, actualitysalary, signuser, performance,1 AS data_type
+                from hrm_salary_export  where year=#{year} and month = #{month}
+
+                union all
+
+                select  '' as xh, '' as year, '' as month, '' as years, '小计' as empname, '' as sex, '' as entrytime,
+                    dept as deptname,
+                    '' as post,
+                    '' as normaldays,
+                    sum(absencehours) as absencehours,
+                    sum(overtime) as overtime,
+                    sum(basicsalary) as basicsalary,
+                    sum(postsalary) as postsalary,
+                    sum(dutiessalary) as dutiessalary,
+                    sum(hightempsalary) as hightempsalary,
+                    sum(lowtempsalary) as lowtempsalary,
+                    sum(nightshiftsalary) as nightshiftsalary,
+                    sum(othersalary) as othersalary,
+                    sum(fullattendancesalary) as fullattendancesalary,
+                    sum(overtimesalary) as overtimesalary,
+                    sum(absencesalary) as absencesalary,
+                    sum(totalsalary) as totalsalary ,
+                    sum(tax) as tax,
+                    sum(social) as social,
+                    sum(accumulation) as accumulation,
+                    sum(otherdeduction) as otherdeduction,
+                    sum(unionfees) as unionfees,
+                    sum(actualitysalary) as actualitysalary,
+                    '' as signuser,
+                    sum(performance) as performance,
+                    2 AS data_type
+                from hrm_salary_export  where year=#{year} and month = #{month}
+                group by dept
+            ) T1 left join hrm_dept T2 on T1.deptname = T2.name
+
+        order by T2. sortno
+    </select>
+
+</mapper>
+

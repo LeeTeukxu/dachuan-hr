@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.tianye.hrsystem.modules.loginuser.mapper.TbLoginUserMapper">
+
+    <select id="queryLoginUserList" resultType="com.tianye.hrsystem.modules.loginuser.vo.QueryLoginUserVO">
+        select * from view_role_loginuser as a
+        WHERE 1=1
+        <if test="data.depId != null">
+            AND a.depId=#{data.depId}
+        </if>
+        <if test="data.roleId != null">
+            AND a.roleId=#{data.roleId}
+        </if>
+    </select>
+
+    <insert id="Add" parameterType="com.tianye.hrsystem.modules.loginuser.bo.QueryLoginUserBO">
+        INSERT INTO hrsystem.tballuserlist (companyId,account,createTime) VALUES (#{companyId},#{account},#{createtime})
+    </insert>
+</mapper>

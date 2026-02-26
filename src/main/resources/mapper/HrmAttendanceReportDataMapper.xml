@@ -1,0 +1,98 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.tianye.hrsystem.mapper.HrmAttendanceReportDataMapper">
+
+    <select id="getEmpAttendanceSummaryList" parameterType="java.util.HashMap" resultType="com.tianye.hrsystem.entity.vo.HrmAttendanceSummaryVo">
+        select T1.*,T2.job_number as jobNumber FROM
+            (
+                select
+                    emp_id as employeeId,
+                    sum(CASE WHEN field_name='早退时长' THEN value ELSE 0 END) earlyMinute,
+                    sum(CASE WHEN field_name='早退次数' THEN value ELSE 0 END) earlyCount,
+                    sum(CASE WHEN field_name in ('迟到时长') THEN value ELSE 0 END) lateMinute,
+                    sum(CASE WHEN field_name in ('迟到次数') THEN value ELSE 0 END) lateCount,
+                    sum(CASE WHEN field_name in ('旷工天数','旷工迟到天数') THEN value ELSE 0 END) absenteeismDays,
+                    sum(CASE WHEN field_name in ('上班缺卡次数','下班缺卡次数') THEN value ELSE 0 END) misscardCount,
+                    sum(CASE WHEN field_name in ('工作日加班') THEN value ELSE 0 END) workDateOverTime,
+                    sum(CASE WHEN field_name in ('休息日加班') THEN value ELSE 0 END) restOverTime,
+                    sum(CASE WHEN field_name in ('节假日加班') THEN value ELSE 0 END) holidayOverTime,
+                    sum(CASE WHEN field_name in ('加班-审批单统计') THEN value ELSE 0 END) overTimeHours,
+                    sum(CASE WHEN field_name='出勤天数' THEN value ELSE 0 END) actualityDays,
+                    sum(CASE WHEN field_name='产假' THEN value ELSE 0 END) chanjia,
+                    sum(CASE WHEN field_name='婚假' THEN value ELSE 0 END) hunjia,
+                    sum(CASE WHEN field_name='陪产假' THEN value ELSE 0 END) peichanjia,
+                    sum(CASE WHEN field_name='丧假' THEN value ELSE 0 END) sangjia,
+                    sum(CASE WHEN field_name='事假' THEN value ELSE 0 END) shijia,
+                    sum(CASE WHEN field_name='病假' THEN value ELSE 0 END) bingjia,
+                    sum(CASE WHEN field_name='调休' THEN value ELSE 0 END) tiaoxiu,
+                    sum(CASE WHEN field_name='年假' THEN value ELSE 0 END) nianjia,
+                    sum(CASE WHEN field_name='哺乳假' THEN value ELSE 0 END) burujia
+                from hrm_attendance_report_data WHERE work_date BETWEEN #{beginDate} and #{endDate}
+                <if test="employeeId != null">
+                 and emp_id=#{employeeId}
+                </if>
+                GROUP BY emp_id
+            ) T1 left join hrm_employee T2 on T1.employeeId = T2.employee_id
+    </select>
+
+    <select id="getEmpAttendanceDaySummaryList" parameterType="java.util.HashMap" resultType="com.tianye.hrsystem.entity.vo.HrmAttendanceSummaryDayVo">
+        select T1.*
+        from
+            (
+                SELECT
+                    emp_id as employeeId,work_date as workDate,
+                    sum(CASE WHEN field_name='早退时长' THEN value ELSE 0 END) earlyMinute,
+                    sum(CASE WHEN field_name='早退次数' THEN value ELSE 0 END) earlyCount,
+                    sum(CASE WHEN field_name in ('迟到时长') THEN value ELSE 0 END) lateMinute,
+                    sum(CASE WHEN field_name in ('迟到次数') THEN value ELSE 0 END) lateCount,
+                    sum(CASE WHEN field_name in ('出勤天数') THEN value ELSE 0 END) actualityDays,
+                    sum(CASE WHEN field_name='病假' THEN value ELSE 0 END) bingjia,
+                    sum(CASE WHEN field_name='事假' THEN value ELSE 0 END) shijia
+                FROM
+                    hrm_attendance_report_data t1 WHERE work_date BETWEEN #{beginDate} and #{endDate}
+                <if test="employeeId != null">
+                    and emp_id=#{employeeId}
+                </if>
+                GROUP BY
+                    emp_id,work_date
+            ) T1
+    </select>
+
+
+    <select id="getEmpLeaveStaticList" parameterType="java.util.HashMap" resultType="com.tianye.hrsystem.entity.vo.EmployeeLeaveStaticVo">
+        select emp_id as employeeId,sum(value) as holidayTime,field_name as holidayType,'1' as timeUnit  FROM hrm_attendance_report_data
+        WHERE field_name in  ('病假','哺乳假','事假')
+        and work_date BETWEEN #{beginDate} and #{endDate}
+        group by emp_id ,field_name
+        union all
+        select emp_id as employeeId,sum(value) as holidayTime,field_name as houlidayType,'2' as timeUnit FROM hrm_attendance_report_data
+        WHERE field_name in  ('产假','产检假','婚假','年假','陪产假','丧假','调休')
+        and work_date BETWEEN #{beginDate} and #{endDate}
+        group by emp_id ,field_name
+    </select>
+
+    <!--这里要减掉考勤结果为空的数据量 是因为考勤记录上考勤结果为空的是不上班日期的，但是也没有标注为休息，实际为休息日，所以需要减掉-->
+    <select id="getEmpAttendanceDaysStaticList" parameterType="java.util.HashMap" resultType="com.tianye.hrsystem.entity.vo.EmployeeAttendanceDaysStaticVo">
+        select T1.emp_id as employeeId,case when
+        T1.normalDays-ifnull(T2.days,0)&lt;=0 then 0
+        else T1.normalDays-ifnull(T2.days,0)
+        end  as normalDays,actualityDays
+        from
+        (
+        SELECT
+        emp_id,
+        sum(CASE WHEN field_name='出勤天数' THEN value ELSE 0 END) actualityDays ,
+        sum(CASE WHEN field_name='应出勤天数' THEN value ELSE 0 END) normalDays
+        FROM
+        hrm_attendance_report_data t1 where work_date BETWEEN #{beginDate} and #{endDate}
+        GROUP BY
+        emp_id
+        ) T1 left join
+        (
+        select ifnull(count(1),0) as days,emp_id FROM hrm_attendance_report_data WHERE field_name='考勤结果' and `value`='' and
+        work_date BETWEEN #{beginDate} and #{endDate} and  DAYOFWEEK(work_date) IN (1,7)
+        group by emp_id
+        ) T2 on T1.emp_id = T2.emp_id
+        WHERE (T1.normalDays-ifnull(T2.days,0))>0
+    </select>
+</mapper>

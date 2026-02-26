@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.tianye.hrsystem.modules.bonus.mapper.HrmBonusMapper">
+
+    <select id="getEmpBonus" resultType="com.tianye.hrsystem.modules.bonus.entity.HrmBonus">
+        select * from hrm_bonus where employee_id=#{employeeId} and `year`=#{year} and `month`=#{month}
+    </select>
+
+    <select id="queryHrmBonusList" resultType="com.tianye.hrsystem.modules.bonus.vo.QueryBounsVO">
+        select a.*, b.employee_name from hrm_bonus as a left join hrm_employee as b
+        on a.employee_id = b.employee_id
+        WHERE 1=1
+        <if test="data.employeeName != ''">
+            AND a.employee_id in (select employee_id from hrm_employee where employee_Name like concat('%',#{data.employeeName},'%'))
+        </if>
+        <if test="data.year != null">
+            AND a.year = #{data.year}
+        </if>
+        <if test="data.month != null">
+            AND a.month = #{data.month}
+        </if>
+    </select>
+</mapper>

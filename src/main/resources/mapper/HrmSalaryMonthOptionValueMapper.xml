@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.tianye.hrsystem.modules.salary.mapper.HrmSalaryMonthOptionValueMapper">
+    <select id="queryEmpSalaryOptionValueList" resultType="com.tianye.hrsystem.modules.salary.dto.ComputeSalaryDto">
+        select a.id,a.code,b.parent_code,a.value,b.is_plus,b.is_tax,b.name,b.is_fixed,b.is_compute from
+        hrm_salary_month_option_value a
+        inner join hrm_salary_option b on a.code = b.code
+        where a.s_emp_record_id = #{sEmpRecordId}
+    </select>
+
+    <select id="querySalaryOptionValue" resultType="com.tianye.hrsystem.modules.salary.dto.ComputeSalaryDto">
+        select a.id,a.code,b.parent_code,a.value,b.is_plus,b.is_tax,b.name,b.is_fixed,b.is_compute from
+            hrm_salary_month_option_value a
+                inner join hrm_salary_option b on a.code = b.code
+        where a.s_emp_record_id = #{sEmpRecordId}
+    </select>
+
+    <select id="queryEmpSalaryOptionList" parameterType="java.util.HashMap" resultType="com.tianye.hrsystem.modules.salary.dto.ComputeSalaryDto">
+        select a.id,a.code,b.parent_code,a.value,b.is_plus,b.is_tax,b.name,b.is_fixed,b.is_compute from
+            hrm_salary_month_option_value a
+                inner join hrm_salary_option b on a.code = b.code
+        inner join hrm_salary_month_emp_record c on c.s_emp_record_id = a.s_emp_record_id
+        where c.employee_id = #{employeeId} and c.year=#{year} and c.month = #{month}
+        <if test="parentCodeList != null and parentCodeList.size > 0">
+            and b.parent_code in
+            <foreach collection="parentCodeList" index="index" item="code" open="(" close=")" separator=",">
+                #{code}
+            </foreach>
+        </if>
+    </select>
+</mapper>

@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.tianye.hrsystem.modules.holiday.mapper.HrmRemainingVacationMapper">
+
+    <select id="queryRemainingVacationList" resultType="com.tianye.hrsystem.modules.holiday.vo.QueryRemainingVacationVO">
+        select * from hrm_remaining_vacation WHERE 1=1
+        <if test="data.employeeName != ''">
+            AND employee_Name like concat('%',#{data.employeeName},'%')
+        </if>
+    </select>
+</mapper>

@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.tianye.hrsystem.mapper.HrmAttendanceShiftMapper">
+
+    <select id="getEmpHrmAttendanceShift" parameterType="java.util.HashMap"
+            resultType="com.tianye.hrsystem.entity.vo.HrmAttendanceShiftVO">
+        select distinct t1.*,t2.work_date as attendanceShiftDate FROM hrm_attendance_shift t1
+            inner join hrm_attendance_plan t2
+            on t1.shift_id = t2.class_id  and t2.emp_id=#{employeeId} and t2.work_date=#{shiftDate}
+    </select>
+</mapper>

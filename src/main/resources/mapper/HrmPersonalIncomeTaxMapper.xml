@@ -1,0 +1,73 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.tianye.hrsystem.modules.deduction.mapper.HrmPersonalIncomeTaxMapper">
+
+    <select id="queryRemainingVacationList" resultType="com.tianye.hrsystem.modules.deduction.vo.QueryPersonalIncomeTaxVO">
+        select a.*, b.employee_name from hrm_personal_income_tax as a left join hrm_employee as b
+        on a.employee_id = b.employee_id
+        WHERE 1=1
+        <if test="data.employeeName != ''">
+            AND a.employee_id in (select employee_id from hrm_employee where employee_Name like concat('%',#{data.employeeName},'%'))
+        </if>
+    </select>
+
+
+    <select id="getQueryPersonalIncomeTax" parameterType="java.util.HashMap" resultType="com.tianye.hrsystem.modules.deduction.vo.QueryPersonalIncomeTaxVO">
+        select * from hrm_personal_income_tax where employee_id=#{employeeId} and `year`=#{year} and end_month=#{month}
+    </select>
+
+    <delete id="deleteByParams" parameterType="java.util.HashMap">
+        delete from hrm_personal_income_tax where `year`=#{year} and end_month=#{month}
+        and employee_id=#{employeeId}
+    </delete>
+
+    <select id="getAccumulatedIncomeByEmployeeAndYear" resultType="java.math.BigDecimal">
+        select accumulated_income from hrm_personal_income_tax
+        where employee_id = #{employeeId} and `year` = #{year}
+        order by end_month desc limit 1
+    </select>
+
+    <select id="queryPersonalIncomeTaxByEmployeeIds" resultType="com.tianye.hrsystem.modules.deduction.vo.QueryPersonalIncomeTaxVO">
+        select *
+        from hrm_personal_income_tax
+        where `year` = #{year}
+          and end_month = #{month}
+        <choose>
+            <when test="employeeIds != null and employeeIds.size > 0">
+                and employee_id in
+                <foreach collection="employeeIds" item="employeeId" open="(" separator="," close=")">
+                    #{employeeId}
+                </foreach>
+            </when>
+            <otherwise>
+                and 1 = 2
+            </otherwise>
+        </choose>
+    </select>
+
+    <select id="queryAccumulatedIncomeByEmployeeIdsAndYear" resultType="com.tianye.hrsystem.modules.deduction.vo.QueryPersonalIncomeTaxVO">
+        select t.employee_id as employeeId,
+               t.accumulated_income as accumulatedIncome,
+               t.`year` as `year`,
+               t.end_month as endMonth
+        from hrm_personal_income_tax t
+        inner join (
+            select employee_id, max(end_month) as end_month
+            from hrm_personal_income_tax
+            where `year` = #{year}
+            <choose>
+                <when test="employeeIds != null and employeeIds.size > 0">
+                    and employee_id in
+                    <foreach collection="employeeIds" item="employeeId" open="(" separator="," close=")">
+                        #{employeeId}
+                    </foreach>
+                </when>
+                <otherwise>
+                    and 1 = 2
+                </otherwise>
+            </choose>
+            group by employee_id
+        ) latest on latest.employee_id = t.employee_id and latest.end_month = t.end_month
+        where t.`year` = #{year}
+    </select>
+</mapper>

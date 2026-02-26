@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.tianye.hrsystem.mapper.HrmScheduledMapper">
+
+    <select id="findStartingScheduled" resultType="com.tianye.hrsystem.entity.vo.HrmScheduledVo">
+        select * from hrm_scheduled where STATUS='1'
+    </select>
+
+    <select id="selectScheDuleByCode" parameterType="java.lang.String" resultType="com.tianye.hrsystem.entity.vo.HrmScheduledVo">
+        SELECT * from hrm_scheduled WHERE CODE=#{code}
+    </select>
+
+    <update id="updateScheduledStatus" parameterType="java.util.HashMap">
+        update hrm_scheduled set STATUS=#{status} where code=#{code}
+    </update>
+</mapper>

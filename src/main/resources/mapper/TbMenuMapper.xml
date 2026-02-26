@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.tianye.hrsystem.modules.menu.mapper.TbMenuMapper">
+
+    <select id="queryMenuList" resultType="com.tianye.hrsystem.modules.menu.vo.QueryMenuVO">
+        select a.* from tbmenu as a
+        WHERE 1=1
+        <if test="data.name != null">
+            AND a.name=#{data.name}
+        </if>
+    </select>
+</mapper>

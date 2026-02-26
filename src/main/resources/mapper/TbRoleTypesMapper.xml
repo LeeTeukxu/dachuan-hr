@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.tianye.hrsystem.modules.role.mapper.TbRoleTypesMapper">
+
+    <select id="queryRoleTypesList" resultType="com.tianye.hrsystem.modules.role.vo.QueryRoleTypesVO">
+        select a.* from tbroletypes as a
+        WHERE 1=1
+        <if test="data.name != ''">
+            AND a.name=#{data.name}
+        </if>
+    </select>
+</mapper>

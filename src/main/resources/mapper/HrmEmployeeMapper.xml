@@ -1,0 +1,296 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.tianye.hrsystem.mapper.HrmEmployeeMapper">
+
+    <select id="queryEmployeeListByCondtion" parameterType="java.util.HashMap" resultType="com.tianye.hrsystem.entity.vo.HrmEmployeeVO">
+        SELECT
+            t1.id AS employeeId,
+            t1.NAME AS employeeName,
+            mobile,
+            area AS country,
+            nation,
+            idType,
+            idCode AS idNumber,
+            sex,
+            email,
+            nativePlace,
+            bornDate AS dateOfBirth,
+            birthType,
+            birthDay,
+            age,
+            address,
+            lastEducation,
+            t2.entryDate ,
+            probation,
+            regularDate AS becomeTime,
+            workNo AS jobNumber,
+            t1.depId as deptId,
+            leader AS parentId,
+            postion,
+            duty AS postLevel,
+            workPlace AS workAddress,
+            detailPlace AS workDetailAddress,
+            workCity,
+            inviteType,
+            enageType,
+            STATUS,
+            workPeriodBegin,
+            workPeriod,
+            empStatus,
+            t3.NAME AS deptName
+        FROM
+            tbemployeebase t1
+            LEFT JOIN tbemployeestation t2 on t1.id = t2.empId
+            LEFT JOIN tbdeplist t3 ON t2.depId = t3.id
+            where t1.empStatus!='9'
+    </select>
+
+    <select id="getEmployeeById" parameterType="java.lang.Long"
+            resultType="com.tianye.hrsystem.entity.vo.HrmEmployeeVO">
+        select * from  hrm_employee where employee_id=#{id}
+    </select>
+
+    <select id="getEmployeeEntryByEmpId" parameterType="java.lang.Long" resultType="com.tianye.hrsystem.entity.vo.HrmEmployeeVO">
+        select * from  hrm_employee where employee_id=#{empId}
+    </select>
+
+    <select id="queryPageList" resultType="java.util.Map">
+        SELECT a.employee_id,
+        a.employee_name,
+        a.mobile,
+        a.id_type,
+        a.id_number,
+        a.sex,
+        date_format(a.date_of_birth, '%Y-%m-%d') as date_of_birth,
+        a.birthday,
+        a.email,
+        a.age,
+        a.country,
+        a.nation,
+        a.native_place,
+        a.address,
+        a.highest_education,
+        date_format(a.entry_time, '%Y-%m-%d') as entry_time,
+        a.probation,
+        a.entry_status,
+        date_format(a.become_time, '%Y-%m-%d') as become_time,
+        a.job_number,
+        d.dept_id,
+        d.name as dept_name,
+        c.employee_name as parent_name,
+        a.parent_id,
+        a.post,
+        a.post_level,
+        a.work_address,
+        a.work_detail_address,
+        a.work_city,
+        a.employment_forms,
+        a.status,
+        date_format(a.company_age_start_time, '%Y-%m-%d') as company_age_start_time,
+        a.company_age,
+        e.salary_card_num,
+        e.account_opening_city,
+        e.bank_name,
+        e.opening_bank,
+        g.accumulation_fund_num,
+        g.social_security_num,
+        g.scheme_id,
+        h.value as channelName,
+        f.contract_type,
+        f.contract_num,
+        f.start_time,
+        f.end_time,
+        f.term
+        FROM `hrm_employee` `a`
+        left join `hrm_employee` c on a.parent_id = c.employee_id
+        left join `hrm_dept` d on a.dept_id = d.dept_id
+        left join `hrm_employee_salary_card` e
+        on a.employee_id = e.employee_id
+        left join `hrm_employee_social_security_info` g
+        on a.employee_id = g.employee_id
+        left join hrm_recruit_channel h on a.channel_id = h.channel_id
+        left join `hrm_employee_contract` f on a.employee_id = f.employee_id and
+        f.status = 1
+        where a.is_del = 0
+        and 1=1
+        <include refid="employeeListCondition"/>
+        <choose>
+            <when test="employeeIds != null and employeeIds.size > 0">
+                and a.employee_id in
+                <foreach collection="employeeIds" index="index" item="employeeId" open="(" close=")" separator=",">
+                    #{employeeId}
+                </foreach>
+            </when>
+            <when test="employeeIds != null and employeeIds.size == 0">
+                and 1=2
+            </when>
+        </choose>
+        group by a.employee_id
+        <choose>
+            <when test="data.sortField != null and data.sortField != ''">
+                ORDER BY a.${data.sortField}
+                <if test="data.order == 1">
+                    desc
+                </if>
+                <if test="data.order == 2">
+                    asc
+                </if>
+            </when>
+            <otherwise>
+                ORDER BY a.`update_time` desc
+            </otherwise>
+        </choose>
+        <if test="data.sortField != null and data.sortField != ''">
+        </if>
+    </select>
+
+    <select id="querySimpleEmpByDeptId" resultType="com.tianye.hrsystem.entity.vo.SimpleHrmEmployeeVO">
+        select employee_id,employee_name,post from hrm_employee where is_del = 0 and entry_status in (1,3)
+        <choose>
+            <when test="deptId == 0">
+                and dept_id is null
+            </when>
+            <otherwise>
+                and dept_id = #{deptId}
+            </otherwise>
+        </choose>
+    </select>
+    <sql id="employeeListCondition">
+        <if test="data.employeeName != null and data.employeeName != ''">
+            and a.employee_name like concat('%',#{data.employeeName},'%')
+        </if>
+        <if test="data.mobile != null and data.mobile != ''">
+            and a.mobile like concat('%',#{data.mobile},'%')
+        </if>
+        <if test="data.sex != null and data.sex != ''">
+            and a.sex = #{data.sex}
+        </if>
+        <if test="data.entryTime != null">
+            and date_format(a.entry_time,'%y-%m-%d') between date_format(#{data.entryTime[0]},'%y-%m-%d') and
+            date_format(#{data.entryTime[1]},'%y-%m-%d')
+        </if>
+        <if test="data.jobNumber != null and data.jobNumber != ''">
+            and a.job_number like concat('%',#{data.jobNumber},'%')
+        </if>
+        <if test="data.deptId != null and data.deptId != ''">
+            and a.dept_id = #{data.deptId}
+        </if>
+        <if test="data.post != null and data.post != ''">
+            and a.post like concat('%',#{data.post},'%')
+        </if>
+        <if test="data.becomeTime != null">
+            and date_format(a.become_time,'%y-%m-%d') between date_format(#{data.becomeTime[0]},'%y-%m-%d') and
+            date_format(#{data.becomeTime[1]},'%y-%m-%d')
+        </if>
+        <if test="data.workAddress != null and data.workAddress != ''">
+            and a.work_address like concat('%',#{data.workAddress},'%')
+        </if>
+        <if test="data.employmentForms != null and data.employmentForms != ''">
+            and a.employment_forms = #{data.employmentForms}
+        </if>
+        <if test="data.status != null and data.status != '' and data.status != 11 and data.status != 12 and data.status != 13 and data.status != 14 and data.status != 15">
+            and a.status = #{data.status} and a.entry_status in (1,3)
+        </if>
+        <if test="data.status == '11'">
+            and a.entry_status in (1,3)
+        </if>
+        <if test="data.status == '12'">
+            and a.status in (1,2) and a.entry_status in (1,3)
+        </if>
+        <if test="data.status == '13'">
+            and a.entry_status = 2
+        </if>
+        <if test="data.status == '14'">
+            and a.entry_status = 3
+        </if>
+        <if test="data.status == '15'">
+            and a.entry_status = 4
+        </if>
+        <if test="data.employeeSurvey != null">
+            <choose>
+                <when test="data.employeeSurvey == 1">
+                    and a.employee_id in (select employee_id from hrm_employee_abnormal_change_record
+                    where year(change_time) = year(now()) and month(change_time) = month(now()) and type = 1
+                    group by employee_id having max(create_time))
+                </when>
+                <when test="data.employeeSurvey == 2">
+                    and a.employee_id in (select employee_id from hrm_employee_abnormal_change_record
+                    where year(change_time) = year(now()) and month(change_time) = month(now()) and type = 2
+                    group by employee_id having max(create_time))
+                </when>
+                <when test="data.employeeSurvey == 3">
+                    and a.employee_id in (select employee_id from hrm_employee_abnormal_change_record
+                    where year(change_time) = year(now()) and month(change_time) = month(now()) and type = 3
+                    group by employee_id having max(create_time))
+                </when>
+                <when test="data.employeeSurvey == 4">
+                    and a.employee_id in (select employee_id from hrm_employee_abnormal_change_record
+                    where year(change_time) = year(now()) and month(change_time) = month(now()) and type = 4
+                    group by employee_id having max(create_time))
+                </when>
+                <when test="data.employeeSurvey == 5">
+                    and a.employee_id in (select employee_id from hrm_employee where year(entry_time) = year(now())
+                    and month(entry_time) = month(now()) and entry_status = 2)
+                </when>
+                <when test="data.employeeSurvey == 6">
+                    and a.employee_id in (select a.employee_id from hrm_employee a
+                    left join hrm_employee_quit_info b on a.employee_id = b.employee_id
+                    where year(b.plan_quit_time) = year(now()) and month(b.plan_quit_time) = month(now()) and
+                    a.entry_status = 3)
+                </when>
+            </choose>
+        </if>
+        <if test="data.toDoRemind != null">
+            <choose>
+                <when test="data.toDoRemind == 2">
+                    and a.employee_id in (select a.employee_id from hrm_employee a
+                    left join hrm_employee_quit_info b on a.employee_id = b.employee_id
+                    where year(b.plan_quit_time) = year(now()) and month(b.plan_quit_time) = month(now()) and
+                    a.entry_status = 3)
+                </when>
+                <when test="data.toDoRemind == 3">
+                    and a.employee_id in (select employee_id from hrm_employee_contract where
+                    year(end_time) = year(now()) and month(end_time) = month(now()) group by employee_id)
+                </when>
+                <when test="data.toDoRemind == 4">
+                    and a.employee_id in (select employee_id from hrm_employee where status = 2 and
+                    year(become_time) = year(now()) and month(become_time) = month(now())
+                    group by employee_id)
+                </when>
+                <when test="data.toDoRemind == 5">
+                    and a.employee_id in (select employee_id from hrm_employee where year(entry_time) = year(now())
+                    and month(entry_time) = month(now()) and entry_status = 2)
+                </when>
+                <when test="data.toDoRemind == 6">
+                    and a.employee_id in
+                    <choose>
+                        <when test="birthdayEmpList.size > 0">
+                            <foreach collection="birthdayEmpList" separator="," open="(" close=")" item="empId"
+                                     index="index">
+                                #{empId}
+                            </foreach>
+                        </when>
+                        <otherwise>
+                            (-1)
+                        </otherwise>
+                    </choose>
+                </when>
+            </choose>
+        </if>
+        <if test="data.employeeIds != null and data.employeeIds.size > 0">
+            and a.employee_id in
+            <foreach collection="data.employeeIds" index="index" item="id" open="(" close=")" separator=",">
+                #{id}
+            </foreach>
+        </if>
+    </sql>
+
+
+    <select id="queryHasOverTimePayEmpList" resultType="com.tianye.hrsystem.entity.vo.HrmEmployeeVO">
+        select * FROM hrm_employee WHERE entry_status='1' and is_del='0'
+        and dept_id in (select dept_id FROM hrm_dept WHERE name in ('质量部','仓库','质检部','设备技术部','生产部','仓储部','研发部','工程部'))
+        and (post not in ('仓库副经理','质检经理','生产部经理','副经理') or post like '%经理%')
+    </select>
+
+
+</mapper>

@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.tianye.hrsystem.mapper.HrmEmployeeAbnormalChangeRecordMapper">
+    <select id="queryListByDate" resultType="com.tianye.hrsystem.entity.po.HrmEmployeeAbnormalChangeRecord">
+        select * from hrm_employee_abnormal_change_record
+        where change_time between #{startTime} and #{endTime}
+        and type = #{type}
+        <choose>
+            <when test="employeeIds != null and employeeIds.size > 0">
+                and employee_id in
+                <foreach collection="employeeIds" index="index" item="employeeId" open="(" close=")" separator=",">
+                    #{employeeId}
+                </foreach>
+            </when>
+            <when test="employeeIds != null and employeeIds.size == 0">
+                and 1=2
+            </when>
+        </choose>
+        group by employee_id having max(create_time)
+    </select>
+    <select id="queryListByDate1" resultType="com.tianye.hrsystem.entity.po.HrmEmployeeAbnormalChangeRecord">
+        select a.* from hrm_employee_abnormal_change_record a
+        left join hrm_employee b on a.employee_id = b.employee_id
+        where year(a.change_time) = #{year} and month(a.change_time) = #{month} and a.type = #{type} and b.is_del = 0
+        <choose>
+            <when test="employeeIds != null and employeeIds.size > 0">
+                and a.employee_id in
+                <foreach collection="employeeIds" index="index" item="employeeId" open="(" close=")" separator=",">
+                    #{employeeId}
+                </foreach>
+            </when>
+            <when test="employeeIds != null and employeeIds.size == 0">
+                and 1=2
+            </when>
+        </choose>
+        group by a.employee_id having max(a.create_time)
+    </select>
+</mapper>

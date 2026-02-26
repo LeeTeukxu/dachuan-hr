@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.tianye.hrsystem.modules.attendanceinfo.mapper.HrmAttendanceInfoMapper">
+    <select id="queryInfo" parameterType="java.util.HashMap" resultType="com.tianye.hrsystem.modules.attendanceinfo.entity.HrmAttendanceInfo">
+        select * from hrm_attendance_info where `year`=#{year} and `month`=#{month} and `dept_type` = #{deptType}
+    </select>
+
+    <select id="queryAttendanceInfoByParam" resultType="com.tianye.hrsystem.modules.attendanceinfo.vo.QueryAttendanceInfoVO">
+        select * from hrm_attendance_info where 1=1
+        <if test="data.year != ''">
+            and year = #{data.year} and month = #{data.month}
+        </if>
+    </select>
+</mapper>

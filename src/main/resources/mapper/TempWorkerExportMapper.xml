@@ -1,0 +1,64 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.tianye.hrsystem.modules.tempworker.mapper.TempWorkerExportMapper">
+
+ <select id="getWorksShopList" resultType="com.tianye.hrsystem.modules.tempworker.entity.Tbworkshop">
+     select * from tbworkshop
+ </select>
+
+<select id="getTbbreedList" parameterType="java.lang.String" resultType="com.tianye.hrsystem.modules.tempworker.entity.Tbbreed">
+    select distinct t4.id, t4.Breed,t5.WorkShop from tbweight t2 left join tbprice t3 on t2.ProductType = t3.ID
+                                                                 left join tbbreed t4 on t3.ProductType = t4.ID
+                                                                 left join tbworkshop t5 on t4.WorkShopID = t5.id
+   where 1=1
+    <if test="workShop != null">
+        and  t5.WorkShop=#{workShop}
+    </if>
+
+</select>
+
+    <select id="getRegisterUserList" resultType="com.tianye.hrsystem.modules.tempworker.entity.Tblregister">
+        select
+            ROW_NUMBER() OVER (ORDER BY t1.idcardno) xh,
+            t1.idcardno,cardNo as workNo,t1.name,t2.BankNo from tblregister t1 left join tbtempworker t2
+            on t1.idcardno = t2.IDNo;
+    </select>
+
+    <select id="getEmpWorkDateList" parameterType="java.lang.Integer" resultType="java.util.HashMap">
+        select distinct date_format(t2.WeightTime,'%Y-%m-%d') as WeightTime, t3.Price from tbweight t2 left join tbprice t3 on t2.ProductType = t3.ID
+                                                                left join tbbreed t4 on t3.ProductType = t4.ID  where t4.id=#{productId}
+    </select>
+
+    <select id="getWorkerWeightList" parameterType="java.lang.String" resultType="com.tianye.hrsystem.modules.tempworker.entity.Tbweight">
+        select IDNo as cardno,SUM(Weight)  as weight,
+               date_format(t2.WeightTime,'%Y-%m-%d') as weighttime,
+               concat(date_format(t2.WeightTime,'%Y-%m-%d'),'(',t3.Price,'元/kg)') as weighttimeStr,t4.Breed as breed,t5.WorkShop as workshop from  tbweight t2
+               left join tbprice t3 on t2.ProductType = t3.ID
+               left join tbbreed t4 on t3.ProductType = t4.ID
+               left join tbworkshop t5 on t4.WorkShopID = t5.ID
+        where t2.IDNo=#{idNo}
+        group by IDNo, WeightTime,t4.Breed;
+    </select>
+
+    <select id="getProductWeightSummary" resultType="com.tianye.hrsystem.modules.tempworker.entity.ProductWeightSummary">
+        select IDNo as cardno,SUM(Weight)  as weight,sum(t3.Price*t2.Weight) as productprice,
+               t4.Breed as bread,t5.WorkShop as workshop from  tbweight t2
+               left join tbprice t3 on t2.ProductType = t3.ID
+               left join tbbreed t4 on t3.ProductType = t4.ID
+               left join tbworkshop t5 on t4.WorkShopID = t5.ID
+        where t2.IDNo=#{idNo} and t4.breed=#{productName}
+        group by IDNo, t4.Breed
+    </select>
+
+    <select id="getWorkShopWeightSummary" resultType="com.tianye.hrsystem.modules.tempworker.entity.ProductWeightSummary">
+        select IDNo as cardno,SUM(Weight)  as weight,sum(t3.Price*t2.Weight) as productprice,
+               t4.Breed as bread,t5.WorkShop as workshop from  tbweight t2
+               left join tbprice t3 on t2.ProductType = t3.ID
+               left join tbbreed t4 on t3.ProductType = t4.ID
+               left join tbworkshop t5 on t4.WorkShopID = t5.ID
+        where t2.IDNo=#{idNo} and t5.WorkShop=#{workShop}
+        group by IDNo
+    </select>
+
+
+</mapper>

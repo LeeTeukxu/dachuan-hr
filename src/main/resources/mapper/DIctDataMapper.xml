@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.tianye.hrsystem.mapper.DictDataMapper">
+
+    <select id="queryDictDataList" resultType="com.tianye.hrsystem.entity.vo.DictDataVO">
+        select a.* from tbdictdata as  a
+        WHERE 1=1 AND dtId > 14
+        <if test="data.name != ''">
+            AND a.name = #{data.name}
+        </if>
+    </select>
+</mapper>

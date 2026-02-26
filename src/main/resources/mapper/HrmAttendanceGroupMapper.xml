@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.tianye.hrsystem.mapper.HrmAttendanceGroupMapper">
+
+    <select id="getEmployeeAttendanceGroupDingding" parameterType="java.lang.Long" resultType="com.tianye.hrsystem.entity.po.HrmAttendanceGroup">
+        select t1.* from hrm_attendance_group t1 inner join tbattendanceuser t2 on t1.attendance_group_id = t2.groupId
+        where t2.empId = #{employeeId}
+    </select>
+
+    <select id="queryEmployeeIdsInAttendanceGroupDingding" resultType="java.lang.Long">
+        select distinct t2.empId
+        from tbattendanceuser t2
+        <choose>
+            <when test="employeeIds != null and employeeIds.size > 0">
+                where t2.empId in
+                <foreach collection="employeeIds" item="employeeId" open="(" separator="," close=")">
+                    #{employeeId}
+                </foreach>
+            </when>
+            <otherwise>
+                where 1 = 2
+            </otherwise>
+        </choose>
+    </select>
+    
+
+</mapper>
