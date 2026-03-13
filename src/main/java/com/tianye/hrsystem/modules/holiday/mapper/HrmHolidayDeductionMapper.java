@@ -16,4 +16,6 @@ public interface HrmHolidayDeductionMapper extends BaseMapper<HrmHolidayDeductio
                                                             @Param("data")QueryHolidayDeductionBO queryHolidayDeductionBO);
 
     List<QueryHolidayDeductionVO> queryHolidayDeduction(@Param("data") QueryHolidayDeductionBO queryHolidayDeductionBO);
+
+    List<QueryHolidayDeductionVO> queryHolidayDeductionBatch(@Param("year") Integer year, @Param("month") Integer month);
 }

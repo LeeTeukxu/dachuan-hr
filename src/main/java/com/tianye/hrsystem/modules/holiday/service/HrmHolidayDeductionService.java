@@ -58,4 +58,8 @@ public class HrmHolidayDeductionService extends BaseServiceImpl<HrmHolidayDeduct
     public List<QueryHolidayDeductionVO> queryHolidayDeduction(QueryHolidayDeductionBO queryHolidayDeductionBO) {
         return hrmHolidayDeductionMapper.queryHolidayDeduction(queryHolidayDeductionBO);
     }
+
+    public List<QueryHolidayDeductionVO> queryHolidayDeductionBatch(int year, int month) {
+        return hrmHolidayDeductionMapper.queryHolidayDeductionBatch(year, month);
+    }
 }

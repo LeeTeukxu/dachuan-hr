@@ -11,6 +11,9 @@ public class HrmAttendanceShiftVO {
     @ApiModelProperty(value = "班次id")
     private Long shiftId;
 
+    @ApiModelProperty(value = "员工ID（批量查询时使用）")
+    private Long empId;
+
     @ApiModelProperty(value = "班次类型（0 休息 1早晚打卡 2 分段打卡）")
     private Integer shiftType;
 

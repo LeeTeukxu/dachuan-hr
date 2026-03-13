@@ -17,6 +17,9 @@ public class QueryHolidayDeductionVO {
     @TableId(value = "deduction_id")
     private Long deductionId;
 
+    @ApiModelProperty(value = "员工ID")
+    private Long employeeId;
+
     @ApiModelProperty(value = "假期余额ID")
     private Long holidayId;
 

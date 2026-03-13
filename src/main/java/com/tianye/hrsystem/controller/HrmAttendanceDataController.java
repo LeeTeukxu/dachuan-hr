@@ -68,7 +68,7 @@ public class HrmAttendanceDataController {
         try {
             LoginUserInfo Info = CompanyContext.get();
             Date BeginDate = format.parse(Begin);
-            Date EndDate = format.parse(End);
+            Date EndDate = dateUtils.setItEnd(format.parse(End));
             logger.info("开始同步:" + Info.getCompanyId() + "的人员:" + EmpID + "的考勤数据!");
             dataService.SyncData(EmpID, BeginDate, EndDate);
         } catch (Exception ax) {
@@ -85,7 +85,7 @@ public class HrmAttendanceDataController {
         try {
             LoginUserInfo Info = CompanyContext.get();
             Date BeginDate = format.parse(Begin);
-            Date EndDate = format.parse(End);
+            Date EndDate = dateUtils.setItEnd(format.parse(End));
             List<HrmEmployee> alls = empRep.findAll().stream().collect(Collectors.toList());
             String EmpID =
                     StringUtils.join(alls.stream().map(f -> Long.toString(f.getEmployeeId())).collect(Collectors.toList()), ',');

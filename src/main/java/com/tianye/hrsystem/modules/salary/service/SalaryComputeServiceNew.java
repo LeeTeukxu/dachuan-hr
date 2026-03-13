@@ -181,6 +181,13 @@ public class SalaryComputeServiceNew
      */
     public List<HrmSalaryMonthOptionValue> computeSalary(SalaryBaseTotal salaryBaseTotal, HrmSalaryMonthEmpRecord salaryMonthEmpRecord, HrmSalaryTaxRule taxRule,
                                                          Map<Integer, String> cumulativeTaxOfLastMonthData, HrmEmployeeVO hrmEmployeeVO, String isDisabled) {
+        return computeSalary(salaryBaseTotal, salaryMonthEmpRecord, taxRule,
+                cumulativeTaxOfLastMonthData, hrmEmployeeVO, isDisabled, BigDecimal.ZERO);
+    }
+
+    public List<HrmSalaryMonthOptionValue> computeSalary(SalaryBaseTotal salaryBaseTotal, HrmSalaryMonthEmpRecord salaryMonthEmpRecord, HrmSalaryTaxRule taxRule,
+                                                         Map<Integer, String> cumulativeTaxOfLastMonthData, HrmEmployeeVO hrmEmployeeVO, String isDisabled,
+                                                         BigDecimal welfareTaxableIncome) {
         LoginUserInfo Info = CompanyContext.get();
         List<HrmSalaryMonthOptionValue> salaryMonthOptionValueList = new ArrayList<>();
         BigDecimal shouldTaxSalary = new BigDecimal(0);
@@ -257,7 +264,8 @@ public class SalaryComputeServiceNew
         BigDecimal bonusSalary = getBonusSalary(hrmEmployeeVO.getEmployeeId(), salaryMonthEmpRecord);
         // 计算个税累计信息
         TaxAccumulation taxAccumulation = calculateTaxAccumulation(
-            salaryBaseTotal, lastTaxOptionValueMap, bonusSalary, salaryMonthEmpRecord, Info
+            salaryBaseTotal, lastTaxOptionValueMap, bonusSalary, salaryMonthEmpRecord, Info,
+            welfareTaxableIncome == null ? BigDecimal.ZERO : welfareTaxableIncome
         );
         
         // 当 hrm_employee.is_remark=2 且 上年度累计收入+本年度累计收入<6万 则不计算个税
@@ -474,12 +482,14 @@ public class SalaryComputeServiceNew
     /**
      * 计算个税累计信息
      */
-    private TaxAccumulation calculateTaxAccumulation(SalaryBaseTotal salaryBaseTotal, 
+    private TaxAccumulation calculateTaxAccumulation(SalaryBaseTotal salaryBaseTotal,
                                                      Map<Integer, String> lastTaxOptionValueMap,
                                                      BigDecimal bonusSalary,
                                                      HrmSalaryMonthEmpRecord salaryMonthEmpRecord,
-                                                     LoginUserInfo info) {
+                                                     LoginUserInfo info,
+                                                     BigDecimal welfareTaxableIncome) {
         TaxAccumulation accumulation = new TaxAccumulation();
+        BigDecimal safeWelfareTaxableIncome = welfareTaxableIncome == null ? BigDecimal.ZERO : welfareTaxableIncome;
         
         // 累计收入额 = 上月累计 + 本月应发工资 + 奖金(成都公司除外)
         BigDecimal lastIncome = new BigDecimal(lastTaxOptionValueMap.get(250101));
@@ -487,6 +497,7 @@ public class SalaryComputeServiceNew
         if (!info.getCompanyId().equals("0002")) {
             accumulation.cumulativeIncome = accumulation.cumulativeIncome.add(bonusSalary);
         }
+        accumulation.cumulativeIncome = accumulation.cumulativeIncome.add(safeWelfareTaxableIncome);
         
         // 累计减除费用 = 上月累计 + 5000
         accumulation.cumulativeDeductions = new BigDecimal(lastTaxOptionValueMap.get(250102))

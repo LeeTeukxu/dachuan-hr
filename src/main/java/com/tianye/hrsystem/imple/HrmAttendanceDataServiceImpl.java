@@ -155,7 +155,7 @@ public class HrmAttendanceDataServiceImpl implements IHrmAttendanceDataService {
         
         List<String> allEmpIds = Arrays.asList(EmpIDS.split(","));
         List<String> remainingEmpIds = new ArrayList<>(allEmpIds);
-        int startStep = 7; // TODO: 临时调试 - 强制从步骤7开始
+        int startStep = 1; // TODO: 临时调试 - 强制从步骤7开始
         Set<String> processedEmpSet = new HashSet<>();
         
         // 全量员工相关变量，用于步骤6-7
@@ -413,6 +413,14 @@ public class HrmAttendanceDataServiceImpl implements IHrmAttendanceDataService {
                                 IAttendanceDetailService detailSvc = (IAttendanceDetailService) service;
                                 detailSvc.setUsers(users);
                                 detailSvc.Sync(empId, begin, end);
+                            } else if (service instanceof ILeaveRecordDtaService) {
+                                ILeaveRecordDtaService leaveSvc = (ILeaveRecordDtaService) service;
+                                leaveSvc.setUsers(users);
+                                leaveSvc.Sync(empId, begin, end);
+                            } else if (service instanceof IHolidayDataService) {
+                                IHolidayDataService holidaySvc = (IHolidayDataService) service;
+                                holidaySvc.setUsers(users);
+                                holidaySvc.Sync(empId, begin, end);
                             }
                             
                             threadSafeProcessedSet.add(empId);

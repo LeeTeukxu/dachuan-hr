@@ -7,6 +7,7 @@ import com.tianye.hrsystem.entity.po.HrmAttendanceShift;
 import com.tianye.hrsystem.entity.vo.HrmAttendanceShiftVO;
 
 import java.util.HashMap;
+import java.util.List;
 
 /**
  * <p>
@@ -24,4 +25,9 @@ public interface HrmAttendanceShiftMapper extends BaseMapper<HrmAttendanceShift>
      * @return
      */
     HrmAttendanceShiftVO getEmpHrmAttendanceShift(HashMap<String,Object> params);
+
+    /**
+     * 批量查询所有员工在指定日期范围内的排班时长
+     */
+    List<HrmAttendanceShiftVO> getEmpHrmAttendanceShiftBatch(HashMap<String,Object> params);
 }

@@ -223,10 +223,18 @@ public class AttendanceDetailRecord implements IDetailRecord {
         Long pageIndex = 0L;
         List<Long> EmpIDS = Arrays.stream(EmpID.split(",")).map(f->Long.parseLong(f)).collect(Collectors.toList());
 
+        List<tbattendanceuser> safeUsers = users == null ? Collections.emptyList() : users;
+        Set<Long> mappedEmpIds = safeUsers.stream().map(tbattendanceuser::getEmpId).collect(Collectors.toSet());
+        List<Long> missingEmpIds = EmpIDS.stream().filter(id -> !mappedEmpIds.contains(id)).collect(Collectors.toList());
 
+        if (!missingEmpIds.isEmpty()) {
+            String sample = missingEmpIds.stream().limit(20).map(String::valueOf).collect(Collectors.joining(","));
+            logger.warn("考勤明细同步存在员工未建立钉钉映射，缺失{}人，示例empId={}，时间区间={}~{}",
+                    missingEmpIds.size(), sample, shortFormat.format(Begin), shortFormat.format(End));
+        }
 
-        List<String> IDS = users.stream()
-                .filter(f -> EmpIDS.contains(f.getEmpId()) == true)
+        List<String> IDS = safeUsers.stream()
+                .filter(f -> EmpIDS.contains(f.getEmpId()))
                 .map(f -> f.getUserId()).collect(Collectors.toList());
         Map<String,Integer> Rs=new HashMap<>();
         Integer Total=0;
@@ -379,8 +387,10 @@ public class AttendanceDetailRecord implements IDetailRecord {
                     logger.info("服务器返回:"+ Integer.toString(Rs.size())+"条记录，实际保存:"+Integer.toString(Total)+"条记录!");
                 }
             }
+            logger.info("考勤明细同步完成，入参员工{}人，可用钉钉用户{}人，成功保存{}条记录", EmpIDS.size(), IDS.size(), Total);
         } else {
-            logger.info("没有可进行保存的内容!");
+            logger.error("未找到可用于拉取考勤明细的钉钉用户。入参员工{}人，缺失映射{}人，时间区间={}~{}",
+                    EmpIDS.size(), missingEmpIds.size(), shortFormat.format(Begin), shortFormat.format(End));
         }
     }
 

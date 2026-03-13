@@ -90,6 +90,9 @@ public class HrmProduceAttendance implements Serializable {
     @ApiModelProperty(value = "其它扣款")
     private BigDecimal otherDeductions;
 
+    @ApiModelProperty(value = "福利")
+    private String welfare;
+
     @ApiModelProperty(value = "备注")
     private String remark;
 }

@@ -127,64 +127,72 @@ public class MyDateUtils {
     }
     public List<Date[]> getDateRangeByLimit(Date date,int limit) throws Exception{
         List<Date[]> res=new ArrayList<>();
-        Date endMonthDay=getEndDayOfMonth(date);
-        Date beginDate=getBeginDayOfMonth(date);
-        Date endDate =null;
+        Date endMonthDay = getEndDayOfMonth(date);
+        Date beginDate = setItBegin(getBeginDayOfMonth(date));
+        Date cutoffDate = setItEnd(date);
+
+        if (limit <= 0) {
+            return res;
+        }
+
         while(true){
-            endDate= DateUtils.addDays(beginDate,limit);
-            endDate.setHours(23);
-            endDate.setMinutes(59);
-            endDate.setSeconds(59);
-            //添加周期的日期大于当前时间且没有到月末就退出。
-            if(endDate.after(date) && endDate.before(endMonthDay))break;
-            if(endDate.after(endMonthDay)){
-                endDate=endMonthDay;
-            }
-            if(endDate.after(endMonthDay) || endDate.equals(endMonthDay)) {
+            Date endDate = DateUtils.addDays(beginDate, limit - 1);
+            endDate = setItEnd(endDate);
+
+            if (endDate.after(endMonthDay)) {
                 endDate = endMonthDay;
-                Date[] D = new Date[2];
-                D[0] = beginDate;
-                D[1] = endDate;
-                res.add(D);
-                break;
-            } else {
-                Date[] D = new Date[2];
-                D[0] = beginDate;
-                D[1] = endDate;
-                res.add(D);
             }
 
-            if(endDate.before(date)){
-                beginDate=DateUtils.addDays(endDate,1);
-                beginDate.setHours(0);
-                beginDate.setMinutes(0);
-                beginDate.setSeconds(0);
-                if(beginDate.after(date))break;
-            } else break;
+            if (endDate.after(cutoffDate) && endDate.before(endMonthDay)) {
+                break;
+            }
+
+            Date[] D = new Date[2];
+            D[0] = beginDate;
+            D[1] = endDate;
+            res.add(D);
+
+            if (endDate.equals(endMonthDay) || endDate.after(endMonthDay)) {
+                break;
+            }
+
+            if(endDate.before(cutoffDate)){
+                beginDate = setItBegin(DateUtils.addDays(endDate, 1));
+                if(beginDate.after(cutoffDate)){
+                    break;
+                }
+            } else {
+                break;
+            }
         }
         return res;
     }
     public List<Date[]> getDateRangeByLimit(Date beginDate,Date endDate,int limit) throws Exception{
         List<Date[]> res=new ArrayList<>();
-        Date curData =null;
+        if (limit <= 0) {
+            return res;
+        }
+
+        Date rangeStart = setItBegin(beginDate);
+        Date rangeEnd = setItEnd(endDate);
+
         while(true){
-            curData= DateUtils.addDays(beginDate,limit);
-            curData.setHours(23);
-            curData.setMinutes(59);
-            curData.setSeconds(59);
-            if(curData.before(endDate)){
+            Date curData = DateUtils.addDays(rangeStart, limit - 1);
+            curData = setItEnd(curData);
+
+            if(curData.before(rangeEnd)){
                 Date[] D = new Date[2];
-                D[0] = beginDate;
+                D[0] = rangeStart;
                 D[1] = curData;
                 res.add(D);
+                rangeStart = setItBegin(DateUtils.addDays(curData,1));
             } else {
                 Date[] D=new Date[2];
-                D[0]=beginDate;
-                D[1]=endDate;
+                D[0]=rangeStart;
+                D[1]=rangeEnd;
                 res.add(D);
                 break;
             }
-            beginDate=DateUtils.addDays(curData,1);
         }
         return res;
     }
@@ -199,7 +207,7 @@ public class MyDateUtils {
 
         Date d=Date.from(date.toInstant());
         d.setHours(23);
-        d.setMinutes(23);
+        d.setMinutes(59);
         d.setSeconds(59);
         return d;
     }

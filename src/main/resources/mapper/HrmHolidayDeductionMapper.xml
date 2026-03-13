@@ -38,4 +38,11 @@
         </if>
 
     </select>
+
+    <select id="queryHolidayDeductionBatch" resultType="com.tianye.hrsystem.modules.holiday.vo.QueryHolidayDeductionVO">
+        SELECT a.employee_id as employeeId, b.deduction_time as deductionTime, b.type
+        FROM hrm_remaining_vacation a
+        INNER JOIN hrm_holiday_deduction b ON a.holiday_id = b.holiday_id
+        WHERE b.year = #{year} AND b.month = #{month}
+    </select>
 </mapper>

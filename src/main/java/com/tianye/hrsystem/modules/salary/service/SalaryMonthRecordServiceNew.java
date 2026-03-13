@@ -50,7 +50,6 @@ import com.tianye.hrsystem.modules.attendanceinfo.entity.HrmAttendanceInfo;
 import com.tianye.hrsystem.modules.attendanceinfo.mapper.HrmAttendanceInfoMapper;
 import com.tianye.hrsystem.modules.deduction.mapper.HrmPersonalIncomeTaxMapper;
 import com.tianye.hrsystem.modules.deduction.vo.QueryPersonalIncomeTaxVO;
-import com.tianye.hrsystem.modules.holiday.bo.QueryHolidayDeductionBO;
 import com.tianye.hrsystem.modules.holiday.service.HrmHolidayDeductionService;
 import com.tianye.hrsystem.modules.holiday.vo.QueryHolidayDeductionVO;
 import com.tianye.hrsystem.modules.insurance.entity.HrmInsuranceMonthEmpRecord;
@@ -286,6 +285,9 @@ public class SalaryMonthRecordServiceNew extends BaseServiceImpl<HrmSalaryMonthR
         final LocalDate dateEndTime;
         final int daysInMonth;
         final List<String> dates;
+        final Map<Long, List<QueryHolidayDeductionVO>> holidayDeductionMap;
+        final Map<Long, Map<String, Double>> workHoursMap;
+        final Map<Long, String> deptNameMap;
 
         AttendanceSyncBatchData(List<Long> employeeIds, List<HrmProduceAttendance> hasOverTimePayEmpList,
                                 HrmSalaryBasic salaryBasic, HrmAttendanceRule attendanceRule,
@@ -296,7 +298,10 @@ public class SalaryMonthRecordServiceNew extends BaseServiceImpl<HrmSalaryMonthR
                                 Map<Long, HrmAttendanceSummaryVo> attendanceSummaryMap,
                                 List<QuerySalaryArchivesListVO> empSalaryArchivesList,
                                 Map<Long, QuerySalaryArchivesListVO> empSalaryArchivesMap,
-                                LocalDate dateStartTime, LocalDate dateEndTime, int daysInMonth, List<String> dates) {
+                                LocalDate dateStartTime, LocalDate dateEndTime, int daysInMonth, List<String> dates,
+                                Map<Long, List<QueryHolidayDeductionVO>> holidayDeductionMap,
+                                Map<Long, Map<String, Double>> workHoursMap,
+                                Map<Long, String> deptNameMap) {
             this.employeeIds = employeeIds;
             this.hasOverTimePayEmpList = hasOverTimePayEmpList != null ? hasOverTimePayEmpList : Collections.emptyList();
             this.overTimePayEmpMap = toProduceAttendanceMap(this.hasOverTimePayEmpList);
@@ -315,6 +320,99 @@ public class SalaryMonthRecordServiceNew extends BaseServiceImpl<HrmSalaryMonthR
             this.dateEndTime = dateEndTime;
             this.daysInMonth = daysInMonth;
             this.dates = dates != null ? dates : Collections.emptyList();
+            this.holidayDeductionMap = holidayDeductionMap != null ? holidayDeductionMap : Collections.emptyMap();
+            this.workHoursMap = workHoursMap != null ? workHoursMap : Collections.emptyMap();
+            this.deptNameMap = deptNameMap != null ? deptNameMap : Collections.emptyMap();
+        }
+    }
+
+    private static class SalaryOptionBatchData {
+        final Map<Integer, Integer> optionParentCodeMap;
+        final Map<Integer, HrmSalaryOption> salaryOptionConfigMap;
+        final List<HrmSalaryOption> noFixedSalaryOptionList;
+
+        SalaryOptionBatchData(Map<Integer, Integer> optionParentCodeMap,
+                              Map<Integer, HrmSalaryOption> salaryOptionConfigMap,
+                              List<HrmSalaryOption> noFixedSalaryOptionList) {
+            this.optionParentCodeMap = optionParentCodeMap != null ? optionParentCodeMap : Collections.emptyMap();
+            this.salaryOptionConfigMap = salaryOptionConfigMap != null ? salaryOptionConfigMap : Collections.emptyMap();
+            this.noFixedSalaryOptionList = noFixedSalaryOptionList != null ? noFixedSalaryOptionList : Collections.emptyList();
+        }
+    }
+
+    private static class SalaryComputeBatchData {
+        final List<Map<String, Object>> employeeMapList;
+        final Map<String, Map<Integer, String>> attendanceDataMap;
+        final Map<Long, Boolean> hasAttendanceGroupMap;
+        final SalaryOptionBatchData salaryOptionBatchData;
+        final Map<Long, HrmProduceAttendance> produceAttendanceMap;
+        final Map<Integer, Double> normalDaysByDeptType;
+        final Map<Long, Map<Integer, String>> lastMonthTaxDataMap;
+        final Map<Long, BigDecimal> lastYearAccumulatedIncomeMap;
+        final Map<Long, HrmInsuranceMonthEmpRecord> socialSecurityEmpRecordMap;
+        final Map<Long, HrmAdditional> additionalDeductionMap;
+        final Map<Long, List<HrmSalaryArchivesOption>> midMonthArchivesOptionMap;
+
+        SalaryComputeBatchData(List<Map<String, Object>> employeeMapList,
+                               Map<String, Map<Integer, String>> attendanceDataMap,
+                               Map<Long, Boolean> hasAttendanceGroupMap,
+                               SalaryOptionBatchData salaryOptionBatchData,
+                               Map<Long, HrmProduceAttendance> produceAttendanceMap,
+                               Map<Integer, Double> normalDaysByDeptType,
+                               Map<Long, Map<Integer, String>> lastMonthTaxDataMap,
+                               Map<Long, BigDecimal> lastYearAccumulatedIncomeMap,
+                               Map<Long, HrmInsuranceMonthEmpRecord> socialSecurityEmpRecordMap,
+                               Map<Long, HrmAdditional> additionalDeductionMap,
+                               Map<Long, List<HrmSalaryArchivesOption>> midMonthArchivesOptionMap) {
+            this.employeeMapList = employeeMapList != null ? employeeMapList : Collections.emptyList();
+            this.attendanceDataMap = attendanceDataMap != null ? attendanceDataMap : Collections.emptyMap();
+            this.hasAttendanceGroupMap = hasAttendanceGroupMap != null ? hasAttendanceGroupMap : Collections.emptyMap();
+            this.salaryOptionBatchData = salaryOptionBatchData != null ? salaryOptionBatchData
+                    : new SalaryOptionBatchData(Collections.emptyMap(), Collections.emptyMap(), Collections.emptyList());
+            this.produceAttendanceMap = produceAttendanceMap != null ? produceAttendanceMap : Collections.emptyMap();
+            this.normalDaysByDeptType = normalDaysByDeptType != null ? normalDaysByDeptType : Collections.emptyMap();
+            this.lastMonthTaxDataMap = lastMonthTaxDataMap != null ? lastMonthTaxDataMap : Collections.emptyMap();
+            this.lastYearAccumulatedIncomeMap = lastYearAccumulatedIncomeMap != null ? lastYearAccumulatedIncomeMap : Collections.emptyMap();
+            this.socialSecurityEmpRecordMap = socialSecurityEmpRecordMap != null ? socialSecurityEmpRecordMap : Collections.emptyMap();
+            this.additionalDeductionMap = additionalDeductionMap != null ? additionalDeductionMap : Collections.emptyMap();
+            this.midMonthArchivesOptionMap = midMonthArchivesOptionMap != null ? midMonthArchivesOptionMap : Collections.emptyMap();
+        }
+    }
+
+    private static class EmployeeComputeScopeData {
+        final List<Map<String, Object>> employeeMapList;
+        final Map<String, Map<Integer, String>> attendanceDataMap;
+        final Map<Long, Boolean> hasAttendanceGroupMap;
+        final AttendanceSyncBatchData attendanceSyncBatchData;
+
+        EmployeeComputeScopeData(List<Map<String, Object>> employeeMapList,
+                                 Map<String, Map<Integer, String>> attendanceDataMap,
+                                 Map<Long, Boolean> hasAttendanceGroupMap,
+                                 AttendanceSyncBatchData attendanceSyncBatchData) {
+            this.employeeMapList = employeeMapList != null ? employeeMapList : Collections.emptyList();
+            this.attendanceDataMap = attendanceDataMap != null ? attendanceDataMap : Collections.emptyMap();
+            this.hasAttendanceGroupMap = hasAttendanceGroupMap != null ? hasAttendanceGroupMap : Collections.emptyMap();
+            this.attendanceSyncBatchData = attendanceSyncBatchData;
+        }
+    }
+
+    private static class HistoryComputeData {
+        final Map<Long, Map<Integer, String>> lastMonthTaxDataMap;
+        final Map<Long, BigDecimal> lastYearAccumulatedIncomeMap;
+        final Map<Long, HrmInsuranceMonthEmpRecord> socialSecurityEmpRecordMap;
+        final Map<Long, HrmAdditional> additionalDeductionMap;
+        final Map<Long, List<HrmSalaryArchivesOption>> midMonthArchivesOptionMap;
+
+        HistoryComputeData(Map<Long, Map<Integer, String>> lastMonthTaxDataMap,
+                           Map<Long, BigDecimal> lastYearAccumulatedIncomeMap,
+                           Map<Long, HrmInsuranceMonthEmpRecord> socialSecurityEmpRecordMap,
+                           Map<Long, HrmAdditional> additionalDeductionMap,
+                           Map<Long, List<HrmSalaryArchivesOption>> midMonthArchivesOptionMap) {
+            this.lastMonthTaxDataMap = lastMonthTaxDataMap != null ? lastMonthTaxDataMap : Collections.emptyMap();
+            this.lastYearAccumulatedIncomeMap = lastYearAccumulatedIncomeMap != null ? lastYearAccumulatedIncomeMap : Collections.emptyMap();
+            this.socialSecurityEmpRecordMap = socialSecurityEmpRecordMap != null ? socialSecurityEmpRecordMap : Collections.emptyMap();
+            this.additionalDeductionMap = additionalDeductionMap != null ? additionalDeductionMap : Collections.emptyMap();
+            this.midMonthArchivesOptionMap = midMonthArchivesOptionMap != null ? midMonthArchivesOptionMap : Collections.emptyMap();
         }
     }
 
@@ -389,10 +487,47 @@ public class SalaryMonthRecordServiceNew extends BaseServiceImpl<HrmSalaryMonthR
                 .filter(v -> v.getEmployeeId() != null)
                 .collect(Collectors.toMap(QuerySalaryArchivesListVO::getEmployeeId, Function.identity(), (v1, v2) -> v1));
         Map<Integer, Double> normalDaysByDeptType = loadNormalDaysByDeptType(year, month);
+
+        // 批量预加载假期抵扣数据（消除 fillAttendanceDataForEmployee 中的 N+1 查询）
+        List<QueryHolidayDeductionVO> allDeductions = holidayDeductionService.queryHolidayDeductionBatch(year, month);
+        Map<Long, List<QueryHolidayDeductionVO>> holidayDeductionMap = allDeductions.stream()
+                .filter(v -> v.getEmployeeId() != null)
+                .collect(Collectors.groupingBy(QueryHolidayDeductionVO::getEmployeeId));
+
+        // 批量预加载排班时长数据（消除 getWorkHours 中的 N*days 次查询）
+        HashMap<String, Object> shiftBatchParams = new HashMap<>();
+        shiftBatchParams.put("beginDate", dateStartTime.toString());
+        shiftBatchParams.put("endDate", dateEndTime.toString());
+        List<HrmAttendanceShiftVO> allShifts = attendanceShiftMapper.getEmpHrmAttendanceShiftBatch(shiftBatchParams);
+        Map<Long, Map<String, Double>> workHoursMap = new HashMap<>();
+        if (CollUtil.isNotEmpty(allShifts)) {
+            for (HrmAttendanceShiftVO shift : allShifts) {
+                if (shift.getEmpId() == null || shift.getAttendanceShiftDate() == null) continue;
+                workHoursMap
+                        .computeIfAbsent(shift.getEmpId(), k -> new HashMap<>())
+                        .put(shift.getAttendanceShiftDate(), (double) shift.getShiftHours());
+            }
+        }
+
+        // 批量预加载部门名称（消除 fillAttendanceDataForEmployee 末尾的逐条查询）
+        List<Long> deptIds = mapList.stream()
+                .map(m -> Convert.toLong(m.get("deptId")))
+                .filter(Objects::nonNull)
+                .distinct()
+                .collect(Collectors.toList());
+        Map<Long, String> deptNameMap = Collections.emptyMap();
+        if (CollUtil.isNotEmpty(deptIds)) {
+            List<SimpleHrmDeptVO> deptList = hrmDeptRepository.findAllByDeptIdIn(deptIds);
+            deptNameMap = deptList.stream()
+                    .filter(d -> d.getDeptId() != null && d.getDeptName() != null)
+                    .collect(Collectors.toMap(SimpleHrmDeptVO::getDeptId, SimpleHrmDeptVO::getDeptName, (v1, v2) -> v1));
+        }
+
         return new AttendanceSyncBatchData(employeeIds, hasOverTimePayEmpList, salaryBasic, attendanceRule,
                 beginDate, endDate, normalDaysByDeptType, attendanceSummaryVoDayList, attendanceSummaryDayMap,
                 attendanceSummaryVoList, attendanceSummaryMap, empSalaryArchivesList, empSalaryArchivesMap,
-                dateStartTime, dateEndTime, daysInMonth, dates);
+                dateStartTime, dateEndTime, daysInMonth, dates,
+                holidayDeductionMap, workHoursMap, deptNameMap);
     }
 
     private Map<Integer, Double> loadNormalDaysByDeptType(int year, int month) {
@@ -514,6 +649,13 @@ public class SalaryMonthRecordServiceNew extends BaseServiceImpl<HrmSalaryMonthR
         }
     }
 
+    private static BigDecimal extractWelfareTaxableIncome(HrmProduceAttendance attendance) {
+        if (attendance == null || StrUtil.isBlank(attendance.getWelfare())) {
+            return BigDecimal.ZERO;
+        }
+        return parseAmount(attendance.getWelfare());
+    }
+
     private static BigDecimal amountByCode(Map<Integer, HrmSalaryMonthOptionValue> optionMap, int code) {
         HrmSalaryMonthOptionValue optionValue = optionMap.get(code);
         if (optionValue == null || StrUtil.isBlank(optionValue.getValue())) {
@@ -554,7 +696,8 @@ public class SalaryMonthRecordServiceNew extends BaseServiceImpl<HrmSalaryMonthR
             int year, int month,
             String isDisabled,
             boolean skipTaxForRemark,
-            BigDecimal taxSpecialAdditionalDeduction) {
+            BigDecimal taxSpecialAdditionalDeduction,
+            BigDecimal welfareTaxableIncome) {
 
         if (midMonthSalaryMap == null || midMonthSalaryMap.isEmpty()) {
             return;
@@ -593,7 +736,8 @@ public class SalaryMonthRecordServiceNew extends BaseServiceImpl<HrmSalaryMonthR
                 isDisabledNo,
                 skipTaxForRemark,
                 lastMonthTaxData,
-                month
+                month,
+                welfareTaxableIncome
         );
 
         // 4. 同步更新全链路依赖字段（P1-1 修复）
@@ -617,7 +761,8 @@ public class SalaryMonthRecordServiceNew extends BaseServiceImpl<HrmSalaryMonthR
                                                                   boolean isDisabledNo,
                                                                   boolean skipTaxForRemark,
                                                                   Map<Integer, String> lastMonthTaxData,
-                                                                  int month) {
+                                                                  int month,
+                                                                  BigDecimal welfareTaxableIncome) {
         Map<Integer, String> lastTaxMap = initLastMonthTaxMap(lastMonthTaxData, month);
         BigDecimal safeShouldPaySalary = shouldPaySalary == null ? BigDecimal.ZERO : shouldPaySalary;
         BigDecimal safeProxyPaySalary = proxyPaySalary == null ? BigDecimal.ZERO : proxyPaySalary;
@@ -628,6 +773,7 @@ public class SalaryMonthRecordServiceNew extends BaseServiceImpl<HrmSalaryMonthR
         BigDecimal safeTaxSpecialAdditionalDeduction = taxSpecialAdditionalDeduction == null ? BigDecimal.ZERO : taxSpecialAdditionalDeduction;
         BigDecimal safeLabourUnionPay = labourUnionPay == null ? BigDecimal.ZERO : labourUnionPay;
         BigDecimal safeBonusSalary = bonusSalary == null ? BigDecimal.ZERO : bonusSalary;
+        BigDecimal safeWelfareTaxableIncome = welfareTaxableIncome == null ? BigDecimal.ZERO : welfareTaxableIncome;
 
         BigDecimal baseShouldTaxSalary = safeShouldPaySalary.add(safeSpecialTaxSalary).subtract(safeProxyPaySalary);
         BigDecimal shouldTaxSalary = baseShouldTaxSalary.compareTo(MONTHLY_TAX_FREE_DEDUCTION) > 0
@@ -638,6 +784,7 @@ public class SalaryMonthRecordServiceNew extends BaseServiceImpl<HrmSalaryMonthR
         if (includeBonusInCumulativeIncome) {
             cumulativeIncome = cumulativeIncome.add(safeBonusSalary);
         }
+        cumulativeIncome = cumulativeIncome.add(safeWelfareTaxableIncome);
         BigDecimal cumulativeDeductions = parseAmount(lastTaxMap.get(250102)).add(MONTHLY_TAX_FREE_DEDUCTION);
         BigDecimal cumulativeSpecialDeduction = parseAmount(lastTaxMap.get(250103)).add(safeProxyPaySalary);
         BigDecimal cumulativeSpecialAdditionalDeduction = safeTaxSpecialAdditionalDeduction;
@@ -969,8 +1116,7 @@ public class SalaryMonthRecordServiceNew extends BaseServiceImpl<HrmSalaryMonthR
      */
     @Transactional
     public void computeSalaryData(Long sRecordId, Boolean isSyncInsuranceData, Boolean isSyncAttendanceData,
-                                  Long employeeId)
-    {
+                                  Long employeeId) {
         withSalaryRecordLock(sRecordId, () -> {
             doComputeSalaryData(sRecordId, isSyncInsuranceData, isSyncAttendanceData, employeeId);
             return null;
@@ -979,104 +1125,243 @@ public class SalaryMonthRecordServiceNew extends BaseServiceImpl<HrmSalaryMonthR
 
     private void doComputeSalaryData(Long sRecordId, Boolean isSyncInsuranceData, Boolean isSyncAttendanceData,
                                      Long employeeId) {
+        HrmSalaryMonthRecord salaryMonthRecord = getSalaryMonthRecordOrThrow(sRecordId);
+        HrmSalaryConfig salaryConfig = getSalaryConfigOrThrow();
+
+        int year = salaryMonthRecord.getYear();
+        int month = salaryMonthRecord.getMonth();
+        boolean syncInsuranceData = Boolean.TRUE.equals(isSyncInsuranceData);
+        boolean syncAttendanceData = Boolean.TRUE.equals(isSyncAttendanceData);
+        updateAddition(employeeId, year, month);
+        validateInsuranceData(isSyncInsuranceData, salaryConfig, year, month);
+        SalaryComputeBatchData batchData = prepareSalaryComputeBatchData(salaryMonthRecord, employeeId,
+                year, month, syncAttendanceData, isSyncInsuranceData, salaryConfig);
+
+        Set<String> midMonthPromotionReviewSet = new LinkedHashSet<>();
+
+        SalaryComputeContext ctx = buildSalaryComputeContext(year, month, syncInsuranceData, syncAttendanceData,
+                salaryConfig, batchData);
+        List<EmployeeSalaryResult> results = computeEmployeeSalaryResults(batchData.employeeMapList, sRecordId,
+                salaryMonthRecord, ctx, batchData.hasAttendanceGroupMap, midMonthPromotionReviewSet);
+
+        batchSaveResults(results);
+        finishSalaryCompute(year, month, midMonthPromotionReviewSet, salaryMonthRecord);
+    }
+
+    private SalaryComputeBatchData prepareSalaryComputeBatchData(HrmSalaryMonthRecord salaryMonthRecord,
+                                                                 Long employeeId,
+                                                                 int year,
+                                                                 int month,
+                                                                 boolean syncAttendanceData,
+                                                                 Boolean isSyncInsuranceData,
+                                                                 HrmSalaryConfig salaryConfig) {
+        EmployeeComputeScopeData employeeScopeData = loadEmployeeComputeScopeData(
+                salaryMonthRecord, employeeId, year, month, syncAttendanceData);
+        SalaryOptionBatchData salaryOptionBatchData = loadSalaryOptionBatchData();
+        Map<Long, HrmProduceAttendance> produceAttendanceMap = resolveProduceAttendanceMap(
+                employeeScopeData.attendanceSyncBatchData, year, month);
+        Map<Integer, Double> normalDaysByDeptType = resolveNormalDaysByDeptType(
+                employeeScopeData.attendanceSyncBatchData, year, month);
+        HistoryComputeData historyData = loadHistoryComputeData(employeeScopeData.employeeMapList, year, month,
+                isSyncInsuranceData, salaryConfig);
+        return new SalaryComputeBatchData(employeeScopeData.employeeMapList, employeeScopeData.attendanceDataMap,
+                employeeScopeData.hasAttendanceGroupMap,
+                salaryOptionBatchData, produceAttendanceMap, normalDaysByDeptType,
+                historyData.lastMonthTaxDataMap, historyData.lastYearAccumulatedIncomeMap,
+                historyData.socialSecurityEmpRecordMap, historyData.additionalDeductionMap,
+                historyData.midMonthArchivesOptionMap);
+    }
+
+    private EmployeeComputeScopeData loadEmployeeComputeScopeData(HrmSalaryMonthRecord salaryMonthRecord,
+                                                                  Long employeeId,
+                                                                  int year,
+                                                                  int month,
+                                                                  boolean syncAttendanceData) {
+        List<Map<String, Object>> employeeMapList = queryHasSalaryArchivesEmployeeList(salaryMonthRecord, employeeId);
+        markSalaryRecordAsCreated(salaryMonthRecord, employeeMapList.size());
+        Map<String, Map<Integer, String>> attendanceDataMap = resolveAttendanceData(employeeMapList);
+        Map<Long, Boolean> hasAttendanceGroupMap = loadHasAttendanceGroupMap(employeeMapList);
+        AttendanceSyncBatchData attendanceSyncBatchData = prepareAttendanceDataForCompute(syncAttendanceData, year, month,
+                employeeMapList, attendanceDataMap, hasAttendanceGroupMap);
+        return new EmployeeComputeScopeData(employeeMapList, attendanceDataMap, hasAttendanceGroupMap, attendanceSyncBatchData);
+    }
+
+    private HistoryComputeData loadHistoryComputeData(List<Map<String, Object>> employeeMapList,
+                                                      int year,
+                                                      int month,
+                                                      Boolean isSyncInsuranceData,
+                                                      HrmSalaryConfig salaryConfig) {
+        Map<Long, Map<Integer, String>> lastMonthTaxDataMap = loadLastMonthTaxDataMap(employeeMapList, year, month);
+        Map<Long, BigDecimal> lastYearAccumulatedIncomeMap = loadLastYearAccumulatedIncomeMap(employeeMapList, year);
+        Map<Long, HrmInsuranceMonthEmpRecord> socialSecurityEmpRecordMap = loadSocialSecurityEmpRecordMap(
+                employeeMapList, year, month, isSyncInsuranceData, salaryConfig);
+        Map<Long, HrmAdditional> additionalDeductionMap = loadAdditionalDeductionMap(employeeMapList, year, month);
+        Map<Long, List<HrmSalaryArchivesOption>> midMonthArchivesOptionMap = loadMidMonthArchivesOptionMap(employeeMapList);
+        return new HistoryComputeData(lastMonthTaxDataMap, lastYearAccumulatedIncomeMap, socialSecurityEmpRecordMap,
+                additionalDeductionMap, midMonthArchivesOptionMap);
+    }
+
+    private HrmSalaryMonthRecord getSalaryMonthRecordOrThrow(Long sRecordId) {
         HrmSalaryMonthRecord salaryMonthRecord = getById(sRecordId);
         if (salaryMonthRecord == null) {
             throw new HrmException(6001, "薪资月记录不存在: " + sRecordId);
         }
+        return salaryMonthRecord;
+    }
+
+    private HrmSalaryConfig getSalaryConfigOrThrow() {
         HrmSalaryConfig salaryConfig = hrmSalaryConfigService.getOne(Wrappers.emptyWrapper());
         if (salaryConfig == null) {
             throw new HrmException(HrmCodeEnum.NO_INITIAL_CONFIGURATION.getCode(), "薪资配置不存在");
         }
+        return salaryConfig;
+    }
 
-        int year = salaryMonthRecord.getYear();
-        int month = salaryMonthRecord.getMonth();
-        updateAddition(employeeId, year, month);
-        validateInsuranceData(isSyncInsuranceData, salaryConfig, year, month);
-
-        List<Map<String, Object>> mapList = queryHasSalaryArchivesEmployeeList(salaryMonthRecord, employeeId);
-        salaryMonthRecord.setNum(mapList.size());
+    private void markSalaryRecordAsCreated(HrmSalaryMonthRecord salaryMonthRecord, int employeeCount) {
+        salaryMonthRecord.setNum(employeeCount);
         salaryMonthRecord.setCheckStatus(SalaryRecordStatus.CREATED.getValue());
+    }
 
-        Map<String, Map<Integer, String>> attendanceDataMap = resolveAttendanceData(mapList);
-        Map<Long, Boolean> hasAttendanceGroupMap = loadHasAttendanceGroupMap(mapList);
-        AttendanceSyncBatchData batchData = null;
-        if (Boolean.TRUE.equals(isSyncAttendanceData)) {
-            attendanceDataMap.clear();
-            batchData = loadAttendanceSyncBatchData(year, month, mapList);
-            if (batchData != null) {
-                for (Map<String, Object> map : mapList) {
-                    Long currentEmployeeId = Convert.toLong(map.get("employeeId"));
-                    boolean hasAttendanceGroup = currentEmployeeId != null && Boolean.TRUE.equals(hasAttendanceGroupMap.get(currentEmployeeId));
-                    fillAttendanceDataForEmployee(map, batchData, attendanceDataMap, year, month, hasAttendanceGroup);
-                }
+    private Map<Long, HrmProduceAttendance> resolveProduceAttendanceMap(AttendanceSyncBatchData attendanceSyncBatchData,
+                                                                        int year,
+                                                                        int month) {
+        if (attendanceSyncBatchData != null) {
+            return attendanceSyncBatchData.overTimePayEmpMap;
+        }
+        return loadProduceAttendanceMap(year, month);
+    }
+
+    private Map<Integer, Double> resolveNormalDaysByDeptType(AttendanceSyncBatchData attendanceSyncBatchData,
+                                                              int year,
+                                                              int month) {
+        if (attendanceSyncBatchData != null) {
+            return attendanceSyncBatchData.normalDaysByDeptType;
+        }
+        return loadNormalDaysByDeptType(year, month);
+    }
+
+    private SalaryComputeContext buildSalaryComputeContext(int year,
+                                                           int month,
+                                                           boolean syncInsuranceData,
+                                                           boolean syncAttendanceData,
+                                                           HrmSalaryConfig salaryConfig,
+                                                           SalaryComputeBatchData batchData) {
+        return SalaryComputeContext.builder()
+                .year(year).month(month)
+                .isSyncInsuranceData(syncInsuranceData)
+                .isSyncAttendanceData(syncAttendanceData)
+                .salaryConfig(salaryConfig)
+                .attendanceDataMap(batchData.attendanceDataMap)
+                .noFixedSalaryOptionList(batchData.salaryOptionBatchData.noFixedSalaryOptionList)
+                .produceAttendanceMap(batchData.produceAttendanceMap)
+                .normalDaysByDeptType(batchData.normalDaysByDeptType)
+                .optionParentCodeMap(batchData.salaryOptionBatchData.optionParentCodeMap)
+                .salaryOptionConfigMap(batchData.salaryOptionBatchData.salaryOptionConfigMap)
+                .lastMonthTaxDataMap(batchData.lastMonthTaxDataMap)
+                .lastYearAccumulatedIncomeMap(batchData.lastYearAccumulatedIncomeMap)
+                .socialSecurityEmpRecordMap(batchData.socialSecurityEmpRecordMap)
+                .additionalDeductionMap(batchData.additionalDeductionMap)
+                .midMonthArchivesOptionMap(batchData.midMonthArchivesOptionMap)
+                .hasAttendanceGroupMap(batchData.hasAttendanceGroupMap)
+                .build();
+    }
+
+    private List<EmployeeSalaryResult> computeEmployeeSalaryResults(List<Map<String, Object>> employeeMapList,
+                                                                    Long sRecordId,
+                                                                    HrmSalaryMonthRecord salaryMonthRecord,
+                                                                    SalaryComputeContext ctx,
+                                                                    Map<Long, Boolean> hasAttendanceGroupMap,
+                                                                    Set<String> midMonthPromotionReviewSet) {
+        List<EmployeeSalaryResult> results = new ArrayList<>(employeeMapList.size());
+        for (Map<String, Object> map : employeeMapList) {
+            EmployeeSalaryResult result = computeSingleEmployeeSalaryResult(
+                    map, sRecordId, salaryMonthRecord, ctx, hasAttendanceGroupMap, midMonthPromotionReviewSet);
+            if (result != null) {
+                results.add(result);
             }
         }
+        return results;
+    }
 
-        List<HrmSalaryOption> salaryOptionList = hrmSalaryOptionService.lambdaQuery().ne(HrmSalaryOption::getParentCode, 0).list();
+    private EmployeeSalaryResult computeSingleEmployeeSalaryResult(Map<String, Object> employeeMap,
+                                                                   Long sRecordId,
+                                                                   HrmSalaryMonthRecord salaryMonthRecord,
+                                                                   SalaryComputeContext ctx,
+                                                                   Map<Long, Boolean> hasAttendanceGroupMap,
+                                                                   Set<String> midMonthPromotionReviewSet) {
+        Long currentEmployeeId = Convert.toLong(employeeMap.get("employeeId"));
+        boolean hasAttendanceGroup = isEmployeeInAttendanceGroup(currentEmployeeId, hasAttendanceGroupMap);
+        return computeEmployeeSalary(employeeMap, sRecordId, salaryMonthRecord, ctx,
+                hasAttendanceGroup, midMonthPromotionReviewSet);
+    }
+
+    private void finishSalaryCompute(int year,
+                                     int month,
+                                     Set<String> midMonthPromotionReviewSet,
+                                     HrmSalaryMonthRecord salaryMonthRecord) {
+        logMidMonthPromotionReviewWarning(year, month, midMonthPromotionReviewSet);
+        updateSalaryMonthRecordAfterCompute(salaryMonthRecord);
+    }
+
+    private void logMidMonthPromotionReviewWarning(int year, int month, Set<String> midMonthPromotionReviewSet) {
+        if (CollUtil.isEmpty(midMonthPromotionReviewSet)) {
+            return;
+        }
+        logger.warn("计薪月{}-{}发现{}名半路转正员工缺少分段考勤数据，请人工复核：{}",
+                year, month, midMonthPromotionReviewSet.size(), String.join(" | ", midMonthPromotionReviewSet));
+    }
+
+    private void updateSalaryMonthRecordAfterCompute(HrmSalaryMonthRecord salaryMonthRecord) {
+        Map<String, Object> countMap = salaryMonthRecordMapper.queryMonthSalaryCount(salaryMonthRecord.getSRecordId());
+        BeanUtil.fillBeanWithMap(countMap, salaryMonthRecord, true);
+        salaryMonthRecord.setCheckStatus(SalaryRecordStatus.COMPUTE.getValue());
+        updateById(salaryMonthRecord);
+    }
+
+    private AttendanceSyncBatchData prepareAttendanceDataForCompute(boolean syncAttendanceData,
+                                                                    int year,
+                                                                    int month,
+                                                                    List<Map<String, Object>> employeeMapList,
+                                                                    Map<String, Map<Integer, String>> attendanceDataMap,
+                                                                    Map<Long, Boolean> hasAttendanceGroupMap) {
+        if (!syncAttendanceData) {
+            return null;
+        }
+        attendanceDataMap.clear();
+        AttendanceSyncBatchData batchData = loadAttendanceSyncBatchData(year, month, employeeMapList);
+        if (batchData == null) {
+            return null;
+        }
+        for (Map<String, Object> map : employeeMapList) {
+            Long currentEmployeeId = Convert.toLong(map.get("employeeId"));
+            boolean hasAttendanceGroup = isEmployeeInAttendanceGroup(currentEmployeeId, hasAttendanceGroupMap);
+            fillAttendanceDataForEmployee(map, batchData, attendanceDataMap, year, month, hasAttendanceGroup);
+        }
+        return batchData;
+    }
+
+    private SalaryOptionBatchData loadSalaryOptionBatchData() {
+        List<HrmSalaryOption> salaryOptionList = hrmSalaryOptionService.lambdaQuery()
+                .ne(HrmSalaryOption::getParentCode, 0)
+                .list();
         Map<Integer, Integer> optionParentCodeMap = salaryOptionList.stream()
                 .filter(Objects::nonNull)
                 .filter(option -> option.getCode() != null && option.getParentCode() != null)
                 .collect(Collectors.toMap(HrmSalaryOption::getCode, HrmSalaryOption::getParentCode, (v1, v2) -> v1));
         Map<Integer, HrmSalaryOption> salaryOptionConfigMap = salaryOptionList.stream()
-                .filter(o -> o != null && o.getCode() != null)
+                .filter(Objects::nonNull)
+                .filter(option -> option.getCode() != null)
                 .collect(Collectors.toMap(HrmSalaryOption::getCode, Function.identity(), (a, b) -> a));
-        Map<Integer, List<HrmSalaryOption>> salaryOptionListMap = salaryOptionList.stream().collect(Collectors.groupingBy(HrmSalaryOption::getIsFixed));
-        List<HrmSalaryOption> noFixedSalaryOptionList = filterNoFixedSalaryOptions(salaryOptionListMap.getOrDefault(0, Collections.emptyList()));
-        Map<Long, HrmProduceAttendance> produceAttendanceMap = batchData != null
-                ? batchData.overTimePayEmpMap
-                : loadProduceAttendanceMap(year, month);
-        Map<Integer, Double> normalDaysByDeptType = batchData != null
-                ? batchData.normalDaysByDeptType
-                : loadNormalDaysByDeptType(year, month);
-        Map<Long, Map<Integer, String>> lastMonthTaxDataMap = loadLastMonthTaxDataMap(mapList, year, month);
-        Map<Long, BigDecimal> lastYearAccumulatedIncomeMap = loadLastYearAccumulatedIncomeMap(mapList, year);
-        Map<Long, HrmInsuranceMonthEmpRecord> socialSecurityEmpRecordMap =
-                loadSocialSecurityEmpRecordMap(mapList, year, month, isSyncInsuranceData, salaryConfig);
-        Map<Long, HrmAdditional> additionalDeductionMap = loadAdditionalDeductionMap(mapList, year, month);
-        Map<Long, List<HrmSalaryArchivesOption>> midMonthArchivesOptionMap = loadMidMonthArchivesOptionMap(mapList);
-        Set<String> midMonthPromotionReviewSet = new LinkedHashSet<>();
+        List<HrmSalaryOption> noFixedSalaryOptionList = filterNoFixedSalaryOptions(
+                salaryOptionList.stream()
+                        .filter(Objects::nonNull)
+                        .filter(option -> Objects.equals(option.getIsFixed(), ZERO))
+                        .collect(Collectors.toList()));
+        return new SalaryOptionBatchData(optionParentCodeMap, salaryOptionConfigMap, noFixedSalaryOptionList);
+    }
 
-        SalaryComputeContext ctx = SalaryComputeContext.builder()
-                .year(year).month(month)
-                .isSyncInsuranceData(Boolean.TRUE.equals(isSyncInsuranceData))
-                .isSyncAttendanceData(Boolean.TRUE.equals(isSyncAttendanceData))
-                .salaryConfig(salaryConfig)
-                .attendanceDataMap(attendanceDataMap)
-                .noFixedSalaryOptionList(noFixedSalaryOptionList)
-                .produceAttendanceMap(produceAttendanceMap)
-                .normalDaysByDeptType(normalDaysByDeptType)
-                .optionParentCodeMap(optionParentCodeMap)
-                .salaryOptionConfigMap(salaryOptionConfigMap)
-                .lastMonthTaxDataMap(lastMonthTaxDataMap)
-                .lastYearAccumulatedIncomeMap(lastYearAccumulatedIncomeMap)
-                .socialSecurityEmpRecordMap(socialSecurityEmpRecordMap)
-                .additionalDeductionMap(additionalDeductionMap)
-                .midMonthArchivesOptionMap(midMonthArchivesOptionMap)
-                .hasAttendanceGroupMap(hasAttendanceGroupMap)
-                .build();
-
-        List<EmployeeSalaryResult> results = new ArrayList<>(mapList.size());
-        for (Map<String, Object> map : mapList) {
-            Long currentEmployeeId = Convert.toLong(map.get("employeeId"));
-            boolean hasAttendanceGroup = currentEmployeeId != null && Boolean.TRUE.equals(hasAttendanceGroupMap.get(currentEmployeeId));
-            EmployeeSalaryResult result = computeEmployeeSalary(map, sRecordId, salaryMonthRecord, ctx,
-                    hasAttendanceGroup, midMonthPromotionReviewSet);
-            if (result != null) {
-                results.add(result);
-            }
-        }
-
-        batchSaveResults(results);
-
-        if (CollUtil.isNotEmpty(midMonthPromotionReviewSet)) {
-            logger.warn("计薪月{}-{}发现{}名半路转正员工缺少分段考勤数据，请人工复核：{}",
-                    year, month, midMonthPromotionReviewSet.size(), String.join(" | ", midMonthPromotionReviewSet));
-        }
-
-        Map<String, Object> countMap = salaryMonthRecordMapper.queryMonthSalaryCount(salaryMonthRecord.getSRecordId());
-        BeanUtil.fillBeanWithMap(countMap, salaryMonthRecord, true);
-        salaryMonthRecord.setCheckStatus(SalaryRecordStatus.COMPUTE.getValue());
-        updateById(salaryMonthRecord);
+    private boolean isEmployeeInAttendanceGroup(Long employeeId, Map<Long, Boolean> hasAttendanceGroupMap) {
+        return employeeId != null && Boolean.TRUE.equals(hasAttendanceGroupMap.get(employeeId));
     }
 
     private <T> T withSalaryRecordLock(Long sRecordId, java.util.concurrent.Callable<T> callable) {
@@ -1202,6 +1487,7 @@ public class SalaryMonthRecordServiceNew extends BaseServiceImpl<HrmSalaryMonthR
         int deptType = getDeptTypeForEmployee(map);
         BigDecimal normalDays = BigDecimal.valueOf(ctx.getNormalDaysByDeptType().getOrDefault(deptType, DEFAULT_NORMAL_DAYS));
         HrmProduceAttendance midMonthAttendance = ctx.getProduceAttendanceMap().get(employeeId);
+        BigDecimal welfareTaxableIncome = extractWelfareTaxableIncome(midMonthAttendance);
         collectMidMonthPromotionAttendanceReview(map, year, month, becomeDate, midMonthAttendance, midMonthPromotionReviewSet);
         boolean isJoinAttendance = hasAttendanceGroup
                 || ENTRY_STATUS_QUIT.equals(String.valueOf(map.get("entryStatus") != null ? map.get("entryStatus") : ""));
@@ -1227,7 +1513,7 @@ public class SalaryMonthRecordServiceNew extends BaseServiceImpl<HrmSalaryMonthR
                 ? ctx.getLastMonthTaxDataMap().get(employeeId) : null;
         String isDisabled = map.get("isDisabled") != null ? String.valueOf(map.get("isDisabled")) : IS_DISABLED_NO;
         List<HrmSalaryMonthOptionValue> finalOptions = computeSalaryFromMemory(
-                ro.record, options, lastMonthTaxData, employeeVO, isDisabled, ctx);
+                ro.record, options, lastMonthTaxData, employeeVO, isDisabled, welfareTaxableIncome, ctx);
 
         BigDecimal taxSpecialAdditionalDeduction = parseAmount(baseOptionMap.get(260101))
                 .add(parseAmount(baseOptionMap.get(260102)))
@@ -1242,7 +1528,8 @@ public class SalaryMonthRecordServiceNew extends BaseServiceImpl<HrmSalaryMonthR
         boolean includeBonusInCumulativeIncome = loginUserInfo != null && !"0002".equals(loginUserInfo.getCompanyId());
         BigDecimal cumulativeIncomeForRemark = parseAmount(lastMonthTaxData != null ? lastMonthTaxData.get(250101) : "0")
                 .add(shouldPayForRemark)
-                .add(includeBonusInCumulativeIncome ? bonusSalaryForRemark : BigDecimal.ZERO);
+                .add(includeBonusInCumulativeIncome ? bonusSalaryForRemark : BigDecimal.ZERO)
+                .add(welfareTaxableIncome);
         boolean skipTaxForRemark = shouldSkipTaxForRemark(map, employeeId, year, cumulativeIncomeForRemark,
                 ctx.getLastYearAccumulatedIncomeMap());
 
@@ -1251,11 +1538,12 @@ public class SalaryMonthRecordServiceNew extends BaseServiceImpl<HrmSalaryMonthR
             processMidMonthPromotionSalary(employeeId, year, month, finalOptions, deptType,
                     becomeDate, midMonthAttendance, normalDays, lastMonthTaxData,
                     baseOptionMap, isDisabled, skipTaxForRemark, taxSpecialAdditionalDeduction,
+                    welfareTaxableIncome,
                     ctx.getMidMonthArchivesOptionMap());
             // 第二次移除：processMidMonthPromotionSalary 可能重新写入全勤奖/工会费到 finalOptions，需再次清理
             removeFullAttendanceAndUnionFeeForMidMonthPromotion(year, month, finalOptions, becomeDate);
             applyMidMonthPromotionSummaryConsistency(map, ro.record, finalOptions, baseOptionMap, lastMonthTaxData,
-                    isDisabled, year, month, becomeDate, ctx.getOptionParentCodeMap(),
+                    isDisabled, year, month, becomeDate, welfareTaxableIncome, ctx.getOptionParentCodeMap(),
                     ctx.getLastYearAccumulatedIncomeMap());
         }
 
@@ -1300,6 +1588,7 @@ public class SalaryMonthRecordServiceNew extends BaseServiceImpl<HrmSalaryMonthR
             Map<Integer, String> cumulativeTaxOfLastMonthData,
             HrmEmployeeVO hrmEmployeeVO,
             String isDisabled,
+            BigDecimal welfareTaxableIncome,
             SalaryComputeContext ctx) {
         List<ComputeSalaryDto> dtoList = convertToComputeSalaryDtoList(optionValueList, ctx.getSalaryOptionConfigMap());
         LoginUserInfo info = CompanyContext.get();
@@ -1314,7 +1603,8 @@ public class SalaryMonthRecordServiceNew extends BaseServiceImpl<HrmSalaryMonthR
 
         return salaryComputeService.computeSalary(
                 salaryBaseTotal, salaryMonthEmpRecord, hrmSalaryTaxRule,
-                cumulativeTaxOfLastMonthData, hrmEmployeeVO, isDisabled);
+                cumulativeTaxOfLastMonthData, hrmEmployeeVO, isDisabled,
+                welfareTaxableIncome == null ? BigDecimal.ZERO : welfareTaxableIncome);
     }
 
     /**
@@ -1516,6 +1806,7 @@ public class SalaryMonthRecordServiceNew extends BaseServiceImpl<HrmSalaryMonthR
                                                           int year,
                                                           int month,
                                                           LocalDate becomeDate,
+                                                          BigDecimal welfareTaxableIncome,
                                                           Map<Integer, Integer> optionParentCodeMap,
                                                           Map<Long, BigDecimal> lastYearAccumulatedIncomeMap) {
         if (!isMidMonthPromotion(becomeDate, year, month) || CollUtil.isEmpty(finalOptions)) {
@@ -1545,7 +1836,8 @@ public class SalaryMonthRecordServiceNew extends BaseServiceImpl<HrmSalaryMonthR
         boolean includeBonusInCumulativeIncome = info != null && !"0002".equals(info.getCompanyId());
         BigDecimal cumulativeIncomeForRemark = parseAmount(lastMonthTaxData != null ? lastMonthTaxData.get(250101) : "0")
                 .add(shouldPaySalary)
-                .add(includeBonusInCumulativeIncome ? bonusSalary : BigDecimal.ZERO);
+                .add(includeBonusInCumulativeIncome ? bonusSalary : BigDecimal.ZERO)
+                .add(welfareTaxableIncome == null ? BigDecimal.ZERO : welfareTaxableIncome);
 
         boolean skipTaxForRemark = shouldSkipTaxForRemark(employeeMap, salaryMonthEmpRecord.getEmployeeId(),
                 salaryMonthEmpRecord.getYear(), cumulativeIncomeForRemark, lastYearAccumulatedIncomeMap);
@@ -1564,7 +1856,8 @@ public class SalaryMonthRecordServiceNew extends BaseServiceImpl<HrmSalaryMonthR
                 IS_DISABLED_NO.equals(isDisabled),
                 skipTaxForRemark,
                 lastMonthTaxData,
-                month
+                month,
+                welfareTaxableIncome
         );
 
         for (Integer code : Arrays.asList(220101, 230101, 240101, 160102, 1001,
@@ -1600,13 +1893,10 @@ public class SalaryMonthRecordServiceNew extends BaseServiceImpl<HrmSalaryMonthR
         if (employeeId == null) {
             return false;
         }
+        // isRemark 已在 queryHasSalaryArchivesEmployeeList 中批量预加载到 employeeMap，无需逐条查询DB
         Integer isRemark = null;
         if (employeeMap != null && employeeMap.get("isRemark") != null) {
             isRemark = Convert.toInt(employeeMap.get("isRemark"), null);
-        }
-        if (isRemark == null) {
-            HrmEmployee employee = employeeService.getById(employeeId);
-            isRemark = employee != null ? employee.getIsRemark() : null;
         }
         if (isRemark == null || isRemark != 2) {
             return false;
@@ -1794,13 +2084,8 @@ public class SalaryMonthRecordServiceNew extends BaseServiceImpl<HrmSalaryMonthR
         highTemperature = hrmProduceAttendance.getHighTemperature();
         lowTemperature = hrmProduceAttendance.getLowTemperature();
     }
-    //考勤缺勤抵扣数据
-    QueryHolidayDeductionBO queryHolidayDeductionBO = new QueryHolidayDeductionBO();
-    queryHolidayDeductionBO.setMonth(month);
-    queryHolidayDeductionBO.setYear(year);
-    queryHolidayDeductionBO.setEmployeeId(employeeId);
-    //查询是否添加了抵扣记录 可以抵扣本月的迟到，请假等
-    List<QueryHolidayDeductionVO> deductionVOList = holidayDeductionService.queryHolidayDeduction(queryHolidayDeductionBO);
+    //考勤缺勤抵扣数据（从批量预加载数据获取，避免循环内逐条查询）
+    List<QueryHolidayDeductionVO> deductionVOList = batchData.holidayDeductionMap.getOrDefault(employeeId, Collections.emptyList());
     //判断是否为全勤（使用批量考勤数据）
     if (IS_DISABLED_NO.equals(String.valueOf(map.get("isDisabled")))) {
         isFullAttendance = checkIsFullAttendance(employeeSummaryDayList, empAttendanceSummary, deductionVOList, expandProduction);
@@ -1852,8 +2137,8 @@ public class SalaryMonthRecordServiceNew extends BaseServiceImpl<HrmSalaryMonthR
     {
         empSalary = new BigDecimal(Double.parseDouble(salaryArchivesOption.getTotal()));
     }
-    //员工当月排班时长
-    HashMap<String,Double> workTimsMap = getWorkHours(employeeId,isProduce,batchData.dates);
+    //员工当月排班时长（从批量预加载数据获取，避免循环内逐条查询）
+    HashMap<String,Double> workTimsMap = getWorkHoursFromBatch(employeeId, isProduce, batchData.dates, batchData.workHoursMap);
 
     //病假天数
     leaveOfsickDays = sickDeductDays(isProduce, employeeSummaryDayList, workTimsMap, "2", deductionVOList);
@@ -2075,13 +2360,15 @@ public class SalaryMonthRecordServiceNew extends BaseServiceImpl<HrmSalaryMonthR
             empAttendanceMap.put(40102, fullMoney==null?"0":String.valueOf(fullMoney));//全勤奖
         }
     }
-    HrmEmployeeVO hrmEmployeeVO = hrmEmployeeMapper.getEmployeeById(employeeId);
-    //市场入职默认有全勤
-    if (hrmEmployeeVO.getDeptId() != null && hrmEmployeeVO.getDeptId().toString().equals("1481534121629855751")) {
-        com.tianye.hrsystem.model.HrmDept hrmDept = hrmDeptRepository.getAllByDeptId(hrmEmployeeVO.getDeptId());
-        if (hrmDept.getName().indexOf("总监") > -1) {
+    //市场入职默认有全勤（从 map 获取 deptId，从批量预加载的部门数据获取部门名称，避免循环内逐条查询）
+    Long empDeptId = Convert.toLong(map.get("deptId"));
+    if (empDeptId != null && empDeptId.toString().equals("1481534121629855751")) {
+        String empDeptName = batchData.deptNameMap.get(empDeptId);
+        if (empDeptName != null && empDeptName.contains("总监")) {
             empAttendanceMap.put(40102, "500");//全勤奖
-        }else empAttendanceMap.put(40102, "100");
+        } else {
+            empAttendanceMap.put(40102, "100");
+        }
     }
     empAttendanceMap.put(1, attendanceEmpRecordMap.get("normalDays").toString());//应出勤天数
     empAttendanceMap.put(2, attendanceEmpRecordMap.get("actualWorkDay").toString());//实际出勤天数
@@ -3462,6 +3749,26 @@ public class SalaryMonthRecordServiceNew extends BaseServiceImpl<HrmSalaryMonthR
     }
 
     /**
+     * 从批量预加载的排班数据中获取员工当月排班时长，避免循环内逐条查询DB
+     */
+    private HashMap<String,Double> getWorkHoursFromBatch(Long employeeId, boolean isProduce, List<String> dates,
+                                                          Map<Long, Map<String, Double>> batchWorkHoursMap) {
+        HashMap<String,Double> workTimesMap = new HashMap<>();
+        if (!isProduce) {
+            for (String date : dates) {
+                workTimesMap.put(date, 8d);
+            }
+            return workTimesMap;
+        }
+        Map<String, Double> empShiftMap = batchWorkHoursMap.getOrDefault(employeeId, Collections.emptyMap());
+        for (String date : dates) {
+            Double hours = empShiftMap.get(date);
+            workTimesMap.put(date, hours != null ? hours : 0d);
+        }
+        return workTimesMap;
+    }
+
+    /**
      * 员工病假,事假天数计算
      * @param isProduce
      * @param summaryDayVoList
@@ -4494,13 +4801,8 @@ public class SalaryMonthRecordServiceNew extends BaseServiceImpl<HrmSalaryMonthR
         additionalDeductionData.put(260105, safeAmount(additionalVO.getContinuingEducation()).toString());
         additionalDeductionData.put(260106, safeAmount(additionalVO.getRaisingGirls()).toString());
 
-        //删除原有的专项附加扣除记录
-        salaryMonthOptionValueService.lambdaUpdate()
-                .in(HrmSalaryMonthOptionValue::getCode, Arrays.asList(260101, 260102, 260103, 260104, 260105, 260106))
-                .eq(HrmSalaryMonthOptionValue::getSEmpRecordId, salaryMonthEmpRecord.getSEmpRecordId())
-                .remove();
-
         //添加新的专项附加扣除项
+        // 注：原有记录已在 getOrCreateRecordAndApplyAttendance 中按 sEmpRecordId 全量删除，无需再按 code 逐条删除
         additionalDeductionData.forEach((code, value) -> {
             HrmSalaryMonthOptionValue salaryMonthOptionValue = new HrmSalaryMonthOptionValue();
             salaryMonthOptionValue.setSEmpRecordId(salaryMonthEmpRecord.getSEmpRecordId());
@@ -4615,6 +4917,7 @@ public class SalaryMonthRecordServiceNew extends BaseServiceImpl<HrmSalaryMonthR
                                                 Map<Integer, String> baseOptionMap,
                                                 String isDisabled, boolean skipTaxForRemark,
                                                 BigDecimal taxSpecialAdditionalDeduction,
+                                                BigDecimal welfareTaxableIncome,
                                                 Map<Long, List<HrmSalaryArchivesOption>> midMonthArchivesOptionMap) {
         if (!isMidMonthPromotion(becomeDate, year, month) || CollUtil.isEmpty(optionValueList)) {
             return;
@@ -4645,7 +4948,8 @@ public class SalaryMonthRecordServiceNew extends BaseServiceImpl<HrmSalaryMonthR
         }
 
         recalculateMidMonthPromotionTaxAndPay(optionValueList, salaryMap, lastMonthTaxData,
-                year, month, isDisabled, skipTaxForRemark, taxSpecialAdditionalDeduction);
+                year, month, isDisabled, skipTaxForRemark, taxSpecialAdditionalDeduction,
+                welfareTaxableIncome);
     }
     
     /**
