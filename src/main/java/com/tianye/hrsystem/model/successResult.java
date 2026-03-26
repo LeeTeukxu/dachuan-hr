@@ -63,6 +63,15 @@ public class successResult {
     public void raiseException(Exception ax){
         this.setSuccess(false);
         this.code = 500;
-        this.setMessage(ax.getMessage());
+        if (ax != null) {
+            ax.printStackTrace();
+            String msg = ax.getMessage();
+            if (msg == null || msg.trim().isEmpty()) {
+                msg = ax.toString();
+            }
+            this.setMessage(msg);
+        } else {
+            this.setMessage("系统异常");
+        }
     }
 }

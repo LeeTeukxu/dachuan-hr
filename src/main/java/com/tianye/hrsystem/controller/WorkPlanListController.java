@@ -109,10 +109,32 @@ public class WorkPlanListController {
 
     @RequestMapping("/loadIsLast")
     @ResponseBody
-    public PageObject<tbplanlist> loadIsLast( Integer pageSize, Integer pageNum, String sortField, String sortOrder) {
+    public PageObject<tbplanlist> loadIsLast(String SelectDate, String WorkDate, String Begin, Boolean LoadLast,
+                                             Boolean isLast, Integer pageSize, Integer pageNum,
+                                             String sortField, String sortOrder) {
         PageObject<tbplanlist> datas = null;
         try {
-            datas = planService.getMaxDate(pageSize, pageNum, sortField, sortOrder);
+            String selectedDateText = SelectDate;
+            if (StringUtils.isEmpty(selectedDateText)) {
+                selectedDateText = WorkDate;
+            }
+            if (StringUtils.isEmpty(selectedDateText)) {
+                selectedDateText = Begin;
+            }
+
+            Boolean loadLast = LoadLast != null ? LoadLast : isLast;
+            if (loadLast == null) {
+                loadLast = true;
+            }
+
+            if (StringUtils.isEmpty(selectedDateText)) {
+                datas = planService.getMaxDate(pageSize, pageNum, sortField, sortOrder);
+            } else {
+                SimpleDateFormat format = new SimpleDateFormat("yyyy-MM-dd");
+                format.setLenient(false);
+                Date selectedDate = format.parse(selectedDateText);
+                datas = planService.loadBySelectedDate(selectedDate, loadLast, pageSize, pageNum, sortField, sortOrder);
+            }
             datas.setLastPage(true);
 
         }catch (Exception ax) {

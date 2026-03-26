@@ -3,6 +3,10 @@
 <mapper namespace="com.tianye.hrsystem.mapper.WorkPlanMapper">
 
     <select id="getMaxDate" resultType="com.tianye.hrsystem.model.tbplanlist">
-        SELECT ProductName, LinkName, WorkDate, GroupID, ClassID, UserID, CreateTime FROM tbplanlist WHERE WorkDate = (SELECT MAX(WorkDate) FROM tbplanlist) ORDER by ${sortField} ${sortOrder} LIMIT ${pageNum},${pageSize}
+        SELECT ID, ProductName, LinkName, WorkDate, GroupID, ClassID, UserID, CreateTime
+        FROM tbplanlist
+        WHERE WorkDate = (SELECT MAX(WorkDate) FROM tbplanlist)
+        ORDER by ${sortField} ${sortOrder}
+        LIMIT ${pageNum},${pageSize}
     </select>
 </mapper>

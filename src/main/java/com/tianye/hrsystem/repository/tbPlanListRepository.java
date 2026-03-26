@@ -19,4 +19,5 @@ public interface tbPlanListRepository  extends JpaRepository<tbplanlist,Integer>
     Page<tbplanlist> findAllByGroupIdAndWorkDateBetween(String groupId, Date begin,Date end,Pageable pageable);
     Page<tbplanlist> findAllByWorkDateBetween(Date begin,Date end,Pageable pageable);
     List<tbplanlist> findAllByGroupIdAndWorkDateBetweenOrderByProductNameAsc(String groupId, Date begin, Date end);
+    tbplanlist findTopByWorkDateLessThanOrderByWorkDateDesc(Date workDate);
 }
