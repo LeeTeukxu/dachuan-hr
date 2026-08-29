@@ -16,6 +16,9 @@ import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.Primary;
 import org.springframework.core.io.support.PathMatchingResourcePatternResolver;
 
+import org.springframework.core.env.Environment;
+import org.springframework.beans.factory.annotation.Autowired;
+
 import javax.sql.DataSource;
 import java.util.HashMap;
 import java.util.List;
@@ -23,6 +26,9 @@ import java.util.Map;
 
 @Configuration
 public class MyBatisConfig {
+
+    @Autowired
+    private Environment env;
 
 //    @Bean
 //    public SqlSessionFactoryBean getSqlSessionFactoryBean() throws Exception {
@@ -53,6 +59,14 @@ public class MyBatisConfig {
 
     @Bean
     public  DynamicDataSource dynamicDataSource(){
+        // SaaS 改造：确保 DefaultDataSourceProperties 在早期初始化时就有值，
+        // 避免 Bean 顺序导致的空值回退到旧文件读取逻辑
+        if (!DefaultDataSourceProperties.isAvailable()) {
+            DefaultDataSourceProperties.initialize(
+                    env.getProperty("spring.datasource.url", ""),
+                    env.getProperty("spring.datasource.username", ""),
+                    env.getProperty("spring.datasource.password", ""));
+        }
         ConnectionParsor connectionParsor=new ConnectionParsor();
         Map<Object,Object> dataSources=new HashMap<>();
         DynamicDataSource d=new DynamicDataSource();
@@ -60,29 +74,10 @@ public class MyBatisConfig {
         dataSources.put("Default", defaultDataSource);
         d.setDefaultTargetDataSource(defaultDataSource);
 
-        //jdbc:mysql://39.100.81.9:3306/hrsystem?useUnicode=true&characterEncoding=gbk&autoReconnect=true&serverTimezone=Asia/Shanghai&useSSL=false&autoReconnectForPools=true
-        try {
-            connectionParsor.setConnection(defaultDataSource.getConnection());
-            List<String> allKeys = connectionParsor.getAllCompanyCodes();
-            for (int i = 0; i < allKeys.size(); i++) {
-                String Key = allKeys.get(i);
-                ConnectionInfo Info = connectionParsor.getByID(Key);
-                DataSourceBuilder dataSourceBuilder = DataSourceBuilder.create();
-                dataSourceBuilder.url("jdbc:mysql://" + Info.getServer() +
-                        ":"+Info.getPort()+"/" +
-                        Info.getDataBase()+"?useUnicode=true&characterEncoding=gbk&autoReconnect=true&serverTimezone=Asia/Shanghai&useSSL=false&autoReconnectForPools=true");
-
-                dataSourceBuilder.username(Info.getUsername());
-                dataSourceBuilder.password(Info.getPassword());
-                dataSourceBuilder.driverClassName("com.mysql.cj.jdbc.Driver");
-                HikariDataSource tinySource = (HikariDataSource) dataSourceBuilder.build();
-                tinySource.setMaximumPoolSize(20);
-                dataSources.put(Key, tinySource);
-            }
-        }catch (Exception ax)
-        {
-            System.out.println(ax.getMessage());
-        }
+        // 注意：租户数据源不再在此处按 tbcompanylist.url 预建（旧逻辑会把“过期凭据/错误主机”
+        // 直接写死进 DynamicDataSource.OX，导致请求时直接命中陈旧池、绕过了
+        // CompanyDataSourceProvider 的“主库同源回退”逻辑）。租户数据源统一交由
+        // CompanyDataSourceProvider 懒加载 + 缓存 + 回退，保证连接信息始终以运行期校验为准。
         d.setDataSource(dataSources);
         return d;
     }
