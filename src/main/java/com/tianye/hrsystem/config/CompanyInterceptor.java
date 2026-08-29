@@ -34,6 +34,15 @@ public class CompanyInterceptor extends HandlerInterceptorAdapter {
         CompanyContext.clear();
     }
 
+    /**
+     * 无论 preHandle 返回 true/false 还是抛异常，afterCompletion 都会执行，
+     * 保证请求线程的 CompanyContext(ThreadLocal) 一定被清理，避免 LoginUserInfo 在线程上泄漏。
+     */
+    @Override
+    public void afterCompletion(HttpServletRequest request, HttpServletResponse response, Object handler, Exception ex) {
+        CompanyContext.clear();
+    }
+
     @Override
     public boolean preHandle(HttpServletRequest request, HttpServletResponse response, Object handler) throws Exception {
         String urlPath = request.getRequestURI();

@@ -2,7 +2,10 @@ package com.tianye.hrsystem.common;
 
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.redis.connection.DataType;
+import org.springframework.data.redis.core.Cursor;
+import org.springframework.data.redis.core.RedisCallback;
 import org.springframework.data.redis.core.RedisTemplate;
+import org.springframework.data.redis.core.ScanOptions;
 import org.springframework.data.redis.core.ZSetOperations;
 import org.springframework.stereotype.Service;
 
@@ -500,9 +503,24 @@ public class RedisImpl implements Redis {
     }
 
 
+    /**
+     * 用 SCAN 游标替代 KEYS：KEYS 会一次性把所有匹配 key 加载到 Redis 服务端内存并阻塞服务，
+     * 大键集时既撑爆堆又造成 Redis 卡顿；SCAN 分批游标，内存占用恒定。
+     */
     @Override
     public Set<Object> keys(String pattern) {
-        return redisTemplate.keys(pattern).stream().map(Object::toString).collect(Collectors.toSet());
+        ScanOptions options = ScanOptions.scanOptions().match(pattern).count(500).build();
+        return redisTemplate.execute((RedisCallback<Set<Object>>) connection -> {
+            Set<Object> result = new java.util.HashSet<>();
+            try (Cursor<byte[]> cursor = connection.scan(options)) {
+                while (cursor.hasNext()) {
+                    result.add(new String(cursor.next(), java.nio.charset.StandardCharsets.UTF_8));
+                }
+            } catch (java.io.IOException e) {
+                throw new RuntimeException(e);
+            }
+            return result;
+        });
     }
 
     //zSet操作 有序集合

@@ -200,7 +200,7 @@ public class BaseServiceImpl<M extends BaseMapper<T>, T> extends ServiceImpl<M, 
         int pointer = 0;
         int size = list.size();
         int[] result = new int[size];
-        PreparedStatement pst = conn.prepareStatement(sql);
+        try (PreparedStatement pst = conn.prepareStatement(sql)) {
         for (Map<String, Object> map : list) {
             for (int j = 0; j < columnArray.length; j++) {
                 Object value = map.get(columnArray[j]);
@@ -232,10 +232,6 @@ public class BaseServiceImpl<M extends BaseMapper<T>, T> extends ServiceImpl<M, 
                 result[pointer++] = i;
             }
         }
-        try {
-            pst.close();
-        } catch (SQLException e) {
-            throw new RuntimeException(e);
         }
         return result;
     }

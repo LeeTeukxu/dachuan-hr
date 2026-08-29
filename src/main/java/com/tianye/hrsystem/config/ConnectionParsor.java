@@ -14,7 +14,6 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.sql.Connection;
 import java.sql.ResultSet;
-import java.sql.SQLException;
 import java.sql.Statement;
 import java.util.*;
 
@@ -26,6 +25,9 @@ import java.util.*;
  **/
 @Configuration
 public class ConnectionParsor {
+    private static final String MYSQL_JDBC_QUERY =
+            "useUnicode=true&characterEncoding=gbk&autoReconnect=true&serverTimezone=Asia/Shanghai" +
+                    "&useSSL=false&autoReconnectForPools=true&allowPublicKeyRetrieval=true";
     private static Logger logger = LoggerFactory.getLogger(ConnectionParsor.class);
     private Map<String, ConnectionInfo> cacheInfo;
     List<String> allKeys = new ArrayList<>();
@@ -46,7 +48,7 @@ public class ConnectionParsor {
             alls = getAllKeys(Con);
         } catch (Exception e) {
             logger.info("Init is a error occur！");
-            e.printStackTrace();
+            logger.error("ConnectionParsor.java 异常", e);
         }
         if (alls == null) {
             logger.info("alls is null!");
@@ -80,6 +82,10 @@ public class ConnectionParsor {
         }
     }
 
+    public static String buildMysqlJdbcUrl(String server, String port, String database) {
+        return "jdbc:mysql://" + server + ":" + port + "/" + database + "?" + MYSQL_JDBC_QUERY;
+    }
+
     public List<String> getAllCompanyCodes() {
         return allKeys;
     }
@@ -111,19 +117,46 @@ public class ConnectionParsor {
     }
 
     public DataSource getDefaultConnection() {
+        // SaaS 改造修复：优先使用 Spring 属性源注入的连接信息（正确响应 --spring.profiles.active
+        // 与 ${ENV:default} 占位符），仅在 Spring 未初始化时回退到手动读文件的老逻辑
+        if (DefaultDataSourceProperties.isAvailable()) {
+            logger.info("Using DefaultDataSourceProperties for default pool");
+            DataSourceBuilder dataSourceBuilder = DataSourceBuilder.create();
+            dataSourceBuilder.url(DefaultDataSourceProperties.getUrl());
+            dataSourceBuilder.username(DefaultDataSourceProperties.getUsername());
+            dataSourceBuilder.password(DefaultDataSourceProperties.getPassword());
+            dataSourceBuilder.driverClassName("com.mysql.cj.jdbc.Driver");
+            HikariDataSource dd = (HikariDataSource) dataSourceBuilder.build();
+            DataSourcePoolConfigurator.apply(dd, "hikari-default");
+            return dd;
+        }
         Properties p = new Properties();
         InputStream in = null;
         try {
             in = HrsystemApplication.class.getClassLoader().getResourceAsStream("application.properties");
             p.load(in);
-            String configName=p.getProperty("spring.profiles.active");
+            // SaaS 改造修复：优先取命令行/环境变量中的 active profile，文件值仅作兜底
+            // （否则 --spring.profiles.active=local 启动时，此处仍会读到文件里的 dev）
+            // 注意：Spring Boot 将 --spring.profiles.active=local 写入 spring.profiles.active
+            // 系统属性；同时也会设置 ACTIVE_PROFILES 环境变量，需一并检查
+            String configName = System.getProperty("spring.profiles.active");
+            if (StringUtils.isEmpty(configName)) {
+                configName = System.getenv("SPRING_PROFILES_ACTIVE");
+            }
+            if (StringUtils.isEmpty(configName)) {
+                configName = System.getenv("ACTIVE_PROFILES");
+            }
+            if (StringUtils.isEmpty(configName)) {
+                configName = p.getProperty("spring.profiles.active");
+            }
             if(StringUtils.isEmpty(configName)==false){
                 in=HrsystemApplication.class.getClassLoader().getResourceAsStream("application-"+configName+".properties");
                 p.load(in);
             }
-            String url = p.getProperty("spring.datasource.url");
-            String username = p.getProperty("spring.datasource.username");
-            String password = p.getProperty("spring.datasource.password");
+            // SaaS 安全改造 P0-3：手动加载的配置需自行解析 ${ENV:default} 占位符
+            String url = resolvePlaceholders(p.getProperty("spring.datasource.url"));
+            String username = resolvePlaceholders(p.getProperty("spring.datasource.username"));
+            String password = resolvePlaceholders(p.getProperty("spring.datasource.password"));
             DataSourceBuilder dataSourceBuilder = DataSourceBuilder.create();
             dataSourceBuilder.url(url);
             dataSourceBuilder.username(username);
@@ -131,47 +164,64 @@ public class ConnectionParsor {
             dataSourceBuilder.driverClassName("com.mysql.cj.jdbc.Driver");
 
             HikariDataSource dd = (HikariDataSource) dataSourceBuilder.build();
-            dd.setMaximumPoolSize(20);
-            dd.setIdleTimeout(60000);
-            dd.setConnectionTimeout(10000);
-            dd.setValidationTimeout(3000);
-            dd.setConnectionTestQuery("Select 1");
-            try {
-                dd.setLoginTimeout(5);
-            } catch (SQLException e) {
-                e.printStackTrace();
-            }
-            dd.setMaxLifetime(60000);
+            DataSourcePoolConfigurator.apply(dd, "hikari-default");
             return dd;
         } catch (Exception e) {
-            e.printStackTrace();
+            logger.error("ConnectionParsor.java 异常", e);
         } finally {
             try {
                 in.close();
             } catch (IOException e) {
-                e.printStackTrace();
+                logger.error("ConnectionParsor.java 异常", e);
             }
         }
         return null;
     }
 
-    private List<String> getAllKeys(Connection Conn) throws Exception {
-        List<String> result = new ArrayList<>();
-        Statement stmt = Conn.createStatement(ResultSet.TYPE_SCROLL_INSENSITIVE, ResultSet.CONCUR_READ_ONLY);
-        //查询语句
-        String query = "Select url from tbCompanyList";
-        Conn.prepareStatement(query, ResultSet.TYPE_SCROLL_INSENSITIVE, ResultSet.CONCUR_READ_ONLY);
-        //执行查询
-        ResultSet rs = stmt.executeQuery(query);
-        while (rs.next()) {
-            String value = rs.getString(1);
-            //logger.info("get :"+value);
-            result.add(value);
+    /**
+     * SaaS 安全改造 P0-3：解析 ${ENV_VAR:default} 形式占位符
+     * 优先取环境变量，其次 JVM 系统属性，最后用默认值
+     */
+    public static String resolvePlaceholders(String value) {
+        if (value == null || !value.contains("${")) {
+            return value;
         }
-        rs.close();
-        stmt.close();
-        Conn.close();
-        //logger.info("alls:"+Integer.toString(result.size())+"个元素!");
+        java.util.regex.Pattern pattern = java.util.regex.Pattern.compile("\\$\\{([^:}]+)(?::([^}]*))?\\}");
+        java.util.regex.Matcher matcher = pattern.matcher(value);
+        StringBuffer sb = new StringBuffer();
+        while (matcher.find()) {
+            String key = matcher.group(1);
+            String defaultValue = matcher.group(2) == null ? "" : matcher.group(2);
+            String resolved = System.getenv(key);
+            if (StringUtils.isEmpty(resolved)) {
+                resolved = System.getProperty(key);
+            }
+            if (StringUtils.isEmpty(resolved)) {
+                resolved = defaultValue;
+            }
+            matcher.appendReplacement(sb, java.util.regex.Matcher.quoteReplacement(resolved));
+        }
+        matcher.appendTail(sb);
+        return sb.toString();
+    }
+
+    private List<String> getAllKeys(Connection conn) throws Exception {
+        List<String> result = new ArrayList<>();
+        String query = "Select url from tbCompanyList";
+        // 连接由调用方借出，失败时也必须在 finally 中归还（关闭）到连接池；
+        // Statement/ResultSet 用 try-with-resources 确保一定关闭，避免连接/语句泄漏把默认池(仅 8 连)打满。
+        try (Statement stmt = conn.createStatement(ResultSet.TYPE_SCROLL_INSENSITIVE, ResultSet.CONCUR_READ_ONLY);
+             ResultSet rs = stmt.executeQuery(query)) {
+            while (rs.next()) {
+                result.add(rs.getString(1));
+            }
+        } finally {
+            try {
+                conn.close();
+            } catch (Exception ignore) {
+                // 归还失败不影响解析结果
+            }
+        }
         return result;
     }
 }
