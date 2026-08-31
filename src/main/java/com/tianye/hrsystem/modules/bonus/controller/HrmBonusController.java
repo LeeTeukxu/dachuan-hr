@@ -41,6 +41,20 @@ public class HrmBonusController {
         return Result.OK();
     }
 
+
+    @PostMapping("/importTaxOnlyBonus")
+    @ApiOperation(value = "导入只计税奖金数据")
+    public Result importTaxOnlyBonus(@ApiParam("只计税奖金") @RequestParam(name = "bonusFile", required = false) MultipartFile bonusFile,
+                              @RequestParam(name = "year") String year,
+                              @RequestParam(name = "month") String month) {
+        try {
+            hrmBonusService.resolveTaxOnlyBonusData(bonusFile, year, month);
+        }catch (Exception ax) {
+            ax.printStackTrace();
+        }
+        return Result.OK();
+    }
+
     @PostMapping("/queryBounsList")
     @ApiOperation("查询奖金列表")
     public Result<Page<QueryBounsVO>> queryBounsList(@RequestBody QueryBonusBO queryBonusBO) {

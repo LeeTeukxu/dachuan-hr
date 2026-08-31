@@ -125,6 +125,8 @@ public class FTPUtil {
             } catch (Exception ax) {
                 ax.printStackTrace();
             }
+            // 下载完成必须归还连接：本类按“一次连接一次操作”使用，泄漏会耗尽 FTP 服务端会话
+            close();
         }
     }
 
@@ -152,6 +154,7 @@ public class FTPUtil {
             } catch (Exception ax) {
                 ax.printStackTrace();
             }
+            close();
         }
         return new byte[0];
     }
@@ -219,6 +222,8 @@ public class FTPUtil {
             }
             if (is != null) {
                 is.close();
+                // retrieveFileStream 后必须完成挂起命令，否则 FTP 协议状态残留影响后续操作
+                ftpClient.completePendingCommand();
                 return true;
             }
         } catch (IOException e) {

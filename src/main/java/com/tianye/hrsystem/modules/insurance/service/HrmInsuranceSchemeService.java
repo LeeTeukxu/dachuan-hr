@@ -29,6 +29,7 @@ import org.springframework.web.bind.annotation.RequestBody;
 
 import java.time.LocalDateTime;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -41,6 +42,8 @@ import java.util.Map;
  */
 @Service
 public class HrmInsuranceSchemeService extends BaseServiceImpl<HrmInsuranceSechemeMapper, HrmInsuranceScheme> {
+    public static final int MEDICAL_LONG_TERM_CARE_TYPE = 12;
+    public static final String MEDICAL_LONG_TERM_CARE_NAME = "医疗长期护理保险";
 
     @Autowired
     private HrmInsuranceProjectService insuranceProjectService;
@@ -57,9 +60,11 @@ public class HrmInsuranceSchemeService extends BaseServiceImpl<HrmInsuranceSeche
     @Autowired
     private HrmInsuranceMonthEmpRecordService insuranceMonthEmpRecordService;
 
+    @Transactional(readOnly = true)
     public BasePage<InsuranceSchemeListVO> index(@RequestBody PageEntity pageEntity) {
-       BasePage<InsuranceSchemeListVO> page = insuranceSechemeMapper.index(pageEntity.parse());
-       return page;
+        insuranceSechemeMapper.setGroupConcatMaxLen();
+        BasePage<InsuranceSchemeListVO> page = insuranceSechemeMapper.index(pageEntity.parse());
+        return page;
    }
 
     public InsuranceSchemeVO queryInsuranceSchemeById(Long schemeId) {
@@ -67,17 +72,20 @@ public class HrmInsuranceSchemeService extends BaseServiceImpl<HrmInsuranceSeche
         List<HrmInsuranceProject> projectList = insuranceProjectService.lambdaQuery().eq(HrmInsuranceProject::getSchemeId, schemeId).list();
         InsuranceSchemeVO insuranceSchemeVO = BeanUtil.copyProperties(insuranceScheme, InsuranceSchemeVO.class);
         List<AddInsuranceSchemeBO.HrmInsuranceProjectBO> hrmInsuranceProjectBOS = TransferUtil.transferList(projectList, InsuranceSchemeVO.HrmInsuranceProjectBO.class);
+        hrmInsuranceProjectBOS.forEach(this::normalizeProjectEnabledState);
         Range<Integer> socialSecurityClosed = Range.closed(1, 9);
         Range<Integer> providentFundClosed = Range.closed(10, 11);
         List<AddInsuranceSchemeBO.HrmInsuranceProjectBO> socialSecurityList = new ArrayList<>();
         List<AddInsuranceSchemeBO.HrmInsuranceProjectBO> providentFundList = new ArrayList<>();
         hrmInsuranceProjectBOS.forEach(project -> {
-            if (socialSecurityClosed.contains(project.getType())) {
+            if (isSocialSecurityProject(project.getType(), socialSecurityClosed)) {
                 socialSecurityList.add(project);
             } else if (providentFundClosed.contains(project.getType())) {
                 providentFundList.add(project);
             }
         });
+        ensureMedicalLongTermCareProject(socialSecurityList);
+        socialSecurityList.sort(Comparator.comparingInt(project -> socialSecuritySortValue(project.getType())));
         insuranceSchemeVO.setSocialSecurityProjectList(socialSecurityList);
         insuranceSchemeVO.setProvidentFundProjectList(providentFundList);
         Map<String, String> keyMap = new HashMap<>();
@@ -113,6 +121,7 @@ public class HrmInsuranceSchemeService extends BaseServiceImpl<HrmInsuranceSeche
         if (CollUtil.isNotEmpty(schemeDto.getProvidentFundProjectList())) {
             projectBOList.addAll(schemeDto.getProvidentFundProjectList());
         }
+        projectBOList.forEach(this::normalizeProjectEnabledState);
         List<HrmInsuranceProject> projectList = TransferUtil.transferList(projectBOList, HrmInsuranceProject.class);
         projectList.forEach(project ->
                 project.setSchemeId(insuranceScheme.getSchemeId()));
@@ -160,5 +169,49 @@ public class HrmInsuranceSchemeService extends BaseServiceImpl<HrmInsuranceSeche
 //                project.setSchemeId(insuranceScheme.getSchemeId()).setProjectId(null));
 //        insuranceProjectService.saveBatch(projectList);
 //        return operationLog;
+    }
+
+    private boolean isSocialSecurityProject(Integer type, Range<Integer> socialSecurityClosed) {
+        return type != null && (socialSecurityClosed.contains(type) || type == MEDICAL_LONG_TERM_CARE_TYPE);
+    }
+
+    private void ensureMedicalLongTermCareProject(List<AddInsuranceSchemeBO.HrmInsuranceProjectBO> socialSecurityList) {
+        boolean exists = socialSecurityList.stream()
+                .anyMatch(project -> project.getType() != null && project.getType() == MEDICAL_LONG_TERM_CARE_TYPE);
+        if (exists) {
+            return;
+        }
+        AddInsuranceSchemeBO.HrmInsuranceProjectBO project = new AddInsuranceSchemeBO.HrmInsuranceProjectBO();
+        project.setType(MEDICAL_LONG_TERM_CARE_TYPE);
+        project.setProjectName(MEDICAL_LONG_TERM_CARE_NAME);
+        project.setDefaultAmount(java.math.BigDecimal.ZERO);
+        project.setCorporateProportion(java.math.BigDecimal.ZERO);
+        project.setPersonalProportion(java.math.BigDecimal.ZERO);
+        project.setCorporateAmount(java.math.BigDecimal.ZERO);
+        project.setPersonalAmount(java.math.BigDecimal.ZERO);
+        project.setIsEnabled(1);
+        socialSecurityList.add(project);
+    }
+
+    private void normalizeProjectEnabledState(AddInsuranceSchemeBO.HrmInsuranceProjectBO project) {
+        if (project.getIsEnabled() == null) {
+            project.setIsEnabled(1);
+        }
+    }
+
+    private void normalizeProjectEnabledState(InsuranceSchemeDto.HrmInsuranceProjectBO project) {
+        if (project.getIsEnabled() == null) {
+            project.setIsEnabled(1);
+        }
+    }
+
+    private int socialSecuritySortValue(Integer type) {
+        if (type == null) {
+            return Integer.MAX_VALUE;
+        }
+        if (type == MEDICAL_LONG_TERM_CARE_TYPE) {
+            return 6;
+        }
+        return type;
     }
 }

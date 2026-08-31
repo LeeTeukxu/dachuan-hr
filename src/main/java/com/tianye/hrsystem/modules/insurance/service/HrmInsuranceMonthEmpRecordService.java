@@ -94,12 +94,18 @@ public class HrmInsuranceMonthEmpRecordService extends BaseServiceImpl<HrmInsura
         }
         List<HrmInsuranceMonthEmpProjectRecord> empProjectList = empProjectRecordService.lambdaQuery().eq(HrmInsuranceMonthEmpProjectRecord::getIEmpRecordId, iempRecordId).list();
         List<EmpInsuranceByIdVO.HrmInsuranceProjectBO> hrmInsuranceProjectBOS = TransferUtil.transferList(empProjectList, EmpInsuranceByIdVO.HrmInsuranceProjectBO.class);
+        hrmInsuranceProjectBOS.forEach(project -> {
+            if (project.getIsEnabled() == null) {
+                project.setIsEnabled(1);
+            }
+        });
         Range<Integer> socialSecurityClosed = Range.closed(1, 9);
         Range<Integer> providentFundClosed = Range.closed(10, 11);
         List<EmpInsuranceByIdVO.HrmInsuranceProjectBO> socialSecurityList = new ArrayList<>();
         List<EmpInsuranceByIdVO.HrmInsuranceProjectBO> providentFundList = new ArrayList<>();
         hrmInsuranceProjectBOS.forEach(project -> {
-            if (socialSecurityClosed.contains(project.getType())) {
+            if (project.getType() != null && (socialSecurityClosed.contains(project.getType())
+                    || project.getType() == HrmInsuranceSchemeService.MEDICAL_LONG_TERM_CARE_TYPE)) {
                 socialSecurityList.add(project);
             } else if (providentFundClosed.contains(project.getType())) {
                 providentFundList.add(project);
@@ -142,7 +148,10 @@ public class HrmInsuranceMonthEmpRecordService extends BaseServiceImpl<HrmInsura
         List<UpdateInsuranceProjectBO.Project> projectList = updateInsuranceProjectBO.getProjectList();
         List<HrmInsuranceMonthEmpProjectRecord> projectRecordList = new ArrayList<>();
         for (UpdateInsuranceProjectBO.Project project : projectList) {
-            HrmInsuranceProject insuranceProject = projectService.getById(project.getProjectId());
+            HrmInsuranceProject insuranceProject = resolveInsuranceProjectForMonthUpdate(schemeId, project);
+            if (insuranceProject == null) {
+                continue;
+            }
             HrmInsuranceMonthEmpProjectRecord hrmInsuranceMonthEmpProjectRecord = BeanUtil.copyProperties(insuranceProject, HrmInsuranceMonthEmpProjectRecord.class);
             hrmInsuranceMonthEmpProjectRecord.setIEmpRecordId(iEmpRecordId);
 //            if (schemeType == 1) {
@@ -153,8 +162,20 @@ public class HrmInsuranceMonthEmpRecordService extends BaseServiceImpl<HrmInsura
 //                hrmInsuranceMonthEmpProjectRecord.setPersonalAmount(defaultAmount.multiply(insuranceProject.getPersonalProportion().divide(new BigDecimal(100), 4, BigDecimal.ROUND_UP)));
 //            } else {
                 //金额
+                if (project.getDefaultAmount() != null) {
+                    hrmInsuranceMonthEmpProjectRecord.setDefaultAmount(project.getDefaultAmount());
+                }
+                if (project.getCorporateProportion() != null) {
+                    hrmInsuranceMonthEmpProjectRecord.setCorporateProportion(project.getCorporateProportion());
+                }
+                if (project.getPersonalProportion() != null) {
+                    hrmInsuranceMonthEmpProjectRecord.setPersonalProportion(project.getPersonalProportion());
+                }
                 hrmInsuranceMonthEmpProjectRecord.setCorporateAmount(project.getCorporateAmount());
                 hrmInsuranceMonthEmpProjectRecord.setPersonalAmount(project.getPersonalAmount());
+                hrmInsuranceMonthEmpProjectRecord.setIsEnabled(project.getIsEnabled() == null
+                        ? (hrmInsuranceMonthEmpProjectRecord.getIsEnabled() == null ? 1 : hrmInsuranceMonthEmpProjectRecord.getIsEnabled())
+                        : project.getIsEnabled());
 //            }
             projectRecordList.add(hrmInsuranceMonthEmpProjectRecord);
         }
@@ -169,6 +190,9 @@ public class HrmInsuranceMonthEmpRecordService extends BaseServiceImpl<HrmInsura
         operationLog.setOperationInfo("为" + employee.getEmployeeName() + "修改参保方案：" + scheme.getSchemeName());
 
         BeanUtil.fillBeanWithMap(map, empRecord, true);
+        if (Integer.valueOf(1).equals(empRecord.getIncludeSalaryBasicInsuranceAmount())) {
+            monthRecordService.refreshSalaryBasicInsuranceAmount(empRecord, true);
+        }
         empRecord.setSchemeId(schemeId);
         updateById(empRecord);
         Optional<HrmEmployeeSocialSecurityInfo> socialSecurityInfoOpt = socialSecurityService.lambdaQuery().eq(HrmEmployeeSocialSecurityInfo::getEmployeeId, empRecord.getEmployeeId()).oneOpt();
@@ -286,6 +310,33 @@ public class HrmInsuranceMonthEmpRecordService extends BaseServiceImpl<HrmInsura
             operationLogList.add(updateInsuranceProject(updateInsuranceProjectBO));
         });
         return operationLogList;
+    }
+
+    private HrmInsuranceProject resolveInsuranceProjectForMonthUpdate(Long schemeId, UpdateInsuranceProjectBO.Project project) {
+        if (project.getProjectId() != null) {
+            return projectService.getById(project.getProjectId());
+        }
+        if (project.getType() == null || project.getType() != HrmInsuranceSchemeService.MEDICAL_LONG_TERM_CARE_TYPE) {
+            return null;
+        }
+        HrmInsuranceProject insuranceProject = new HrmInsuranceProject();
+        insuranceProject.setSchemeId(schemeId);
+        insuranceProject.setType(HrmInsuranceSchemeService.MEDICAL_LONG_TERM_CARE_TYPE);
+        insuranceProject.setProjectName(project.getProjectName() == null || project.getProjectName().trim().isEmpty()
+                ? HrmInsuranceSchemeService.MEDICAL_LONG_TERM_CARE_NAME
+                : project.getProjectName());
+        insuranceProject.setDefaultAmount(decimalToDouble(project.getDefaultAmount()));
+        insuranceProject.setCorporateProportion(decimalToDouble(project.getCorporateProportion()));
+        insuranceProject.setPersonalProportion(decimalToDouble(project.getPersonalProportion()));
+        insuranceProject.setCorporateAmount(decimalToDouble(project.getCorporateAmount()));
+        insuranceProject.setPersonalAmount(decimalToDouble(project.getPersonalAmount()));
+        insuranceProject.setIsEnabled(project.getIsEnabled() == null ? 1 : project.getIsEnabled());
+        projectService.save(insuranceProject);
+        return insuranceProject;
+    }
+
+    private Double decimalToDouble(BigDecimal value) {
+        return value == null ? null : value.doubleValue();
     }
 
     public Page<HrmInsuranceMonthEmpRecord> myInsurancePageList(QueryInsuranceRecordListBO recordListBO) {

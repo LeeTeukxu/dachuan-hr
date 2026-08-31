@@ -33,14 +33,9 @@ public class AttendanceDetailServiceImpl implements IAttendanceDetailService {
     MyDateUtils dateUtils;
     @Autowired
     hrmAttendanceClockRepository clockRep;
-    List<tbattendanceuser> users;
-    @Override
-    public void setUsers(List<tbattendanceuser> users) {
-        this.users=users;
-    }
     @Override
     @Transactional
-    public void Sync(String EmpIDS, Date Begin, Date End) throws Exception {
+    public void Sync(String EmpIDS, Date Begin, Date End, List<tbattendanceuser> users) throws Exception {
         List<Date[]> Dates = dateUtils.getDateRangeByLimit(Begin, End, 7);
         List<Long> targetEmpIds = Arrays.stream(EmpIDS.split(",")).map(Long::parseLong).collect(Collectors.toList());
         Set<Long> mappedEmpIds = users == null ? java.util.Collections.emptySet() :
@@ -58,8 +53,7 @@ public class AttendanceDetailServiceImpl implements IAttendanceDetailService {
             Date[] Ds = Dates.get(i);
             Date BeginDate = Ds[0];
             Date EndDate = Ds[1];
-            detailRecord.setUsers(users);
-            detailRecord.GetAndSave(availableEmpIdString,BeginDate,EndDate);
+            detailRecord.GetAndSave(availableEmpIdString,BeginDate,EndDate,users);
         }
     }
 }

@@ -93,6 +93,9 @@
         order by a.clock_time desc
     </select>
     <select id="queryAttendanceEmpPageList" resultType="com.tianye.hrsystem.entity.vo.QueryEmployeeAttendanceVO">
+        <!-- SaaS 安全改造 P0-4：排序字段白名单校验 -->
+        <bind name="safeSortField" value="@com.tianye.hrsystem.util.SqlSafeUtil@safeIdentifierOrEmpty(data.sortField)" />
+
         select
         b.employee_id,b.employee_name,b.job_number,b.post,b.entry_time,b.`status`,b.work_city,b.company_age,c.name as
         deptName
@@ -126,7 +129,7 @@
         </choose>
         <choose>
             <when test="data.sortField != null and data.sortField != ''">
-                ORDER BY b.${data.sortField}
+                ORDER BY b.${safeSortField}
                 <if test="data.order == 1">
                     desc
                 </if>
@@ -163,8 +166,10 @@
         from hrm_attendance_clock t1
         inner join (
         SELECT max(clock_id) as clockId FROM hrm_attendance_clock
-        WHERE clock_type = #{clockType} and attendance_time between #{startDateTime} and #{endDateTime} and clock_stage
-        = #{clockStage}
+        WHERE clock_type = #{clockType} and attendance_time between #{startDateTime} and #{endDateTime}
+        <if test="clockStage != null">
+        and clock_stage = #{clockStage}
+        </if>
         <choose>
             <when test="employeeIds != null and employeeIds.size > 0">
                 and clock_employee_id in
@@ -178,6 +183,26 @@
         </choose>
         group by clock_employee_id,date_format(attendance_time,'%Y-%m-%d')
         ) t2 on t1.clock_id=t2.clockId
+    </select>
+    <select id="queryAttendanceClockTimelineList" resultType="com.tianye.hrsystem.entity.po.HrmAttendanceClock">
+        select *
+        from hrm_attendance_clock
+        where clock_type = #{clockType} and attendance_time between #{startDateTime} and #{endDateTime}
+        <if test="clockStage != null">
+            and clock_stage = #{clockStage}
+        </if>
+        <choose>
+            <when test="employeeIds != null and employeeIds.size > 0">
+                and clock_employee_id in
+                <foreach collection="employeeIds" index="index" item="employeeId" open="(" close=")" separator=",">
+                    #{employeeId}
+                </foreach>
+            </when>
+            <when test="employeeIds != null and employeeIds.size == 0">
+                and 1=2
+            </when>
+        </choose>
+        order by clock_employee_id asc, attendance_time asc, clock_time asc, clock_id asc
     </select>
 
     <!--6、夜班补贴：30元/夜班 （夜班必须连续上满8小时并且超过凌晨3点）-->

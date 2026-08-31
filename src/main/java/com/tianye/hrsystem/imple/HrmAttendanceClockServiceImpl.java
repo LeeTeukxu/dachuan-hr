@@ -252,7 +252,7 @@ public class HrmAttendanceClockServiceImpl extends BaseServiceImpl<HrmAttendance
             //Map<Long, List<HrmAttendanceClock>> endEmployeeClockMap =endClockList.stream().collect(Collectors.groupingBy(HrmAttendanceClock::getClockEmployeeId));
             //UserInfo userInfo = UserUtil.getUser();
             LoginUserInfo Info=CompanyContext.get();
-            queryEmployeeAttendanceList.stream().parallel().forEach(QueryEmployeeAttendanceVO -> {
+            queryEmployeeAttendanceList.stream().forEach(QueryEmployeeAttendanceVO -> {
                 CompanyContext.set(Info);
                 //UserUtil.setUser(userInfo);
                 //List<HrmAttendanceClock> startEmployeeClockList =startEmployeeClockMap.get(QueryEmployeeAttendanceVO.getEmployeeId());
@@ -504,7 +504,6 @@ public class HrmAttendanceClockServiceImpl extends BaseServiceImpl<HrmAttendance
         Map<String, Map<String, Object>> empRecordDetailMap = new HashMap<>();
         HrmEmployee hrmEmployee = BeanUtils.Clone(employeeService.getById(employeeId),HrmEmployee.class);
         long entryTimeMilli = LocalDateTimeUtil.toEpochMilli(hrmEmployee.getEntryTime());
-        long createTimeMilli = LocalDateTimeUtil.toEpochMilli(hrmEmployee.getCreateTime().toLocalDate());
         long nowMilli = LocalDateTimeUtil.toEpochMilli(LocalDateTimeUtil.beginOfDay(LocalDateTime.now()));
         Map<String, HrmAttendanceShift> hrmAttendanceShiftMap = getHrmAttendanceShiftMap(dates, null, employeeId);
         return empRecordDetailMap;
@@ -602,6 +601,12 @@ public class HrmAttendanceClockServiceImpl extends BaseServiceImpl<HrmAttendance
     public List<HrmAttendanceClock> queryAttendanceClockList(Integer clockType, LocalDateTime startDateTime, LocalDateTime endDateTime, List<Long> employeeIds, Integer clockStage) {
         List<HrmAttendanceClock> hrmAttendanceClockList = baseMapper.queryAttendanceClockList(clockType, startDateTime, endDateTime, employeeIds, clockStage);
         return hrmAttendanceClockList;
+    }
+
+    public List<HrmAttendanceClock> queryAttendanceClockTimelineList(Integer clockType, LocalDateTime startDateTime,
+                                                                     LocalDateTime endDateTime, List<Long> employeeIds,
+                                                                     Integer clockStage) {
+        return baseMapper.queryAttendanceClockTimelineList(clockType, startDateTime, endDateTime, employeeIds, clockStage);
     }
 
     /**
@@ -947,9 +952,9 @@ public class HrmAttendanceClockServiceImpl extends BaseServiceImpl<HrmAttendance
         //查询出日期区间所有的上班打卡记录
         LocalDateTime startDateTime = queryAttendanceEmpMonthDetail.getTimes().get(0).atStartOfDay();
         LocalDateTime endDateTime = LocalDateTimeUtil.endOfDay(queryAttendanceEmpMonthDetail.getTimes().get(1).atStartOfDay());
-        List<HrmAttendanceClock> startClockList = queryAttendanceClockList(ClockType.GO_TO.getValue(), startDateTime, endDateTime, employeeIds, ONE);
+        List<HrmAttendanceClock> startClockList = queryAttendanceClockList(ClockType.GO_TO.getValue(), startDateTime, endDateTime, employeeIds, null);
         //查询出日期区间所有的下班打卡记录
-        List<HrmAttendanceClock> endClockList = queryAttendanceClockList(ClockType.GET_OFF.getValue(), startDateTime, endDateTime, employeeIds, ONE);
+        List<HrmAttendanceClock> endClockList = queryAttendanceClockList(ClockType.GET_OFF.getValue(), startDateTime, endDateTime, employeeIds, null);
         //leaveRecordService.queryOaLeaveExamineList();
         //查询是否包含今天数据
         Integer includeToday = queryAttendanceEmpMonthDetail.getIncludeToday();
@@ -1019,7 +1024,6 @@ public class HrmAttendanceClockServiceImpl extends BaseServiceImpl<HrmAttendance
         //查询员工入职日期
         HrmEmployee hrmEmployee =BeanUtils.Clone(employeeService.getById(employeeId),HrmEmployee.class);
         long entryTimeMilli = LocalDateTimeUtil.toEpochMilli(hrmEmployee.getEntryTime());
-        long createTimeMilli = LocalDateTimeUtil.toEpochMilli(hrmEmployee.getCreateTime().toLocalDate());
         long nowMilli = LocalDateTimeUtil.toEpochMilli(LocalDateTimeUtil.beginOfDay(LocalDateTime.now()));
         HrmAttendanceGroup hrmAttendanceGroup =attendanceGroupService.queryAttendanceGroup(employeeId);
         //查询出日期区间的班次
@@ -1053,8 +1057,7 @@ public class HrmAttendanceClockServiceImpl extends BaseServiceImpl<HrmAttendance
                     currentDate = nowMilli > currentMilli;
                 }
                 boolean entryTime = entryTimeMilli <= currentMilli;
-                boolean createTime = createTimeMilli <= currentMilli;
-                if (currentDate && entryTime && createTime==false) {
+                if (currentDate && entryTime) {
                     if (ObjectUtil.equal(ShiftTypeEnum.REST.getValue(), hrmAttendanceShift.getShiftType())) {
                         QueryAttendanceRecordVO startAttendanceRecordVO = startAttendanceRecordMap.get(date);
                         attendEmpOverViewVO.setStartStatus1(startAttendanceRecordVO.getStatus());
@@ -1548,14 +1551,14 @@ public class HrmAttendanceClockServiceImpl extends BaseServiceImpl<HrmAttendance
             //查询出日期区间所有的上班打卡记录
             LocalDateTime startDateTime = queryAttendanceEmpMonthRecordBo.getTimes().get(0).atStartOfDay();
             LocalDateTime endDateTime = LocalDateTimeUtil.endOfDay(queryAttendanceEmpMonthRecordBo.getTimes().get(1).atStartOfDay());
-            List<HrmAttendanceClock> startClockList = queryAttendanceClockList(ClockType.GO_TO.getValue(), startDateTime, endDateTime, employeeIds, ONE);
+            List<HrmAttendanceClock> startClockList = queryAttendanceClockTimelineList(ClockType.GO_TO.getValue(), startDateTime, endDateTime, employeeIds, null);
             Map<Long, List<HrmAttendanceClock>> startEmployeeClockMap = startClockList.stream().collect(Collectors.groupingBy(HrmAttendanceClock::getClockEmployeeId));
             //查询出日期区间所有的下班打卡记录
-            List<HrmAttendanceClock> endClockList = queryAttendanceClockList(ClockType.GET_OFF.getValue(), startDateTime, endDateTime, employeeIds, ONE);
+            List<HrmAttendanceClock> endClockList = queryAttendanceClockTimelineList(ClockType.GET_OFF.getValue(), startDateTime, endDateTime, employeeIds, null);
             Map<Long, List<HrmAttendanceClock>> endEmployeeClockMap = endClockList.stream().collect(Collectors.groupingBy(HrmAttendanceClock::getClockEmployeeId));
             LoginUserInfo Info=CompanyContext.get();
 
-            queryEmployeeAttendanceList.stream().parallel().forEach(QueryEmployeeAttendanceVO -> {
+            queryEmployeeAttendanceList.stream().forEach(QueryEmployeeAttendanceVO -> {
                 //UserUtil.setUser(userInfo);
                 CompanyContext.set(Info);
                 QueryAttendanceEmpMonthDetailVO empMonthDetailVO = new QueryAttendanceEmpMonthDetailVO();
@@ -1578,15 +1581,12 @@ public class HrmAttendanceClockServiceImpl extends BaseServiceImpl<HrmAttendance
         List<Map<String, Object>> mapList = new ArrayList<>();
         HrmEmployee hrmEmployee = employeeService.getById(employeeId);
         long entryTimeMilli = LocalDateTimeUtil.toEpochMilli(hrmEmployee.getEntryTime());
-        long createTimeMilli = LocalDateTimeUtil.toEpochMilli(hrmEmployee.getCreateTime().toLocalDate());
         long nowMilli = LocalDateTimeUtil.toEpochMilli(LocalDateTimeUtil.beginOfDay(LocalDateTime.now()));
-        //查询出员工考勤组
-        HrmAttendanceGroup hrmAttendanceGroup = attendanceGroupService.queryAttendanceGroup(employeeId);
-        //查询出日期区间的班次
-        Map<String, HrmAttendanceShift> hrmAttendanceShiftMap = getHrmAttendanceShiftMap(dates, hrmAttendanceGroup, employeeId);
-        //查询出打卡记录
-        Map<String, QueryAttendanceRecordVO> startAttendanceRecordMap = queryStartRecordList(startEmployeeClockList, dates, hrmAttendanceShiftMap, employeeId, ONE);
-        Map<String, QueryAttendanceRecordVO> endAttendanceRecordMap = queryEndRecordList(endEmployeeClockList, dates, hrmAttendanceShiftMap, employeeId, ONE);
+        // 月度概况优先展示真实打卡时间，避免按天按人回查排班导致的大量数据库调用和超时
+        Map<String, QueryAttendanceRecordVO> startAttendanceRecordMap = new HashMap<>();
+        Map<String, QueryAttendanceRecordVO> endAttendanceRecordMap = new HashMap<>();
+        Map<String, List<HrmAttendanceClock>> startRawClockMap = groupRawClockMapByDate(startEmployeeClockList);
+        Map<String, List<HrmAttendanceClock>> endRawClockMap = groupRawClockMapByDate(endEmployeeClockList);
         for (String date : dates) {
             Map<String, Object> map = new HashMap<>();
             map.put("date", date);
@@ -1595,24 +1595,54 @@ public class HrmAttendanceClockServiceImpl extends BaseServiceImpl<HrmAttendance
             String endTimeStatus;
             boolean currentDate = currentMilli > nowMilli;
             boolean entryTime = entryTimeMilli > currentMilli;
-            boolean createTime = createTimeMilli > currentMilli;
-            if (entryTime || currentDate || createTime) {
-                //时间大于今天或者员工入职大于今天和创建时间大于今天的汇总不进行统计
+            if (entryTime || currentDate) {
+                //时间大于今天或员工入职晚于当前日期的汇总不进行统计
                 map.put("time", new String[]{});
             } else {
                 QueryAttendanceRecordVO startAttendanceRecordVO = startAttendanceRecordMap.get(date);
                 QueryAttendanceRecordVO endAttendanceRecordVO = endAttendanceRecordMap.get(date);
 
-                if(startAttendanceRecordVO==null || endAttendanceRecordVO==null) continue;
-                if (ObjectUtil.isNotNull(startAttendanceRecordVO.getClockTime())) {
+                if (ObjectUtil.isNull(startAttendanceRecordVO) && ObjectUtil.isNull(endAttendanceRecordVO)) {
+                    List<HrmAttendanceClock> rawStartClocks = startRawClockMap.get(date);
+                    List<HrmAttendanceClock> rawEndClocks = endRawClockMap.get(date);
+                    if (shouldReturnFullClockTimeline(rawStartClocks, rawEndClocks)) {
+                        map.put("time", buildClockTimeline(rawStartClocks, rawEndClocks));
+                        mapList.add(map);
+                        continue;
+                    }
+                    HrmAttendanceClock rawStartClock = getLastClock(rawStartClocks);
+                    HrmAttendanceClock rawEndClock = getLastClock(rawEndClocks);
+                    if (ObjectUtil.isNull(rawStartClock) && ObjectUtil.isNull(rawEndClock)) {
+                        map.put("time", new String[]{});
+                        mapList.add(map);
+                        continue;
+                    }
+                    if (ObjectUtil.isNotNull(rawStartClock) && ObjectUtil.isNotNull(rawStartClock.getClockTime())) {
+                        Integer rawStatus = ObjectUtil.isNotNull(rawStartClock.getClockStatus()) ? rawStartClock.getClockStatus() : ZERO;
+                        startTimeStatus = DateUtil.format(rawStartClock.getClockTime(), "HH:mm") + "-" + rawStatus;
+                    } else {
+                        startTimeStatus = "-3";
+                    }
+                    if (ObjectUtil.isNotNull(rawEndClock) && ObjectUtil.isNotNull(rawEndClock.getClockTime())) {
+                        Integer rawStatus = ObjectUtil.isNotNull(rawEndClock.getClockStatus()) ? rawEndClock.getClockStatus() : ZERO;
+                        endTimeStatus = DateUtil.format(rawEndClock.getClockTime(), "HH:mm") + "-" + rawStatus;
+                    } else {
+                        endTimeStatus = "-3";
+                    }
+                } else if (ObjectUtil.isNotNull(startAttendanceRecordVO) && ObjectUtil.isNotNull(startAttendanceRecordVO.getClockTime())) {
                     startTimeStatus = DateUtil.format(startAttendanceRecordVO.getClockTime(), "HH:mm") + "-" + startAttendanceRecordVO.getStatus();
+                    if (ObjectUtil.isNotNull(endAttendanceRecordVO) && ObjectUtil.isNotNull(endAttendanceRecordVO.getClockTime())) {
+                        endTimeStatus = DateUtil.format(endAttendanceRecordVO.getClockTime(), "HH:mm") + "-" + endAttendanceRecordVO.getStatus();
+                    } else {
+                        endTimeStatus = ObjectUtil.isNotNull(endAttendanceRecordVO) ? ("-" + endAttendanceRecordVO.getStatus()) : "-3";
+                    }
                 } else {
-                    startTimeStatus = "-" + startAttendanceRecordVO.getStatus();
-                }
-                if (ObjectUtil.isNotNull(endAttendanceRecordVO.getClockTime())) {
-                    endTimeStatus = DateUtil.format(endAttendanceRecordVO.getClockTime(), "HH:mm") + "-" + endAttendanceRecordVO.getStatus();
-                } else {
-                    endTimeStatus = "-" + endAttendanceRecordVO.getStatus();
+                    startTimeStatus = ObjectUtil.isNotNull(startAttendanceRecordVO) ? ("-" + startAttendanceRecordVO.getStatus()) : "-3";
+                    if (ObjectUtil.isNotNull(endAttendanceRecordVO) && ObjectUtil.isNotNull(endAttendanceRecordVO.getClockTime())) {
+                        endTimeStatus = DateUtil.format(endAttendanceRecordVO.getClockTime(), "HH:mm") + "-" + endAttendanceRecordVO.getStatus();
+                    } else {
+                        endTimeStatus = ObjectUtil.isNotNull(endAttendanceRecordVO) ? ("-" + endAttendanceRecordVO.getStatus()) : "-3";
+                    }
                 }
                 String timeStatus = "-3";
                 String timeStatusNine = "-9";
@@ -1628,6 +1658,58 @@ public class HrmAttendanceClockServiceImpl extends BaseServiceImpl<HrmAttendance
         }
         return mapList;
 
+    }
+
+    private Map<String, List<HrmAttendanceClock>> groupRawClockMapByDate(List<HrmAttendanceClock> rawClockList) {
+        Map<String, List<HrmAttendanceClock>> rawClockMap = new HashMap<>();
+        if (CollUtil.isEmpty(rawClockList)) {
+            return rawClockMap;
+        }
+        for (HrmAttendanceClock rawClock : rawClockList) {
+            if (rawClock == null || rawClock.getAttendanceTime() == null) {
+                continue;
+            }
+            String formatDate = LocalDateTimeUtil.format(rawClock.getAttendanceTime(), DatePattern.NORM_DATE_PATTERN);
+            rawClockMap.computeIfAbsent(formatDate, key -> new ArrayList<>()).add(rawClock);
+        }
+        rawClockMap.values().forEach(rawClocks -> rawClocks.sort(Comparator
+                .comparing(HrmAttendanceClock::getClockTime, Comparator.nullsLast(Comparator.naturalOrder()))
+                .thenComparing(HrmAttendanceClock::getClockId, Comparator.nullsLast(Comparator.naturalOrder()))));
+        return rawClockMap;
+    }
+
+    private boolean shouldReturnFullClockTimeline(List<HrmAttendanceClock> rawStartClocks, List<HrmAttendanceClock> rawEndClocks) {
+        return CollUtil.size(rawStartClocks) > ONE || CollUtil.size(rawEndClocks) > ONE;
+    }
+
+    private String[] buildClockTimeline(List<HrmAttendanceClock> rawStartClocks, List<HrmAttendanceClock> rawEndClocks) {
+        List<HrmAttendanceClock> rawClocks = new ArrayList<>();
+        if (CollUtil.isNotEmpty(rawStartClocks)) {
+            rawClocks.addAll(rawStartClocks);
+        }
+        if (CollUtil.isNotEmpty(rawEndClocks)) {
+            rawClocks.addAll(rawEndClocks);
+        }
+        rawClocks.sort(Comparator
+                .comparing(HrmAttendanceClock::getClockTime, Comparator.nullsLast(Comparator.naturalOrder()))
+                .thenComparing(HrmAttendanceClock::getClockType, Comparator.nullsLast(Comparator.naturalOrder()))
+                .thenComparing(HrmAttendanceClock::getClockId, Comparator.nullsLast(Comparator.naturalOrder())));
+        return rawClocks.stream()
+                .filter(rawClock -> rawClock.getClockTime() != null)
+                .map(this::formatClockTimeStatus)
+                .toArray(String[]::new);
+    }
+
+    private HrmAttendanceClock getLastClock(List<HrmAttendanceClock> rawClocks) {
+        if (CollUtil.isEmpty(rawClocks)) {
+            return null;
+        }
+        return rawClocks.get(rawClocks.size() - 1);
+    }
+
+    private String formatClockTimeStatus(HrmAttendanceClock rawClock) {
+        Integer rawStatus = ObjectUtil.isNotNull(rawClock.getClockStatus()) ? rawClock.getClockStatus() : ZERO;
+        return DateUtil.format(rawClock.getClockTime(), "HH:mm") + "-" + rawStatus;
     }
 
     @Override
@@ -2059,9 +2141,9 @@ public class HrmAttendanceClockServiceImpl extends BaseServiceImpl<HrmAttendance
         List<String> dates = findDates(queryAttendEmpRecordBo.getTimes().get(0), queryAttendEmpRecordBo.getTimes().get(1));
         LocalDateTime startDateTime = queryAttendEmpRecordBo.getTimes().get(0).atStartOfDay();
         LocalDateTime endDateTime = LocalDateTimeUtil.endOfDay(queryAttendEmpRecordBo.getTimes().get(1).atStartOfDay());
-        List<HrmAttendanceClock> startClockList = queryAttendanceClockList(ClockType.GO_TO.getValue(), startDateTime, endDateTime, employeeIds, ONE);
+        List<HrmAttendanceClock> startClockList = queryAttendanceClockList(ClockType.GO_TO.getValue(), startDateTime, endDateTime, employeeIds, null);
         //查询出日期区间所有的下班打卡记录
-        List<HrmAttendanceClock> endClockList = queryAttendanceClockList(ClockType.GET_OFF.getValue(), startDateTime, endDateTime, employeeIds, ONE);
+        List<HrmAttendanceClock> endClockList = queryAttendanceClockList(ClockType.GET_OFF.getValue(), startDateTime, endDateTime, employeeIds, null);
         // 查询日期区间所有的加班
         Integer overTimeCount = queryEmpAttendanceOverTimeCountDays(queryAttendEmpRecordBo.getTimes(), employeeId);
         HrmAttendanceGroup hrmAttendanceGroup = attendanceGroupService.queryAttendanceGroup(employeeId);
@@ -2127,9 +2209,9 @@ public class HrmAttendanceClockServiceImpl extends BaseServiceImpl<HrmAttendance
         //查询出日期区间所有的上班打卡记录
         LocalDateTime startDateTime = queryAttendanceEmpDetailVO.getStartTime().atStartOfDay();
         LocalDateTime endDateTime = LocalDateTimeUtil.endOfDay(queryAttendanceEmpDetailVO.getEndTime().atStartOfDay());
-        List<HrmAttendanceClock> startClockList = queryAttendanceClockList(ClockType.GO_TO.getValue(), startDateTime, endDateTime, employeeIds, ONE);
+        List<HrmAttendanceClock> startClockList = queryAttendanceClockList(ClockType.GO_TO.getValue(), startDateTime, endDateTime, employeeIds, null);
         //查询出日期区间所有的下班打卡记录
-        List<HrmAttendanceClock> endClockList = queryAttendanceClockList(ClockType.GET_OFF.getValue(), startDateTime, endDateTime, employeeIds, ONE);
+        List<HrmAttendanceClock> endClockList = queryAttendanceClockList(ClockType.GET_OFF.getValue(), startDateTime, endDateTime, employeeIds, null);
         HrmAttendanceGroup hrmAttendanceGroup = attendanceGroupService.queryAttendanceGroup(queryAttendanceEmpDetailBo.getEmployeeId());
         Map<String, Map<String, Object>> empRecordDetailMap = queryAttendanceEmpRecordDetailByDate(startClockList, endClockList, dates, hrmAttendanceGroup, queryAttendanceEmpDetailBo.getEmployeeId());
         //0正常 1异常

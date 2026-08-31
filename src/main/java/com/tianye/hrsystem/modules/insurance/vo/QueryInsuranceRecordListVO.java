@@ -26,6 +26,9 @@ public class QueryInsuranceRecordListVO {
     @ApiModelProperty(value = "参保人数")
     private Integer num;
 
+    @ApiModelProperty(value = "本月参保人数")
+    private Integer insuredNum;
+
     private Integer status;
 
     @ApiModelProperty(value = "个人社保金额")
@@ -43,6 +46,12 @@ public class QueryInsuranceRecordListVO {
     @ApiModelProperty("停保人数")
     private Integer stopNum;
 
+    @ApiModelProperty("本月参保人员")
+    private String insuredEmployeeNames;
+
+    @ApiModelProperty("本月停保人员")
+    private String stoppedEmployeeNames;
+
     @Override
     public String toString() {
         return "QueryInsuranceRecordListVO{" +
@@ -51,12 +60,15 @@ public class QueryInsuranceRecordListVO {
                 ", year=" + year +
                 ", month=" + month +
                 ", num=" + num +
+                ", insuredNum=" + insuredNum +
                 ", status=" + status +
                 ", personalInsuranceAmount=" + personalInsuranceAmount +
                 ", personalProvidentFundAmount=" + personalProvidentFundAmount +
                 ", corporateInsuranceAmount=" + corporateInsuranceAmount +
                 ", corporateProvidentFundAmount=" + corporateProvidentFundAmount +
                 ", stopNum=" + stopNum +
+                ", insuredEmployeeNames='" + insuredEmployeeNames + '\'' +
+                ", stoppedEmployeeNames='" + stoppedEmployeeNames + '\'' +
                 '}';
     }
 }

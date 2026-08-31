@@ -1,5 +1,6 @@
 package com.tianye.hrsystem.controller;
 
+import cn.hutool.core.util.StrUtil;
 import com.alibaba.excel.EasyExcel;
 import com.alibaba.fastjson.JSON;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
@@ -11,11 +12,23 @@ import com.tianye.hrsystem.entity.vo.*;
 import com.tianye.hrsystem.entity.vo.DeptEmployeeListVO;
 import com.tianye.hrsystem.entity.vo.Result;
 import com.tianye.hrsystem.model.LoginUserInfo;
+import com.tianye.hrsystem.service.employee.IHrmEmployeeEmploymentRecordService;
 import com.tianye.hrsystem.service.employee.IHrmEmployeeService;
 import io.swagger.annotations.Api;
 import io.swagger.annotations.ApiOperation;
 import io.swagger.annotations.ApiParam;
 import org.apache.commons.io.FileUtils;
+import org.apache.poi.openxml4j.util.ZipSecureFile;
+import org.apache.poi.ss.usermodel.Cell;
+import org.apache.poi.ss.usermodel.CellStyle;
+import org.apache.poi.ss.usermodel.CellType;
+import org.apache.poi.ss.usermodel.DataFormat;
+import org.apache.poi.ss.usermodel.DataFormatter;
+import org.apache.poi.ss.usermodel.Row;
+import org.apache.poi.ss.usermodel.Sheet;
+import org.apache.poi.ss.usermodel.Workbook;
+import org.apache.poi.ss.usermodel.WorkbookFactory;
+import org.apache.poi.ss.util.CellRangeAddress;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -23,10 +36,14 @@ import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.multipart.MultipartFile;
 
+import javax.servlet.http.HttpServletResponse;
 import javax.validation.Valid;
 import javax.validation.Validator;
+import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.IOException;
+import java.io.InputStream;
+import java.net.URLEncoder;
 import java.util.*;
 import java.util.stream.Collectors;
 
@@ -42,6 +59,9 @@ import java.util.stream.Collectors;
 public class HrmEmployeeController {
     @Autowired
     private IHrmEmployeeService employeeService;
+
+    @Autowired
+    private IHrmEmployeeEmploymentRecordService employmentRecordService;
 
     Logger logger= LoggerFactory.getLogger(HrmEmployeeController.class);
 
@@ -83,6 +103,282 @@ public class HrmEmployeeController {
     public Result<BasePage<Map<String, Object>>> queryPageList(@RequestBody QueryEmployeePageListBO employeePageListBO) {
         BasePage<Map<String, Object>> map = employeeService.queryPageList(employeePageListBO);
         return Result.ok(map);
+    }
+
+    @PostMapping("/exportBasicInfoTemplate")
+    @ApiOperation("导出员工基础信息模板")
+    @OperateLog(apply = ApplyEnum.HRM, object = OperateObjectEnum.HRM_EMPLOYEE, behavior = BehaviorEnum.EXCEL_EXPORT)
+    public void exportBasicInfoTemplate(@RequestBody QueryEmployeePageListBO employeePageListBO, HttpServletResponse response) throws IOException {
+        employeeService.exportBasicInfoTemplate(employeePageListBO, response);
+    }
+
+    @PostMapping("/exportDepartmentDetail")
+    @ApiOperation("下载部门明细")
+    @OperateLog(apply = ApplyEnum.HRM, object = OperateObjectEnum.HRM_EMPLOYEE, behavior = BehaviorEnum.EXCEL_EXPORT)
+    public void exportDepartmentDetail(HttpServletResponse response) throws IOException {
+        employeeService.exportDepartmentDetail(response);
+    }
+
+    @PostMapping("/departmentDetailGroupSummary")
+    @ApiOperation("数据看板-集团总表汇总（行政经理）")
+    public Result<Map<String, Object>> departmentDetailGroupSummary() {
+        return Result.ok(employeeService.departmentDetailGroupSummary());
+    }
+
+    @GetMapping("/downloadEmployeeRosterTemplate")
+    @ApiOperation("下载员工花名册模版")
+    public void downloadEmployeeRosterTemplate(HttpServletResponse response) throws IOException {
+        try (InputStream inputStream = getClass().getClassLoader().getResourceAsStream("export/employee_module.xlsx")) {
+            if (inputStream == null) {
+                response.sendError(HttpServletResponse.SC_NOT_FOUND, "employee_module.xlsx not found");
+                return;
+            }
+            byte[] workbookBytes = buildEmployeeRosterTemplate(inputStream);
+            response.setContentType("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+            response.setCharacterEncoding("UTF-8");
+            response.setHeader("Content-Disposition", "attachment;filename=" + URLEncoder.encode("employee_module.xlsx", "UTF-8"));
+            response.setHeader("Set-Cookie", "fileDownload=true; path=/");
+            response.getOutputStream().write(workbookBytes);
+            response.flushBuffer();
+        }
+    }
+
+    private byte[] buildEmployeeRosterTemplate(InputStream inputStream) throws IOException {
+        double originalMinInflateRatio = ZipSecureFile.getMinInflateRatio();
+        ZipSecureFile.setMinInflateRatio(0.001);
+        try (Workbook workbook = WorkbookFactory.create(inputStream);
+             ByteArrayOutputStream outputStream = new ByteArrayOutputStream()) {
+            ensureEmployeeRosterTemplateColumns(workbook);
+            workbook.write(outputStream);
+            return outputStream.toByteArray();
+        } finally {
+            ZipSecureFile.setMinInflateRatio(originalMinInflateRatio);
+        }
+    }
+
+    private void ensureEmployeeRosterTemplateColumns(Workbook workbook) {
+        DataFormatter formatter = new DataFormatter(Locale.CHINA);
+        CellStyle decimalStyle = workbook.createCellStyle();
+        DataFormat dataFormat = workbook.createDataFormat();
+        decimalStyle.setDataFormat(dataFormat.getFormat("0.00"));
+        for (int index = 0; index < workbook.getNumberOfSheets(); index++) {
+            if (workbook.isSheetHidden(index) || workbook.isSheetVeryHidden(index)) {
+                continue;
+            }
+            Sheet sheet = workbook.getSheetAt(index);
+            Row headerRow = sheet.getRow(1);
+            if (!isEmployeeRosterTemplateSheet(headerRow, formatter)) {
+                continue;
+            }
+            Row groupRow = Optional.ofNullable(sheet.getRow(0)).orElseGet(() -> sheet.createRow(0));
+            int salaryGradeColumn = findRosterTemplateHeaderColumn(headerRow, formatter, "薪资等级");
+            int fixedPerformanceColumn = ensureRosterTemplateColumnAfter(sheet, groupRow, headerRow, formatter, "固定绩效", "薪酬福利", salaryGradeColumn);
+            int dutySubsidyColumn = ensureRosterTemplateColumnAfter(sheet, groupRow, headerRow, formatter, "职务补助", "薪酬福利", fixedPerformanceColumn);
+            int otherSubsidyColumn = ensureRosterTemplateColumnAfter(sheet, groupRow, headerRow, formatter, "其他补助", "薪酬福利", dutySubsidyColumn);
+            sheet.setDefaultColumnStyle(fixedPerformanceColumn, decimalStyle);
+            sheet.setDefaultColumnStyle(dutySubsidyColumn, decimalStyle);
+            sheet.setDefaultColumnStyle(otherSubsidyColumn, decimalStyle);
+            ensureRosterTemplateGroupMergedRegion(sheet, groupRow, formatter, "薪酬福利",
+                    salaryGradeColumn >= 0 ? salaryGradeColumn : fixedPerformanceColumn,
+                    otherSubsidyColumn);
+        }
+    }
+
+    private boolean isEmployeeRosterTemplateSheet(Row headerRow, DataFormatter formatter) {
+        if (headerRow == null) {
+            return false;
+        }
+        Set<String> headers = new HashSet<>();
+        for (int columnIndex = 0; columnIndex < headerRow.getLastCellNum(); columnIndex++) {
+            String header = normalizeRosterTemplateText(formatter.formatCellValue(headerRow.getCell(columnIndex)));
+            if (StrUtil.isNotEmpty(header)) {
+                headers.add(header);
+            }
+        }
+        return headers.contains("姓名") && headers.contains("个人电话");
+    }
+
+    private int ensureRosterTemplateColumnAfter(Sheet sheet, Row groupRow, Row headerRow, DataFormatter formatter, String header, String group, int previousColumn) {
+        int existingColumn = findRosterTemplateHeaderColumn(headerRow, formatter, header);
+        if (existingColumn >= 0) {
+            writeRosterTemplateColumn(sheet, groupRow, headerRow, existingColumn, header, group);
+            return existingColumn;
+        }
+        int columnIndex = previousColumn >= 0 ? previousColumn + 1 : Math.max(headerRow.getLastCellNum(), 0);
+        insertBlankRosterTemplateColumn(sheet, columnIndex);
+        writeRosterTemplateColumn(sheet, groupRow, headerRow, columnIndex, header, group);
+        return columnIndex;
+    }
+
+    private void writeRosterTemplateColumn(Sheet sheet, Row groupRow, Row headerRow, int columnIndex, String header, String group) {
+        Cell groupCell = groupRow.getCell(columnIndex);
+        if (groupCell == null) {
+            groupCell = groupRow.createCell(columnIndex);
+            copyCellStyle(groupRow.getCell(Math.max(columnIndex - 1, 0)), groupCell);
+        }
+        groupCell.setCellValue(group);
+        Cell headerCell = headerRow.getCell(columnIndex);
+        if (headerCell == null) {
+            headerCell = headerRow.createCell(columnIndex);
+            copyCellStyle(headerRow.getCell(Math.max(columnIndex - 1, 0)), headerCell);
+        }
+        headerCell.setCellValue(header);
+        if (sheet.getColumnWidth(columnIndex) <= sheet.getDefaultColumnWidth() * 256) {
+            sheet.setColumnWidth(columnIndex, 14 * 256);
+        }
+    }
+
+    private void insertBlankRosterTemplateColumn(Sheet sheet, int columnIndex) {
+        shiftRosterTemplateMergedRegions(sheet, columnIndex);
+        int maxColumn = columnIndex;
+        for (int rowIndex = sheet.getFirstRowNum(); rowIndex <= sheet.getLastRowNum(); rowIndex++) {
+            Row row = sheet.getRow(rowIndex);
+            if (row != null && row.getLastCellNum() > maxColumn) {
+                maxColumn = Math.max(maxColumn, row.getLastCellNum() - 1);
+            }
+        }
+        for (int column = maxColumn; column >= columnIndex; column--) {
+            sheet.setColumnWidth(column + 1, sheet.getColumnWidth(column));
+            CellStyle columnStyle = sheet.getColumnStyle(column);
+            if (columnStyle != null) {
+                sheet.setDefaultColumnStyle(column + 1, columnStyle);
+            }
+        }
+        for (int rowIndex = sheet.getFirstRowNum(); rowIndex <= sheet.getLastRowNum(); rowIndex++) {
+            Row row = sheet.getRow(rowIndex);
+            if (row == null) {
+                continue;
+            }
+            for (int column = Math.max(row.getLastCellNum() - 1, columnIndex); column >= columnIndex; column--) {
+                Cell source = row.getCell(column);
+                Cell target = row.getCell(column + 1);
+                if (source == null) {
+                    if (target != null) {
+                        row.removeCell(target);
+                    }
+                    continue;
+                }
+                if (target == null) {
+                    target = row.createCell(column + 1);
+                }
+                copyRosterTemplateCell(source, target);
+            }
+            Cell blankCell = row.getCell(columnIndex);
+            if (blankCell == null) {
+                blankCell = row.createCell(columnIndex);
+            }
+            blankCell.setBlank();
+        }
+    }
+
+    private void shiftRosterTemplateMergedRegions(Sheet sheet, int columnIndex) {
+        List<CellRangeAddress> adjustedRegions = new ArrayList<>();
+        for (CellRangeAddress region : sheet.getMergedRegions()) {
+            CellRangeAddress adjusted = region.copy();
+            if (adjusted.getLastColumn() < columnIndex) {
+                adjustedRegions.add(adjusted);
+            } else if (adjusted.getFirstColumn() >= columnIndex) {
+                adjusted.setFirstColumn(adjusted.getFirstColumn() + 1);
+                adjusted.setLastColumn(adjusted.getLastColumn() + 1);
+                adjustedRegions.add(adjusted);
+            } else {
+                adjusted.setLastColumn(adjusted.getLastColumn() + 1);
+                adjustedRegions.add(adjusted);
+            }
+        }
+        for (int index = sheet.getNumMergedRegions() - 1; index >= 0; index--) {
+            sheet.removeMergedRegion(index);
+        }
+        for (CellRangeAddress region : adjustedRegions) {
+            sheet.addMergedRegion(region);
+        }
+    }
+
+    private void ensureRosterTemplateGroupMergedRegion(Sheet sheet,
+                                                       Row groupRow,
+                                                       DataFormatter formatter,
+                                                       String group,
+                                                       int firstChildColumn,
+                                                       int lastChildColumn) {
+        int firstColumn = Math.min(firstChildColumn, lastChildColumn);
+        int lastColumn = Math.max(firstChildColumn, lastChildColumn);
+        String normalizedGroup = normalizeRosterTemplateText(group);
+        for (CellRangeAddress region : sheet.getMergedRegions()) {
+            if (region.getFirstRow() == 0 && region.getLastRow() == 0 && region.isInRange(0, firstChildColumn)) {
+                firstColumn = Math.min(firstColumn, region.getFirstColumn());
+                break;
+            }
+        }
+
+        List<CellRangeAddress> remainingRegions = new ArrayList<>();
+        for (CellRangeAddress region : sheet.getMergedRegions()) {
+            boolean sameRow = region.getFirstRow() == 0 && region.getLastRow() == 0;
+            boolean overlapsTarget = sameRow && region.getFirstColumn() <= lastColumn && region.getLastColumn() >= firstColumn;
+            if (!overlapsTarget) {
+                remainingRegions.add(region);
+            }
+        }
+        for (int index = sheet.getNumMergedRegions() - 1; index >= 0; index--) {
+            sheet.removeMergedRegion(index);
+        }
+        for (CellRangeAddress region : remainingRegions) {
+            sheet.addMergedRegion(region);
+        }
+        for (int columnIndex = firstColumn; columnIndex <= lastColumn; columnIndex++) {
+            Cell cell = groupRow.getCell(columnIndex);
+            if (cell == null) {
+                cell = groupRow.createCell(columnIndex);
+            }
+            if (normalizedGroup.equals(normalizeRosterTemplateText(formatter.formatCellValue(cell))) || columnIndex >= firstChildColumn) {
+                cell.setCellValue(group);
+            }
+        }
+        if (firstColumn < lastColumn) {
+            sheet.addMergedRegion(new CellRangeAddress(0, 0, firstColumn, lastColumn));
+        }
+    }
+
+    private void copyRosterTemplateCell(Cell source, Cell target) {
+        target.setCellStyle(source.getCellStyle());
+        target.setCellComment(source.getCellComment());
+        target.setHyperlink(source.getHyperlink());
+        if (source.getCellType() == CellType.FORMULA) {
+            target.setCellFormula(source.getCellFormula());
+        } else if (source.getCellType() == CellType.NUMERIC) {
+            target.setCellValue(source.getNumericCellValue());
+        } else if (source.getCellType() == CellType.BOOLEAN) {
+            target.setCellValue(source.getBooleanCellValue());
+        } else if (source.getCellType() == CellType.ERROR) {
+            target.setCellErrorValue(source.getErrorCellValue());
+        } else if (source.getCellType() == CellType.STRING) {
+            target.setCellValue(source.getStringCellValue());
+        } else {
+            target.setBlank();
+        }
+    }
+
+    private int findRosterTemplateHeaderColumn(Row headerRow, DataFormatter formatter, String expectedHeader) {
+        String normalizedExpectedHeader = normalizeRosterTemplateText(expectedHeader);
+        for (int columnIndex = 0; columnIndex < headerRow.getLastCellNum(); columnIndex++) {
+            String header = normalizeRosterTemplateText(formatter.formatCellValue(headerRow.getCell(columnIndex)));
+            if (normalizedExpectedHeader.equals(header)) {
+                return columnIndex;
+            }
+        }
+        return -1;
+    }
+
+    private void copyCellStyle(Cell source, Cell target) {
+        if (source != null && source.getCellStyle() != null) {
+            target.setCellStyle(source.getCellStyle());
+        }
+    }
+
+    private String normalizeRosterTemplateText(String text) {
+        if (text == null) {
+            return "";
+        }
+        return text.replace("\r", "").replace("\n", "").replace(" ", "").replace("　", "").trim();
     }
 
     @PostMapping("/queryAllEmployeeList")
@@ -360,6 +656,12 @@ public class HrmEmployeeController {
         OperationLog operationLog = employeeService.againOnboarding(employeeBO);
         return OperationResult.ok(operationLog);
     }
+
+    @PostMapping("/queryEmploymentRecords/{employeeId}")
+    @ApiOperation("查询员工入离职履历")
+    public Result<List<HrmEmployeeEmploymentRecord>> queryEmploymentRecords(@PathVariable("employeeId") Long employeeId) {
+        return Result.ok(employmentRecordService.queryByEmployeeId(employeeId));
+    }
 //    @RequestMapping("/import")
 //    @ResponseBody
 //    public Result selectCompanyXls(MultipartFile file) throws IOException {
@@ -393,7 +695,8 @@ public class HrmEmployeeController {
             employeeService.importEmployee(file);
         }
         catch (Exception ax) {
-            ax.printStackTrace();
+            logger.error("员工花名册导入失败", ax);
+            return Result.error(500, ax.getMessage());
         }
         return Result.ok();
     }

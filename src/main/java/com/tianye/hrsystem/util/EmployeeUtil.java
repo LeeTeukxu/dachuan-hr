@@ -41,7 +41,7 @@ public class EmployeeUtil {
 
 
     public static String computeCompanyAge(Integer companyAge) {
-        if (companyAge <= 0) {
+        if (companyAge == null || companyAge <= 0) {
             return "";
         }
         int year = companyAge / 365;

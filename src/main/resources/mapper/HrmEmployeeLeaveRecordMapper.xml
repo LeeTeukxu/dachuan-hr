@@ -2,6 +2,9 @@
 <!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
 <mapper namespace="com.tianye.hrsystem.mapper.HrmEmployeeLeaveRecordMapper">
     <select id="queryLeaveRecordPageList" resultType="java.util.Map">
+        <!-- SaaS 安全改造 P0-4：排序字段白名单校验 -->
+        <bind name="safeSortField" value="@com.tianye.hrsystem.util.SqlSafeUtil@safeIdentifierOrEmpty(data.sortField)" />
+
         SELECT b.employee_name,b.job_number,d.`name` as
         dept_name,b.post,a.examine_id,a.leave_type,a.leave_start_time,a.leave_end_time,a.leave_day,a.leave_reason,a.remark
         FROM hrm_employee_leave_record a
@@ -33,7 +36,7 @@
         </if>
         <choose>
             <when test="data.sortField != null and data.sortField != ''">
-                ORDER BY a.${data.sortField}
+                ORDER BY a.${safeSortField}
                 <if test="data.order == 1">
                     desc
                 </if>

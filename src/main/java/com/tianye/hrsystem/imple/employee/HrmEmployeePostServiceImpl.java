@@ -6,6 +6,7 @@ import cn.hutool.core.date.LocalDateTimeUtil;
 import cn.hutool.core.lang.Dict;
 import cn.hutool.core.util.ArrayUtil;
 import cn.hutool.core.util.ObjectUtil;
+import com.tianye.hrsystem.enums.FieldTypeEnum;
 import cn.hutool.json.JSONUtil;
 import com.alibaba.fastjson.JSONObject;
 import com.tianye.hrsystem.base.BaseServiceImpl;
@@ -65,28 +66,24 @@ public class HrmEmployeePostServiceImpl extends BaseServiceImpl<HrmEmployeePostM
     @Autowired
     private IHrmFieldExtendService hrmFieldExtendService;
 
+    @Autowired
+    private IHrmEmployeeEmploymentRecordService employmentRecordService;
+
     private static final String COMPANY_AGE = "company_age";
 
     @Override
     public PostInformationVO postInformation(Long employeeId) {
-        HrmEmployeeQuitInfo employeeQuitInfo = quitInfoService.lambdaQuery().eq(HrmEmployeeQuitInfo::getEmployeeId, employeeId).one();
+        HrmEmployeeQuitInfo employeeQuitInfo = quitInfoService.lambdaQuery()
+                .eq(HrmEmployeeQuitInfo::getEmployeeId, employeeId)
+                .eq(HrmEmployeeQuitInfo::getIsArchived, 0)
+                .last("limit 1")
+                .one();
         HrmEmployee employee = employeeService.getById(employeeId);
-        if (employee.getCompanyAgeStartTime() != null && ObjectUtil.notEqual(employee.getEntryStatus(), EmployeeEntryStatus.ALREADY_LEAVE.getValue())) {
-            long nowCompanyAge = LocalDateTimeUtil.between(employee.getCompanyAgeStartTime().atStartOfDay(), LocalDateTime.now()).toDays() + 1;
-            if (LocalDateTimeUtil.toEpochMilli(employee.getCompanyAgeStartTime()) > System.currentTimeMillis()) {
-                nowCompanyAge = 0;
-            }
-            if (nowCompanyAge != employee.getCompanyAge()) {
-                employee.setCompanyAge((int) nowCompanyAge);
-                employeeService.updateById(employee);
-            }
-        }
+        refreshCompanyAge(employee);
         List<HrmEmployeeData> fieldValueList = employeeDataService.queryListByEmployeeId(employeeId);
         JSONObject employeeModel = BeanUtil.copyProperties(employee, JSONObject.class);
         List<InformationFieldVO> informationFieldVOList = employeeService.transferInformation(employeeModel, LabelGroupEnum.POST, fieldValueList);
-        //计算司龄,修改描述
-//        String companyAgeDesc = EmployeeUtil.computeCompanyAge(employee.getCompanyAge());
-        String companyAgeDesc = "";
+        String companyAgeDesc = EmployeeUtil.computeCompanyAge(employee.getCompanyAge());
         informationFieldVOList.forEach(fieldValue -> {
             if (COMPANY_AGE.equals(fieldValue.getFieldName())) {
                 fieldValue.setFieldValueDesc(companyAgeDesc);
@@ -106,6 +103,35 @@ public class HrmEmployeePostServiceImpl extends BaseServiceImpl<HrmEmployeePostM
         return new PostInformationVO(informationFieldVOList, employeeQuitInfo);
     }
 
+    private void refreshCompanyAge(HrmEmployee employee) {
+        if (employee == null || ObjectUtil.equal(employee.getEntryStatus(), EmployeeEntryStatus.ALREADY_LEAVE.getValue())) {
+            return;
+        }
+        boolean needUpdate = false;
+        if (employee.getCompanyAgeStartTime() == null && employee.getEntryTime() != null) {
+            employee.setCompanyAgeStartTime(employee.getEntryTime());
+            needUpdate = true;
+        }
+        if (employee.getCompanyAgeStartTime() == null) {
+            if (employee.getCompanyAge() == null) {
+                employee.setCompanyAge(0);
+            }
+            return;
+        }
+        long nowCompanyAge = LocalDateTimeUtil.between(employee.getCompanyAgeStartTime().atStartOfDay(), LocalDateTime.now()).toDays() + 1;
+        if (LocalDateTimeUtil.toEpochMilli(employee.getCompanyAgeStartTime()) > System.currentTimeMillis()) {
+            nowCompanyAge = 0;
+        }
+        int companyAge = (int) nowCompanyAge;
+        if (!ObjectUtil.equal(employee.getCompanyAge(), companyAge)) {
+            employee.setCompanyAge(companyAge);
+            needUpdate = true;
+        }
+        if (needUpdate) {
+            employeeService.updateById(employee);
+        }
+    }
+
     @Override
     public OperationLog updatePostInformation(UpdateInformationBO updateInformationBO) {
         Long employeeId = updateInformationBO.getEmployeeId();
@@ -118,13 +144,31 @@ public class HrmEmployeePostServiceImpl extends BaseServiceImpl<HrmEmployeePostM
         Map<FiledIsFixedEnum, List<UpdateInformationBO.InformationFieldBO>> isFixedMap = dataList.stream().collect(Collectors.groupingBy(employeeData -> FiledIsFixedEnum.parse(employeeData.getIsFixed())));
         List<UpdateInformationBO.InformationFieldBO> fixedEmployeeData = isFixedMap.get(FiledIsFixedEnum.FIXED);
         JSONObject jsonObject = new JSONObject();
-        fixedEmployeeData.forEach(employeeData -> jsonObject.put(employeeData.getFieldName(), FieldUtil.convertFieldValue(employeeData.getType(), employeeData.getFieldValue(), IsEnum.YES.getValue())));
+        fixedEmployeeData.forEach(employeeData -> {
+            Object converted = FieldUtil.convertFieldValue(employeeData.getType(), employeeData.getFieldValue(), IsEnum.YES.getValue());
+            // 日期类字段被清空时前端提交空串/空值:空串转 LocalDate 会抛异常导致保存失败,统一置 null
+            if (ObjectUtil.isEmpty(converted)
+                    && (Integer.valueOf(FieldTypeEnum.DATE.getValue()).equals(employeeData.getType())
+                    || Integer.valueOf(FieldTypeEnum.DATETIME.getValue()).equals(employeeData.getType()))) {
+                converted = null;
+            }
+            jsonObject.put(employeeData.getFieldName(), converted);
+        });
+        // 司龄开始日期是否被本次提交清空(用于下方显式置 NULL)
+        boolean companyAgeStartCleared = fixedEmployeeData.stream().anyMatch(field ->
+                "company_age_start_time".equals(field.getFieldName()) && ObjectUtil.isEmpty(field.getFieldValue()));
         HrmEmployee employee = jsonObject.toJavaObject(HrmEmployee.class);
         if (employee.getDeptId() == null) {
             employeeService.lambdaUpdate().set(HrmEmployee::getDeptId, null).eq(HrmEmployee::getEmployeeId, employeeId).update();
         }
         if (employee.getParentId() == null) {
             employeeService.lambdaUpdate().set(HrmEmployee::getParentId, null).eq(HrmEmployee::getEmployeeId, employeeId).update();
+        }
+        // 司龄开始日期允许清空:updateById 默认忽略 null 字段,清空必须显式置 NULL 才能真正保存,
+        // 否则旧日期残留,员工司龄仍按旧日期计算(田野农谷反馈)
+        if (employee.getCompanyAgeStartTime() == null && companyAgeStartCleared) {
+            employeeService.lambdaUpdate().set(HrmEmployee::getCompanyAgeStartTime, null)
+                    .eq(HrmEmployee::getEmployeeId, employeeId).update();
         }
         employee.setEmployeeId(employeeId);
         Integer probation = employee.getProbation();
@@ -184,7 +228,10 @@ public class HrmEmployeePostServiceImpl extends BaseServiceImpl<HrmEmployeePostM
 
         OperationLog operationLog = new OperationLog();
         if (quitInfo.getQuitInfoId() == null) {
-            boolean exists = quitInfoService.lambdaQuery().eq(HrmEmployeeQuitInfo::getEmployeeId, quitInfo.getEmployeeId()).exists();
+            boolean exists = quitInfoService.lambdaQuery()
+                    .eq(HrmEmployeeQuitInfo::getEmployeeId, quitInfo.getEmployeeId())
+                    .eq(HrmEmployeeQuitInfo::getIsArchived, 0)
+                    .exists();
             if (exists) {
                 throw new CrmException(HrmCodeEnum.THE_EMPLOYEE_HAS_ALREADY_HANDLED_THE_RESIGNATION);
             }
@@ -219,6 +266,8 @@ public class HrmEmployeePostServiceImpl extends BaseServiceImpl<HrmEmployeePostM
         employee.setEntryStatus(entryStatus.getValue());
         employeeService.updateById(employee);
         quitInfoService.saveOrUpdate(quitInfo);
+        // 记录离职时间节点（幂等，修改离职信息时会同步更新节点日期）
+        employmentRecordService.recordLeave(quitInfo.getEmployeeId(), quitInfo.getPlanQuitTime(), null);
         return operationLog;
     }
 
@@ -229,12 +278,17 @@ public class HrmEmployeePostServiceImpl extends BaseServiceImpl<HrmEmployeePostM
         OperationLog operationLog = new OperationLog();
         operationLog.setOperationObject(hrmEmployee.getEmployeeId(), hrmEmployee.getEmployeeName());
 
-        HrmEmployeeQuitInfo quitInfo = quitInfoService.lambdaQuery().eq(HrmEmployeeQuitInfo::getEmployeeId, employeeId).one();
+        HrmEmployeeQuitInfo quitInfo = quitInfoService.lambdaQuery()
+                .eq(HrmEmployeeQuitInfo::getEmployeeId, employeeId)
+                .eq(HrmEmployeeQuitInfo::getIsArchived, 0)
+                .last("limit 1")
+                .one();
         HrmEmployee employee = new HrmEmployee();
         employee.setEmployeeId(quitInfo.getEmployeeId());
         employee.setEntryStatus(EmployeeEntryStatus.IN.getValue());
         employeeService.updateById(employee);
         quitInfoService.removeById(quitInfo.getQuitInfoId());
+        employmentRecordService.cancelLeave(employeeId);
         Content content = employeeActionRecordService.cancelLeave(deleteLeaveInformationBO);
         operationLog.setOperationInfo(content.getDetail());
         return operationLog;
@@ -243,7 +297,11 @@ public class HrmEmployeePostServiceImpl extends BaseServiceImpl<HrmEmployeePostM
     @Override
     public PostInformationVO postArchives() {
         Long employeeId = EmployeeHolder.getEmployeeId();
-        HrmEmployeeQuitInfo employeeQuitInfo = quitInfoService.lambdaQuery().eq(HrmEmployeeQuitInfo::getEmployeeId, employeeId).one();
+        HrmEmployeeQuitInfo employeeQuitInfo = quitInfoService.lambdaQuery()
+                .eq(HrmEmployeeQuitInfo::getEmployeeId, employeeId)
+                .eq(HrmEmployeeQuitInfo::getIsArchived, 0)
+                .last("limit 1")
+                .one();
         HrmEmployee employee = employeeService.getById(employeeId);
         List<HrmEmployeeData> fieldValueList = employeeDataService.queryListByEmployeeId(employeeId);
         JSONObject employeeModel = BeanUtil.copyProperties(employee, JSONObject.class);

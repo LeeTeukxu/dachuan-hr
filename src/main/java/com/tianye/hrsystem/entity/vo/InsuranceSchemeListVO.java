@@ -38,6 +38,9 @@ public class InsuranceSchemeListVO {
     @ApiModelProperty("使用人数")
     private Integer useCount;
 
+    @ApiModelProperty("使用人员")
+    private String useEmployeeNames;
+
     @ApiModelProperty(value = "语言包map")
     private Map<String, String> languageKeyMap;
 
@@ -53,6 +56,7 @@ public class InsuranceSchemeListVO {
                 ", corporateInsuranceAmount=" + corporateInsuranceAmount +
                 ", corporateProvidentFundAmount=" + corporateProvidentFundAmount +
                 ", useCount=" + useCount +
+                ", useEmployeeNames='" + useEmployeeNames + '\'' +
                 '}';
     }
 }

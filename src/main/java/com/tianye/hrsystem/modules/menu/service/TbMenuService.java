@@ -13,6 +13,7 @@ import org.springframework.web.bind.annotation.RequestBody;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Objects;
 import java.util.stream.Collectors;
 
 @Service
@@ -23,8 +24,15 @@ public class TbMenuService extends BaseServiceImpl<TbMenuMapper, TbMenu> {
     @Autowired
     tbmenuRepository menuRepository;
 
+    @Autowired
+    MenuPermissionSupport menuPermissionSupport;
+
+    public List<tbmenu> queryAllMenus() {
+        return menuRepository.findAll();
+    }
+
     public List<tbmenu> queryMenuList(@RequestBody QueryMenuBO queryMenuBO) {
-        List<tbmenu> listMenus = menuRepository.findAll();
+        List<tbmenu> listMenus = queryAllMenus();
         List<tbmenu> listResult = new ArrayList<>();
          if (listMenus.size() > 0) {
             List<tbmenu> listParents = listMenus.stream().filter(f -> f.getPid() == 0).collect(Collectors.toList());
@@ -32,7 +40,7 @@ public class TbMenuService extends BaseServiceImpl<TbMenuMapper, TbMenu> {
                 listParents.forEach(f -> {
                     tbmenu parentMenu = new tbmenu();
                     parentMenu = f;
-                    List<tbmenu> listChildren = listMenus.stream().filter(x -> x.getPid() == f.getId()).collect(Collectors.toList());
+                    List<tbmenu> listChildren = listMenus.stream().filter(x -> Objects.equals(x.getPid(), f.getId())).collect(Collectors.toList());
                     if (listChildren.size() > 0) {
                         List<tbmenu> listChildrenResult = new ArrayList<>();
                         listChildren.forEach(x -> {

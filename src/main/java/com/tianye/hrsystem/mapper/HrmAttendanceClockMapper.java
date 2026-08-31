@@ -57,6 +57,15 @@ public interface HrmAttendanceClockMapper extends BaseMapper<HrmAttendanceClock>
      */
     List<HrmAttendanceClock> queryAttendanceClockList(@Param("clockType") Integer clockType, @Param("startDateTime") LocalDateTime startDateTime, @Param("endDateTime") LocalDateTime endDateTime, @Param("employeeIds") List<Long> employeeIds, @Param("clockStage") Integer clockStage);
 
+    /**
+     * 查询日期区间内的全部打卡记录（不按天裁剪）
+     */
+    List<HrmAttendanceClock> queryAttendanceClockTimelineList(@Param("clockType") Integer clockType,
+                                                              @Param("startDateTime") LocalDateTime startDateTime,
+                                                              @Param("endDateTime") LocalDateTime endDateTime,
+                                                              @Param("employeeIds") List<Long> employeeIds,
+                                                              @Param("clockStage") Integer clockStage);
+
 
     /**
      * 获取考勤时间内有夜班补贴的数据

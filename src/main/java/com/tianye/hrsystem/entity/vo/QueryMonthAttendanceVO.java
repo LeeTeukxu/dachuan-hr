@@ -33,8 +33,14 @@ public class QueryMonthAttendanceVO {
     @ApiModelProperty(value = "实际出勤天数")
     private BigDecimal actualAttendance;
 
+    @ApiModelProperty(value = "应计出勤天数")
+    private BigDecimal accruedAttendance;
+
     @ApiModelProperty(value = "加班/小时")
     private BigDecimal workOverTime;
+
+    @ApiModelProperty(value = "加班工资")
+    private BigDecimal overtimePay;
 
     @ApiModelProperty(value = "空班/次")
     private Integer emptyClass;

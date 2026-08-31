@@ -7,17 +7,39 @@
     </select>
 
     <select id="queryHrmBonusList" resultType="com.tianye.hrsystem.modules.bonus.vo.QueryBounsVO">
-        select a.*, b.employee_name from hrm_bonus as a left join hrm_employee as b
-        on a.employee_id = b.employee_id
+        select
+            bonus_keys.employee_id,
+            coalesce(payroll_bonus.employee_name, tax_only_bonus.employee_name, employee.employee_name) as employee_name,
+            coalesce(payroll_bonus.dept_id, tax_only_bonus.dept_id, employee.dept_id) as dept_id,
+            payroll_bonus.bonus_id,
+            payroll_bonus.bonus,
+            tax_only_bonus.bonus as tax_only_bonus,
+            bonus_keys.`year`,
+            bonus_keys.`month`
+        from (
+            select employee_id, `year`, `month` from hrm_bonus
+            union
+            select employee_id, `year`, `month` from hrm_bonus_tax_only
+        ) bonus_keys
+        left join hrm_bonus payroll_bonus
+            on payroll_bonus.employee_id = bonus_keys.employee_id
+            and payroll_bonus.`year` = bonus_keys.`year`
+            and payroll_bonus.`month` = bonus_keys.`month`
+        left join hrm_bonus_tax_only tax_only_bonus
+            on tax_only_bonus.employee_id = bonus_keys.employee_id
+            and tax_only_bonus.`year` = bonus_keys.`year`
+            and tax_only_bonus.`month` = bonus_keys.`month`
+        left join hrm_employee employee on employee.employee_id = bonus_keys.employee_id
         WHERE 1=1
-        <if test="data.employeeName != ''">
-            AND a.employee_id in (select employee_id from hrm_employee where employee_Name like concat('%',#{data.employeeName},'%'))
+        <if test="data.employeeName != null and data.employeeName != ''">
+            AND bonus_keys.employee_id in (select employee_id from hrm_employee where employee_Name like concat('%',#{data.employeeName},'%'))
         </if>
         <if test="data.year != null">
-            AND a.year = #{data.year}
+            AND bonus_keys.`year` = #{data.year}
         </if>
         <if test="data.month != null">
-            AND a.month = #{data.month}
+            AND bonus_keys.`month` = #{data.month}
         </if>
+        order by bonus_keys.`year` desc, bonus_keys.`month` desc, employee.employee_name asc
     </select>
 </mapper>

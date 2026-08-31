@@ -10,6 +10,7 @@ import lombok.EqualsAndHashCode;
 import lombok.experimental.Accessors;
 
 import java.io.Serializable;
+import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 
@@ -97,6 +98,21 @@ public class HrmEmployee implements Serializable {
 
     @ApiModelProperty("是否加入钉钉 0、未加入 1、已加入")
     private Integer expandProduction;
+
+    @ApiModelProperty("所属体系 1、行政 2、生产")
+    private Integer affiliationSystem;
+
+    @ApiModelProperty("休息制度 1、行政单双休 2、固定月休4天")
+    private Integer restType;
+
+    @ApiModelProperty("是否连班 1、是 2、否")
+    private Integer isContinuousShift;
+
+    @ApiModelProperty("员工级普通员工全勤金额")
+    private BigDecimal ordinaryFullAttendanceAmount;
+
+    @ApiModelProperty("员工级领导全勤金额")
+    private BigDecimal leaderFullAttendanceAmount;
 
     @ApiModelProperty(value = "部门ID")
     @TableField(updateStrategy = FieldStrategy.NOT_NULL)

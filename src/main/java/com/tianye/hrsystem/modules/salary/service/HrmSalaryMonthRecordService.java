@@ -65,7 +65,7 @@ public class HrmSalaryMonthRecordService extends BaseServiceImpl<HrmSalaryMonthR
             List<ComputeSalaryDto> list = salaryMonthOptionValueService.querySalaryOptionValue(querySalaryPageListVO.getSEmpRecordId());
             List<QuerySalaryPageListVO.SalaryValue> salaryValues = TransferUtil.transferList(list, QuerySalaryPageListVO.SalaryValue.class);
             salaryValues.add(new QuerySalaryPageListVO.SalaryValue(0L, 1, querySalaryPageListVO.getNeedWorkDay().toString(), 1, "应出勤天数"));
-            salaryValues.add(new QuerySalaryPageListVO.SalaryValue(0L, 2, querySalaryPageListVO.getActualWorkDay().toString(), 1, "实际出勤天数"));
+            salaryValues.add(new QuerySalaryPageListVO.SalaryValue(0L, 2, querySalaryPageListVO.getActualWorkDay().toString(), 1, "应计出勤天数"));
             querySalaryPageListVO.setSalary(salaryValues);
         });
         for (SalaryOptionHeadVO headVO : salaryOptionHeadVOList) {

@@ -5,8 +5,10 @@ import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.tianye.hrsystem.common.Result;
 import com.tianye.hrsystem.modules.insurance.dto.QueryInsurancePageListBO;
 import com.tianye.hrsystem.modules.insurance.dto.QueryInsuranceRecordListBO;
+import com.tianye.hrsystem.modules.insurance.dto.UpdateInsuranceSalaryBasicAmountBO;
 import com.tianye.hrsystem.modules.insurance.vo.QueryInsurancePageListVO;
 import com.tianye.hrsystem.modules.insurance.vo.QueryInsuranceRecordListVO;
+import com.tianye.hrsystem.modules.insurance.vo.InsuranceComputeProgressVO;
 import io.swagger.annotations.ApiOperation;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.web.bind.annotation.*;
@@ -26,8 +28,15 @@ public class HrmInsuranceMonthRecordController {
             return Result.OK(data.getString("year"));
         }catch (Exception ax) {
             ax.printStackTrace();
+            return Result.Error(ax);
         }
-        return Result.OK();
+    }
+
+    @PostMapping("/queryComputeInsuranceProgress")
+    @ApiOperation("查询社保报表生成进度")
+    public Result<InsuranceComputeProgressVO> queryComputeInsuranceProgress() {
+        InsuranceComputeProgressVO progress = insuranceMonthRecordService.queryComputeInsuranceProgress();
+        return Result.OK(progress);
     }
 
     @PostMapping("/queryInsuranceRecordList")
@@ -49,6 +58,13 @@ public class HrmInsuranceMonthRecordController {
     public Result<Page<QueryInsurancePageListVO>> queryInsurancePageList(@RequestBody QueryInsurancePageListBO queryInsurancePageListBO) {
         Page<QueryInsurancePageListVO> page = insuranceMonthRecordService.queryInsurancePageList(queryInsurancePageListBO);
         return Result.OK(page);
+    }
+
+    @PostMapping("/updateSalaryBasicInsuranceAmount")
+    @ApiOperation("设置或取消累计基本工资保险金额")
+    public Result<Integer> updateSalaryBasicInsuranceAmount(@RequestBody UpdateInsuranceSalaryBasicAmountBO updateBO) {
+        int updatedCount = insuranceMonthRecordService.updateSalaryBasicInsuranceAmount(updateBO);
+        return Result.OK(updatedCount);
     }
 
     @PostMapping("/deleteInsurance/{iRecordId}")

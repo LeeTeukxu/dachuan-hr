@@ -35,7 +35,6 @@ public class AttendanceDetailRefreshTask extends AbstractDingTalkTask {
     protected void doProcess(String companyId, Date currentDate) throws Exception {
         // 设置用户列表
         List<tbattendanceuser> users = attendanceUserRep.findAll();
-        detailRecord.setUsers(users);
 
         // 按7天分段查询
         List<Date[]> dateRanges = dateUtils.getDateRangeByLimit(currentDate, 7);
@@ -49,7 +48,7 @@ public class AttendanceDetailRefreshTask extends AbstractDingTalkTask {
             if (!checkpoint.isDone(companyId, getClass(), beginDate, endDate)) {
                 try {
                     rateLimiter.acquire(companyId);
-                    detailRecord.GetAndSave(beginDate, endDate);
+                    detailRecord.GetAndSave(beginDate, endDate, users);
                     checkpoint.markDone(companyId, getClass(), beginDate, endDate);
                     logger.info("[AttendanceDetailRefreshTask][{}] 已同步{} ~ {}的考勤明细",
                             companyId, beginDate, endDate);

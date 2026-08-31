@@ -22,7 +22,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionTemplate;
 
 import java.text.DateFormat;
 import java.text.SimpleDateFormat;
@@ -56,65 +56,116 @@ public class AttendanceGroupManager implements IGroupManager {
     @Autowired
     hrmAttendanceShiftRepository shiftRep;
 
-    SimpleDateFormat timeFormat=new SimpleDateFormat("HH:mm:ss");
+    // SimpleDateFormat 非线程安全，单例字段必须 ThreadLocal 隔离
+    private static final ThreadLocal<SimpleDateFormat> TIME_FORMAT =
+            ThreadLocal.withInitial(() -> new SimpleDateFormat("HH:mm:ss"));
 
     @Autowired
     DDTalkResposeLogger ddLogger;
     @Autowired
     MyDateUtils dateUtils;
+    @Autowired
+    TransactionTemplate transactionTemplate;
 
     @Override
-    @Transactional(rollbackFor = Exception.class)
     public void GetAndSave() throws ApiException {
-        Long Offset = 0L;
-        groupRep.deleteAll();
-        depRelRep.deleteAll();
-        empRelRep.deleteAll();
+        // 钉钉分页抓取（含逐班次详情外呼）在事务外执行，避免长时间占用租户连接；
+        // 本地快照整体替换在单个事务内原子完成
+        GroupSyncSnapshot snapshot = fetchCurrentSnapshot();
+        transactionTemplate.execute(status -> {
+            replaceLocalSnapshot(snapshot);
+            return null;
+        });
+    }
+
+    GroupSyncSnapshot fetchCurrentSnapshot() throws ApiException {
+        Long offset = 0L;
+        GroupSyncSnapshot snapshot = new GroupSyncSnapshot();
         while (true) {
             String token = tokenCreator.Refresh();
-            List<HrmAttendanceGroup> Groups = new ArrayList<>();
             DingTalkClient client = new DefaultDingTalkClient("https://oapi.dingtalk.com/topapi/attendance/getsimplegroups");
             OapiAttendanceGetsimplegroupsRequest req = new OapiAttendanceGetsimplegroupsRequest();
-            req.setOffset(Offset);
+            req.setOffset(offset);
             req.setSize(10L);
             OapiAttendanceGetsimplegroupsResponse rsp = client.execute(req, token);
 
-            Date Begin=dateUtils.getCurrent();
-            ddLogger.Info(rsp,((DefaultDingTalkClient)client).getRequestUrl(),Begin,AttendanceGroupManager.class);
+            Date begin = dateUtils.getCurrent();
+            ddLogger.Info(rsp, ((DefaultDingTalkClient) client).getRequestUrl(), begin, AttendanceGroupManager.class);
 
-            if (rsp.isSuccess()) {
-                OapiAttendanceGetsimplegroupsResponse.AtGroupListForTopVo Vs = rsp.getResult();
-                List<OapiAttendanceGetsimplegroupsResponse.AtGroupForTopVo> Ds = Vs.getGroups();
-                if (Ds.size() > 0) {
+            if (!rsp.isSuccess()) {
+                throw new ApiException(rsp.getErrmsg());
+            }
 
-                    for (int i = 0; i < Ds.size(); i++) {
-                        OapiAttendanceGetsimplegroupsResponse.AtGroupForTopVo vo = Ds.get(i);
-                        Long groupId = vo.getGroupId();
-                        HrmAttendanceGroup newOne = new HrmAttendanceGroup();
-                        newOne.setAttendanceGroupId(groupId);
-                        newOne.setName(vo.getGroupName());
-                        newOne.setIsRest(1);
-                        newOne.setIsDefaultSetting(vo.getIsDefault() == true ? 1 : 0);
-                        newOne.setCreateTime(new Date());
-                        newOne.setEffectTime(new Date());
-                        newOne.setCreateUserId(1L);
-                        groupRep.save(newOne);
-                        logger.info("添加了考勤组:"+vo.getGroupName());
-                        List<String> depNameList = vo.getDeptNameList();
-                        if(depNameList==null || depNameList.size()==0) {
-                            continue;
-                        }
-                        AddGroupRelationToDept(groupId,depNameList);
-
-                        List<OapiAttendanceGetsimplegroupsResponse.AtClassVo> ys= vo.getSelectedClass();
-                        AddAttendanceShift(groupId,vo,ys);
-                    }
+            OapiAttendanceGetsimplegroupsResponse.AtGroupListForTopVo body = rsp.getResult();
+            List<OapiAttendanceGetsimplegroupsResponse.AtGroupForTopVo> groups =
+                    body == null || body.getGroups() == null ? Collections.emptyList() : body.getGroups();
+            for (OapiAttendanceGetsimplegroupsResponse.AtGroupForTopVo group : groups) {
+                if (group == null || group.getGroupId() == null) {
+                    continue;
                 }
-                Offset += Ds.size();
-                if (Vs.getHasMore() == false) break;
+                Long groupId = group.getGroupId();
+                snapshot.groups.add(buildAttendanceGroup(group));
+                snapshot.shifts.addAll(buildAttendanceShifts(groupId, group, group.getSelectedClass()));
+                appendGroupRelations(snapshot, groupId, group.getDeptNameList());
+                logger.info("添加了考勤组:" + group.getGroupName());
+            }
+
+            offset += groups.size();
+            if (body == null || !Boolean.TRUE.equals(body.getHasMore())) {
+                break;
             }
         }
+        return snapshot;
+    }
 
+    private void replaceLocalSnapshot(GroupSyncSnapshot snapshot) {
+        groupRep.deleteAll();
+        depRelRep.deleteAll();
+        empRelRep.deleteAll();
+        shiftRep.deleteAll();
+
+        if (!snapshot.groups.isEmpty()) {
+            groupRep.saveAll(snapshot.groups);
+        }
+        if (!snapshot.deptRelations.isEmpty()) {
+            depRelRep.saveAll(snapshot.deptRelations);
+        }
+        if (!snapshot.employeeRelations.isEmpty()) {
+            empRelRep.saveAll(snapshot.employeeRelations);
+        }
+        if (!snapshot.shifts.isEmpty()) {
+            shiftRep.saveAll(snapshot.shifts);
+        }
+    }
+
+    private HrmAttendanceGroup buildAttendanceGroup(OapiAttendanceGetsimplegroupsResponse.AtGroupForTopVo groupInfo) {
+        HrmAttendanceGroup newOne = new HrmAttendanceGroup();
+        newOne.setAttendanceGroupId(groupInfo.getGroupId());
+        newOne.setName(groupInfo.getGroupName());
+        newOne.setIsRest(1);
+        newOne.setIsDefaultSetting(Boolean.TRUE.equals(groupInfo.getIsDefault()) ? 1 : 0);
+        newOne.setShiftSetting(buildShiftSetting(groupInfo.getSelectedClass()));
+        newOne.setCreateTime(new Date());
+        newOne.setEffectTime(new Date());
+        newOne.setCreateUserId(1L);
+        return newOne;
+    }
+
+    private String buildShiftSetting(List<OapiAttendanceGetsimplegroupsResponse.AtClassVo> shifts) {
+        if (shifts == null || shifts.isEmpty()) {
+            return null;
+        }
+        List<String> shiftIds = new ArrayList<>();
+        for (OapiAttendanceGetsimplegroupsResponse.AtClassVo shift : shifts) {
+            if (shift == null || shift.getClassId() == null) {
+                continue;
+            }
+            shiftIds.add(String.valueOf(shift.getClassId()));
+        }
+        if (shiftIds.isEmpty()) {
+            return null;
+        }
+        return String.join(",", shiftIds);
     }
 
     public String GetGroupKeyByID(String OwnerID, Long GroupID) throws ApiException {
@@ -128,10 +179,11 @@ public class AttendanceGroupManager implements IGroupManager {
             return rsp.getResult();
         } else return "";
     }
-    private void AddGroupRelationToDept(Long GroupID, List<String> depNameList)throws  ApiException {
-        List<HrmAttendanceGroupRelationDept> DDS = new ArrayList<>();
-        for (int i = 0; i < depNameList.size(); i++) {
-            String depName = depNameList.get(i);
+    private void appendGroupRelations(GroupSyncSnapshot snapshot, Long groupId, List<String> depNameList) {
+        if (depNameList == null || depNameList.isEmpty()) {
+            return;
+        }
+        for (String depName : depNameList) {
             HrmDept hm = null;
             List<HrmDept> Deps = deptRep.findAllByName(depName);
             if (Deps.size() == 1) {
@@ -143,39 +195,40 @@ public class AttendanceGroupManager implements IGroupManager {
             if(hm!=null){
                 HrmAttendanceGroupRelationDept newOne = new HrmAttendanceGroupRelationDept();
                 newOne.setAttendanceGroupRelationDeptId(System.currentTimeMillis());
-                newOne.setAttendanceGroupId(GroupID);
+                newOne.setAttendanceGroupId(groupId);
                 newOne.setDeptId(hm.getDeptId());
                 newOne.setEffectTime(new Date());
                 newOne.setCreateTime(new Date());
                 newOne.setCreateUserId(1L);
-                DDS.add(newOne);
-                AddGroupRelationToEmployee(GroupID,hm.getDeptId());
+                snapshot.deptRelations.add(newOne);
+                snapshot.employeeRelations.addAll(buildGroupRelationToEmployee(groupId, hm.getDeptId()));
             }
         }
-        if (DDS.size() > 0) {
-            depRelRep.saveAll(DDS);
-        }
     }
-    private void AddGroupRelationToEmployee(Long GroupID, Long DeptID) {
-        List<HrmAttendanceGroupRelationEmployee> Vs = new ArrayList<>();
-        List<HrmEmployee> Ems = empRep.findAllByDeptId(DeptID);
-        for (int i = 0; i < Ems.size(); i++) {
-            HrmEmployee em = Ems.get(i);
+
+    private List<HrmAttendanceGroupRelationEmployee> buildGroupRelationToEmployee(Long groupId, Long deptId) {
+        List<HrmAttendanceGroupRelationEmployee> relations = new ArrayList<>();
+        List<HrmEmployee> employees = empRep.findAllByDeptId(deptId);
+        for (HrmEmployee em : employees) {
 
             HrmAttendanceGroupRelationEmployee ee = new HrmAttendanceGroupRelationEmployee();
             ee.setAttendanceGroupRelationEmployeeId(System.currentTimeMillis());
-            ee.setAttendanceGroupId(GroupID);
+            ee.setAttendanceGroupId(groupId);
             ee.setEmployeeId(em.getEmployeeId());
             ee.setEffectTime(new Date());
             ee.setCreateTime(new Date());
             ee.setCreateUserId(1L);
-            empRelRep.save(ee);
+            relations.add(ee);
         }
+        return relations;
     }
-    private void AddAttendanceShift(Long GroupID,
+
+    private List<HrmAttendanceShift> buildAttendanceShifts(Long GroupID,
             OapiAttendanceGetsimplegroupsResponse.AtGroupForTopVo groupInfo,
             List<OapiAttendanceGetsimplegroupsResponse.AtClassVo> Shifts) throws  ApiException{
-        shiftRep.deleteAllByGroupId(GroupID);
+        if (Shifts == null || Shifts.isEmpty()) {
+            return Collections.emptyList();
+        }
         List<HrmAttendanceShift> Ss=new ArrayList<>();
         for(int i=0;i<Shifts.size();i++){
             OapiAttendanceGetsimplegroupsResponse.AtClassVo shift=Shifts.get(i);
@@ -186,10 +239,10 @@ public class AttendanceGroupManager implements IGroupManager {
             newOne.setShiftId(classId);
             newOne.setShiftName(className);
 
-            if(shiftType.equals("NONE")){
+            if("NONE".equals(shiftType)){
                 newOne.setShiftType(0);
             } else {
-                newOne.setShiftType(shiftType.equals("FIXED")==true?1:2);
+                newOne.setShiftType("FIXED".equals(shiftType) ? 1 : 2);
             }
             newOne.setGroupId(GroupID);
             newOne.setEffectTime(new Date());
@@ -197,22 +250,30 @@ public class AttendanceGroupManager implements IGroupManager {
             newOne.setCreateUserId(1L);
 
             OapiAttendanceGetsimplegroupsResponse.ClassSettingVo setting= shift.getSetting();
-            newOne.setShiftHours(Math.toIntExact(setting.getWorkTimeMinutes()/60));
-            OapiAttendanceGetsimplegroupsResponse.AtTimeVo beginVo=setting.getRestBeginTime();
-            OapiAttendanceGetsimplegroupsResponse.AtTimeVo endVo=setting.getRestEndTime();
-            if(beginVo!=null && endVo!=null){
-                newOne.setRestStartTime(timeFormat.format(beginVo.getCheckTime()));
-                newOne.setRestEndTime(timeFormat.format(endVo.getCheckTime()));
-                newOne.setRestTimeStatus(1);
+            if (setting != null) {
+                if (setting.getWorkTimeMinutes() != null) {
+                    newOne.setShiftHours(Math.toIntExact(setting.getWorkTimeMinutes()/60));
+                }
+                OapiAttendanceGetsimplegroupsResponse.AtTimeVo beginVo=setting.getRestBeginTime();
+                OapiAttendanceGetsimplegroupsResponse.AtTimeVo endVo=setting.getRestEndTime();
+                if(beginVo!=null && endVo!=null){
+                    newOne.setRestStartTime(TIME_FORMAT.get().format(beginVo.getCheckTime()));
+                    newOne.setRestEndTime(TIME_FORMAT.get().format(endVo.getCheckTime()));
+                    newOne.setRestTimeStatus(1);
+                } else {
+                    newOne.setRestTimeStatus(0);
+                }
             } else {
                 newOne.setRestTimeStatus(0);
             }
-            int  LateMinutes=Math.toIntExact(setting.getPermitLateMinutes());
+            int lateMinutes = setting == null || setting.getPermitLateMinutes() == null
+                    ? 0
+                    : Math.toIntExact(setting.getPermitLateMinutes());
             List<OapiAttendanceGetsimplegroupsResponse.AtSectionVo> Sections= shift.getSections();
 
             OapiAttendanceShiftQueryResponse.TopShiftVo detail=GetDetail(classId);
             if(detail==null){
-                newOne=FillSomeInfo(newOne,LateMinutes,Sections);
+                newOne=FillSomeInfo(newOne, lateMinutes,Sections);
             } else {
                List<OapiAttendanceShiftQueryResponse.TopSectionVo> hs=  detail.getSections();
                newOne=FillSomeInfo1(newOne,hs);
@@ -220,7 +281,7 @@ public class AttendanceGroupManager implements IGroupManager {
             Ss.add(newOne);
             logger.info("为"+groupInfo.getGroupName()+"下添加了考勤班次:"+newOne.getShiftName());
         }
-        if(Ss.size()>0) shiftRep.saveAll(Ss);
+        return Ss;
     }
     private HrmAttendanceShift FillSomeInfo(HrmAttendanceShift newOne,
             Integer LateMinutes,List<OapiAttendanceGetsimplegroupsResponse.AtSectionVo> Sections){
@@ -235,20 +296,20 @@ public class AttendanceGroupManager implements IGroupManager {
                 Date onTime=onOnes.get().getCheckTime();
                 Date offTime=offOnes.get().getCheckTime();
                 if(n==0){
-                    newOne.setStart1(timeFormat.format(onTime));
-                    newOne.setEnd1(timeFormat.format(offTime));
-                    newOne.setLateCard1(timeFormat.format(DateUtils.addMinutes(onTime,LateMinutes)));
+                    newOne.setStart1(TIME_FORMAT.get().format(onTime));
+                    newOne.setEnd1(TIME_FORMAT.get().format(offTime));
+                    newOne.setLateCard1(TIME_FORMAT.get().format(DateUtils.addMinutes(onTime,LateMinutes)));
 
                 }
                 else if(n==1){
-                    newOne.setStart2(timeFormat.format(onTime));
-                    newOne.setEnd2(timeFormat.format(offTime));
-                    newOne.setLateCard2(timeFormat.format(DateUtils.addMinutes(onTime,LateMinutes)));
+                    newOne.setStart2(TIME_FORMAT.get().format(onTime));
+                    newOne.setEnd2(TIME_FORMAT.get().format(offTime));
+                    newOne.setLateCard2(TIME_FORMAT.get().format(DateUtils.addMinutes(onTime,LateMinutes)));
                 }
                 else if(n==2){
-                    newOne.setStart3(timeFormat.format(onTime));
-                    newOne.setEnd3(timeFormat.format(offTime));
-                    newOne.setLateCard3(timeFormat.format(DateUtils.addMinutes(onTime,LateMinutes)));
+                    newOne.setStart3(TIME_FORMAT.get().format(onTime));
+                    newOne.setEnd3(TIME_FORMAT.get().format(offTime));
+                    newOne.setLateCard3(TIME_FORMAT.get().format(DateUtils.addMinutes(onTime,LateMinutes)));
                 }
             }
         }
@@ -277,34 +338,34 @@ public class AttendanceGroupManager implements IGroupManager {
                 Date offTime=offOne.getCheckTime();//打卡时间
 
                 if(n==0){
-                    newOne.setStart1(timeFormat.format(onTime));
-                    newOne.setEnd1(timeFormat.format(offTime));
+                    newOne.setStart1(TIME_FORMAT.get().format(onTime));
+                    newOne.setEnd1(TIME_FORMAT.get().format(offTime));
 
-                    newOne.setAdvanceCard1(timeFormat.format(DateUtils.addMinutes(onTime,-1*onBeginMin)));//上班最早打卡时间
-                    newOne.setLateCard1(timeFormat.format(DateUtils.addMinutes(onTime,onEndMin)));//上班最晚打卡时间
+                    newOne.setAdvanceCard1(TIME_FORMAT.get().format(DateUtils.addMinutes(onTime,-1*onBeginMin)));//上班最早打卡时间
+                    newOne.setLateCard1(TIME_FORMAT.get().format(DateUtils.addMinutes(onTime,onEndMin)));//上班最晚打卡时间
 
-                    newOne.setEarlyCard1(timeFormat.format(DateUtils.addMinutes(offTime,-1*offBeginMin)));//下班最早打卡时间1
-                    newOne.setPostponeCard1(timeFormat.format(DateUtils.addMinutes(offTime,offEndMin)));
+                    newOne.setEarlyCard1(TIME_FORMAT.get().format(DateUtils.addMinutes(offTime,-1*offBeginMin)));//下班最早打卡时间1
+                    newOne.setPostponeCard1(TIME_FORMAT.get().format(DateUtils.addMinutes(offTime,offEndMin)));
                 }
                 else if(n==1){
-                    newOne.setStart2(timeFormat.format(onTime));
-                    newOne.setEnd2(timeFormat.format(offTime));
+                    newOne.setStart2(TIME_FORMAT.get().format(onTime));
+                    newOne.setEnd2(TIME_FORMAT.get().format(offTime));
 
-                    newOne.setAdvanceCard2(timeFormat.format(DateUtils.addMinutes(onTime,-1*onBeginMin)));//上班最早打卡时间
-                    newOne.setLateCard2(timeFormat.format(DateUtils.addMinutes(onTime,offEndMin)));//上班最晚打卡时间
+                    newOne.setAdvanceCard2(TIME_FORMAT.get().format(DateUtils.addMinutes(onTime,-1*onBeginMin)));//上班最早打卡时间
+                    newOne.setLateCard2(TIME_FORMAT.get().format(DateUtils.addMinutes(onTime,offEndMin)));//上班最晚打卡时间
 
-                    newOne.setEarlyCard2(timeFormat.format(DateUtils.addMinutes(offTime,-1*offBeginMin)));//下班最早打卡时间1
-                    newOne.setPostponeCard2(timeFormat.format(DateUtils.addMinutes(offTime,offEndMin)));
+                    newOne.setEarlyCard2(TIME_FORMAT.get().format(DateUtils.addMinutes(offTime,-1*offBeginMin)));//下班最早打卡时间1
+                    newOne.setPostponeCard2(TIME_FORMAT.get().format(DateUtils.addMinutes(offTime,offEndMin)));
                 }
                 else if(n==2){
-                    newOne.setStart3(timeFormat.format(onTime));
-                    newOne.setEnd3(timeFormat.format(offTime));
+                    newOne.setStart3(TIME_FORMAT.get().format(onTime));
+                    newOne.setEnd3(TIME_FORMAT.get().format(offTime));
 
-                    newOne.setAdvanceCard3(timeFormat.format(DateUtils.addMinutes(onTime,-1*onBeginMin)));//上班最早打卡时间
-                    newOne.setLateCard3(timeFormat.format(DateUtils.addMinutes(onTime,offEndMin)));//上班最晚打卡时间
+                    newOne.setAdvanceCard3(TIME_FORMAT.get().format(DateUtils.addMinutes(onTime,-1*onBeginMin)));//上班最早打卡时间
+                    newOne.setLateCard3(TIME_FORMAT.get().format(DateUtils.addMinutes(onTime,offEndMin)));//上班最晚打卡时间
 
-                    newOne.setEarlyCard3(timeFormat.format(DateUtils.addMinutes(offTime,-1*offBeginMin)));//下班最早打卡时间1
-                    newOne.setPostponeCard3(timeFormat.format(DateUtils.addMinutes(offTime,offEndMin)));
+                    newOne.setEarlyCard3(TIME_FORMAT.get().format(DateUtils.addMinutes(offTime,-1*offBeginMin)));//下班最早打卡时间1
+                    newOne.setPostponeCard3(TIME_FORMAT.get().format(DateUtils.addMinutes(offTime,offEndMin)));
                 }
             }
         }
@@ -320,5 +381,12 @@ public class AttendanceGroupManager implements IGroupManager {
         if(rsp.isSuccess()){
             return rsp.getResult();
         } else return null;
+    }
+
+    static class GroupSyncSnapshot {
+        final List<HrmAttendanceGroup> groups = new ArrayList<>();
+        final List<HrmAttendanceShift> shifts = new ArrayList<>();
+        final List<HrmAttendanceGroupRelationDept> deptRelations = new ArrayList<>();
+        final List<HrmAttendanceGroupRelationEmployee> employeeRelations = new ArrayList<>();
     }
 }

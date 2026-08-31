@@ -19,7 +19,7 @@ public class EmployeeImportVO {
     private String entryStatus;
     @ExcelProperty(value="员工类别",index=1)
     private String status;
-    @ExcelIgnore
+    @ExcelProperty(value="工号",index=23)
     private String jobNumber;
     @ExcelProperty(value="员工姓名",index=2)
     private String employeeName;

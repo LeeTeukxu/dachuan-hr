@@ -46,7 +46,7 @@ public class DictDataController {
     }
 
     @RequestMapping("/add")
-    public Result add(@RequestBody tbdictdata tbdictdata, @RequestParam("AddType") String AddType) {
+    public Result add(@RequestBody tbdictdata tbdictdata, @RequestParam(value = "AddType", required = false) String AddType) {
         try {
             Integer result = dictService.add(tbdictdata, AddType);
             return Result.ok(result);

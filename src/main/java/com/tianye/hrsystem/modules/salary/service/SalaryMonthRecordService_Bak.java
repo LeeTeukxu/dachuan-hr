@@ -433,7 +433,7 @@ public class SalaryMonthRecordService_Bak extends BaseServiceImpl<HrmSalaryMonth
                     // 休息天数
                     Integer restDays = ZERO;
                     // 应出勤天数
-                    Double normalDays = daysOfAdminDept!=null?daysOfAdminDept:21.75;
+                    Double normalDays = daysOfAdminDept != null ? daysOfAdminDept.doubleValue() : null;
                     // 迟到分钟
                     Integer lateMinute = ZERO;
                     // 迟到次数
@@ -469,9 +469,13 @@ public class SalaryMonthRecordService_Bak extends BaseServiceImpl<HrmSalaryMonth
                     String jobNumber = (String) map.get("jobNumber");
                     Integer status = (Integer)map.get("status");//员工状态 1正式 2试用
                     String post = (String) map.get("post");//职位
-                    Long fullMoney = (Long)map.get("fullMoney");//员工对应的全勤奖 金额
-                    String isProduceDept = (String) map.get("isProduceDept");//员工部门是否为生产类型部门
-                    boolean isProduce = isProduceDept.equals("0")?false:true;
+                    BigDecimal fullMoney = SalaryMonthRecordServiceNew.resolveFullAttendanceMoney(map.get("fullMoney"));//员工对应的全勤奖 金额
+                    boolean isProduce = SalaryMonthRecordServiceNew.isProductionAffiliationSystem(map);
+                    boolean canCountOvertimeNight = SalaryMonthRecordServiceNew.isFixedRestProductionEmployee(map);
+                    if (normalDays == null || normalDays <= 0) {
+                        throw new HrmException(6001, "员工ID " + employeeId + "（工号" + jobNumber
+                                + "）缺少应出勤天数，请先维护考勤天数配置后再核算。");
+                    }
                     //其他扣款
                     BigDecimal otherDeduction = new BigDecimal(ZERO);
                     //其他补贴
@@ -490,12 +494,12 @@ public class SalaryMonthRecordService_Bak extends BaseServiceImpl<HrmSalaryMonth
                     if(hrmAttendanceGroup==null)
                     {
                         //如果员工没有放在考勤组，则工资计算排除考勤数据
-                        empAttendanceMap.put(1, hrmProduceAttendance!=null?String.valueOf(hrmProduceAttendance.getPositiveAttendance()):"21.75");
-                        empAttendanceMap.put(2, hrmProduceAttendance!=null?String.valueOf(hrmProduceAttendance.getPositiveAttendance()):"21.75");
+                        empAttendanceMap.put(1, String.valueOf(normalDays));
+                        empAttendanceMap.put(2, String.valueOf(normalDays));
                         empAttendanceMap.put(280, otherDeduction!=null?otherDeduction.toString():"0");//其他扣款
                         empAttendanceMap.put(281, otherSubsidy!=null ? otherSubsidy.toString():"0");//其他补贴
                         empAttendanceMap.put(282, otherSubsidy!=null ? loanMoney.toString():"0");//借款
-                        empAttendanceMap.put(40102, fullMoney==null?"0":String.valueOf(fullMoney));//全勤奖
+                        empAttendanceMap.put(40102, fullMoney.toPlainString());//全勤奖
                         attendanceDataMap.put(jobNumber, empAttendanceMap);
                         continue;
                     }
@@ -556,7 +560,6 @@ public class SalaryMonthRecordService_Bak extends BaseServiceImpl<HrmSalaryMonth
                         {
                             attendanceEmpRecordMap.put("actualWorkDay", empAttendanceSummary.getActualityDays());//实际出勤天数
                         }
-                        normalDays = getNormalDays(empAttendanceSummary,isProduce,daysInMonth);
                         if(normalDays==0d)
                         {
                             normalDays = Double.parseDouble(attendanceEmpRecordMap.get("actualWorkDay").toString());
@@ -684,46 +687,48 @@ public class SalaryMonthRecordService_Bak extends BaseServiceImpl<HrmSalaryMonth
                         }
                     }
 
-                    /**
-                     * 加班费: 加班工资：12元/小时。（生产、工程、质检、仓库有加班工资，副经
-                     * 理及以上岗位加班没有加班工资）
-                     */
-                    if(hrmProduceAttendance!=null)
-                    {
-                        //有加班费
-                        if (hrmProduceAttendance.getWorkOverTime()!=null)
+                    if (!canCountOvertimeNight) {
+                        empAttendanceMap.put(180101, "0");
+                        empAttendanceMap.put(180102, "0");
+                    } else {
+                        // 加班费金额来自考勤汇总或基本工资设置。
+                        if(hrmProduceAttendance!=null)
                         {
-                            empAttendanceMap.put(180101, salaryBasic==null?String.valueOf(hrmProduceAttendance.getWorkOverTime().multiply(new BigDecimal(12))):String.valueOf(salaryBasic.getOvertimePay().multiply(hrmProduceAttendance.getWorkOverTime())));//180101 加班费
+                            //有加班费
+                            if (hrmProduceAttendance.getWorkOverTime()!=null)
+                            {
+                                empAttendanceMap.put(180101, salaryBasic==null?String.valueOf(hrmProduceAttendance.getWorkOverTime().multiply(new BigDecimal(12))):String.valueOf(salaryBasic.getOvertimePay().multiply(hrmProduceAttendance.getWorkOverTime())));//180101 加班费
+                            }
+                            else
+                            {
+                                //没有加班费
+                                empAttendanceMap.put(180101, "0");
+                            }
                         }
                         else
                         {
-                            //没有加班费
                             empAttendanceMap.put(180101, "0");
                         }
-                    }
-                    else
-                    {
-                        empAttendanceMap.put(180101, "0");
-                    }
 
-                    /**
-                     * 夜班补贴，30元/夜班 （三班倒没有夜班补贴，夜班必须连续上满8
-                     * 小时并且超过凌晨3点）
-                     */
-                    if(hrmProduceAttendance!=null)
-                    {
-                        if(hrmProduceAttendance.getNightShift()!=null)
+                        /**
+                         * 夜班补贴，30元/夜班 （三班倒没有夜班补贴，夜班必须连续上满8
+                         * 小时并且超过凌晨3点）
+                         */
+                        if(hrmProduceAttendance!=null)
                         {
-                            empAttendanceMap.put(180102, salaryBasic==null?String.valueOf(30*hrmProduceAttendance.getNightShift()):String.valueOf(salaryBasic.getSubsidy().multiply(new BigDecimal(hrmProduceAttendance.getNightShift()))));//180102为夜班补贴
+                            if(hrmProduceAttendance.getNightShift()!=null)
+                            {
+                                empAttendanceMap.put(180102, salaryBasic==null?String.valueOf(30*hrmProduceAttendance.getNightShift()):String.valueOf(salaryBasic.getSubsidy().multiply(new BigDecimal(hrmProduceAttendance.getNightShift()))));//180102为夜班补贴
+                            }
+                            else
+                            {
+                                empAttendanceMap.put(180102, "0");
+                            }
                         }
                         else
                         {
                             empAttendanceMap.put(180102, "0");
                         }
-                    }
-                    else
-                    {
-                        empAttendanceMap.put(180102, "0");
                     }
                     /**
                      * 满勤奖金，计算
@@ -732,7 +737,7 @@ public class SalaryMonthRecordService_Bak extends BaseServiceImpl<HrmSalaryMonth
                     isFullAttendance = checkIsFullAttendance(employeeId,attendanceSummaryVoDayList,attendanceSummaryVoList,year,month,deductionVOList);
                     if(isFullAttendance)
                     {
-                        empAttendanceMap.put(40102, fullMoney==null?"0":String.valueOf(fullMoney));//全勤奖
+                        empAttendanceMap.put(40102, fullMoney.toPlainString());//全勤奖
                     }
                     empAttendanceMap.put(1, attendanceEmpRecordMap.get("normalDays").toString());//应出勤天数
                     empAttendanceMap.put(2, attendanceEmpRecordMap.get("actualWorkDay").toString());//实际出勤天数
@@ -1027,6 +1032,53 @@ public class SalaryMonthRecordService_Bak extends BaseServiceImpl<HrmSalaryMonth
         return lambdaQuery().orderByDesc(HrmSalaryMonthRecord::getCreateTime).last("limit 1").one();
     }
 
+    HrmSalaryMonthRecord findLatestSalaryMonthRecord() {
+        return lambdaQuery().orderByDesc(HrmSalaryMonthRecord::getCreateTime).last("limit 1").one();
+    }
+
+    HrmSalaryMonthRecord findSalaryMonthRecordByYearAndMonth(Integer year, Integer month) {
+        if (year == null || month == null) {
+            return null;
+        }
+        return lambdaQuery()
+                .eq(HrmSalaryMonthRecord::getYear, year)
+                .eq(HrmSalaryMonthRecord::getMonth, month)
+                .orderByDesc(HrmSalaryMonthRecord::getCreateTime)
+                .last("limit 1")
+                .one();
+    }
+
+    HrmSalaryMonthRecord createNextSalaryMonthRecord(HrmSalaryMonthRecord sourceSalaryMonthRecord) {
+        if (sourceSalaryMonthRecord == null || sourceSalaryMonthRecord.getYear() == null || sourceSalaryMonthRecord.getMonth() == null) {
+            throw new HrmException(6001, "薪资月记录不存在");
+        }
+        int[] nextYearMonth = SalaryMonthRecordServiceNew.getNextMonthYearAndMonth(
+                sourceSalaryMonthRecord.getYear(), sourceSalaryMonthRecord.getMonth());
+        HrmSalaryMonthRecord nextSalaryMonthRecord = findSalaryMonthRecordByYearAndMonth(nextYearMonth[0], nextYearMonth[1]);
+        if (nextSalaryMonthRecord != null) {
+            return nextSalaryMonthRecord;
+        }
+        HrmSalaryConfig salaryConfig = hrmSalaryConfigService.getOne(Wrappers.emptyWrapper());
+        LocalDate startTime = LocalDate.of(nextYearMonth[0], nextYearMonth[1], salaryConfig.getSalaryCycleStartDay());
+        LocalDate endTime;
+        if (salaryConfig.getSalaryCycleStartDay() > 1) {
+            LocalDate dateTime = LocalDateTimeUtil.offset(startTime.atStartOfDay(), 1, ChronoUnit.MONTHS).toLocalDate();
+            endTime = LocalDate.of(dateTime.getYear(), dateTime.getMonthValue(), salaryConfig.getSalaryCycleEndDay());
+        } else {
+            endTime = startTime.with(TemporalAdjusters.lastDayOfMonth());
+        }
+        HrmSalaryMonthRecord salaryMonthRecord = new HrmSalaryMonthRecord();
+        salaryMonthRecord.setTitle(HrmLanguageEnum.parseName(nextYearMonth[1]) + HrmLanguageEnum.SALARY_REPORT.getName());
+        salaryMonthRecord.setYear(nextYearMonth[0]);
+        salaryMonthRecord.setMonth(nextYearMonth[1]);
+        salaryMonthRecord.setStartTime(startTime);
+        salaryMonthRecord.setEndTime(endTime);
+        salaryMonthRecord.setCreateTime(LocalDateTime.now());
+        salaryMonthRecord.setNum(queryPaySalaryEmployeeListByType(1, null).size());
+        save(salaryMonthRecord);
+        salaryActionRecordService.addNextMonthSalaryLog(salaryMonthRecord);
+        return salaryMonthRecord;
+    }
 
     /**
      * 创建下月薪资表
@@ -1034,38 +1086,21 @@ public class SalaryMonthRecordService_Bak extends BaseServiceImpl<HrmSalaryMonth
      */
     @Transactional
     public OperationLog addNextMonthSalary() {
-        //查询薪资上月记录,如果有就往后推一个月,如果没有就去薪资配置计薪月
-        HrmSalaryMonthRecord lastSalaryMonthRecord = lambdaQuery().orderByDesc(HrmSalaryMonthRecord::getCreateTime).one();
-        HrmSalaryConfig salaryConfig = hrmSalaryConfigService.getOne(Wrappers.emptyWrapper());
-        LocalDate date = LocalDateTimeUtil.offset(LocalDateTimeUtil.of(DateUtil.parse(lastSalaryMonthRecord.getYear() + "-" + lastSalaryMonthRecord.getMonth(), "yy-MM")), 1, ChronoUnit.MONTHS).toLocalDate();
-        int month = date.getMonthValue();
-        int year = date.getYear();
-        LocalDate startTime = LocalDate.of(year, month, salaryConfig.getSalaryCycleStartDay());
-        LocalDate endTime;
-        if (salaryConfig.getSalaryCycleStartDay() > 1) {
-            LocalDate dateTime = LocalDateTimeUtil.offset(startTime.atStartOfDay(), 1, ChronoUnit.MONTHS).toLocalDate();
-            int nextMonth = dateTime.getMonthValue();
-            endTime = LocalDate.of(year, nextMonth, salaryConfig.getSalaryCycleEndDay());
-        } else {
-            endTime = startTime.with(TemporalAdjusters.lastDayOfMonth());
+        HrmSalaryMonthRecord lastSalaryMonthRecord = findLatestSalaryMonthRecord();
+        if (lastSalaryMonthRecord == null) {
+            throw new HrmException(6001, "薪资月记录不存在");
         }
-        //当前月薪资数据将变为归档状态
-        lastSalaryMonthRecord.setCheckStatus(SalaryRecordStatus.HISTORY.getValue());
-        computeSalaryCount(lastSalaryMonthRecord);
-        updateById(lastSalaryMonthRecord);
-        HrmSalaryMonthRecord salaryMonthRecord = new HrmSalaryMonthRecord();
-        salaryMonthRecord.setTitle(HrmLanguageEnum.parseName(month) + HrmLanguageEnum.SALARY_REPORT.getName());
-        salaryMonthRecord.setYear(year);
-        salaryMonthRecord.setMonth(month);
-        salaryMonthRecord.setStartTime(startTime);
-        salaryMonthRecord.setEndTime(endTime);
-        salaryMonthRecord.setCreateTime(LocalDateTime.now());
-        salaryMonthRecord.setNum(queryPaySalaryEmployeeListByType(1, null).size());
-        save(salaryMonthRecord);
-        salaryActionRecordService.addNextMonthSalaryLog(salaryMonthRecord);
+        HrmSalaryMonthRecord lockedLastSalaryMonthRecord = getById(lastSalaryMonthRecord.getSRecordId());
+        if (lockedLastSalaryMonthRecord == null) {
+            throw new HrmException(6001, "薪资月记录不存在");
+        }
+        lockedLastSalaryMonthRecord.setCheckStatus(SalaryRecordStatus.HISTORY.getValue());
+        computeSalaryCount(lockedLastSalaryMonthRecord);
+        updateById(lockedLastSalaryMonthRecord);
+        HrmSalaryMonthRecord salaryMonthRecord = createNextSalaryMonthRecord(lockedLastSalaryMonthRecord);
         OperationLog operationLog = new OperationLog();
-        operationLog.setOperationObject(salaryMonthRecord.getSRecordId(), year + "-" + salaryMonthRecord.getTitle());
-        operationLog.setOperationInfo("新建薪资报表：" + year + "-" + salaryMonthRecord.getTitle());
+        operationLog.setOperationObject(salaryMonthRecord.getSRecordId(), salaryMonthRecord.getYear() + "-" + salaryMonthRecord.getTitle());
+        operationLog.setOperationInfo("新建薪资报表：" + salaryMonthRecord.getYear() + "-" + salaryMonthRecord.getTitle());
         return operationLog;
 
     }
@@ -1382,40 +1417,24 @@ public class SalaryMonthRecordService_Bak extends BaseServiceImpl<HrmSalaryMonth
 
     @Transactional(rollbackFor = Exception.class)
     public OperationResult updateCheckStatus(Integer checkStatus, Integer year, Integer month) {
+        HrmSalaryMonthRecord sourceSalaryMonthRecord = findSalaryMonthRecordByYearAndMonth(year, month);
+        if (sourceSalaryMonthRecord == null) {
+            throw new HrmException(6001, "薪资月记录不存在");
+        }
         LambdaUpdateWrapper<HrmSalaryMonthRecord> wrapper = new LambdaUpdateWrapper<HrmSalaryMonthRecord>()
                 .set(HrmSalaryMonthRecord::getCheckStatus, checkStatus)
                 .eq(HrmSalaryMonthRecord::getYear, year)
                 .and(i -> i.eq(HrmSalaryMonthRecord::getMonth, month));
         update(null, wrapper);
 
-        //查询薪资上月记录,如果有就往后推一个月,如果没有就去薪资配置计薪月
-        HrmSalaryMonthRecord lastSalaryMonthRecord = lambdaQuery().orderByDesc(HrmSalaryMonthRecord::getCreateTime).one();
-        HrmSalaryConfig salaryConfig = hrmSalaryConfigService.getOne(Wrappers.emptyWrapper());
-        LocalDate date = LocalDateTimeUtil.offset(LocalDateTimeUtil.of(DateUtil.parse(lastSalaryMonthRecord.getYear() + "-" + lastSalaryMonthRecord.getMonth(), "yy-MM")), 1, ChronoUnit.MONTHS).toLocalDate();
-        int months = date.getMonthValue();
-        int years = date.getYear();
-        LocalDate startTime = LocalDate.of(years, months, salaryConfig.getSalaryCycleStartDay());
-        LocalDate endTime;
-        if (salaryConfig.getSalaryCycleStartDay() > 1) {
-            LocalDate dateTime = LocalDateTimeUtil.offset(startTime.atStartOfDay(), 1, ChronoUnit.MONTHS).toLocalDate();
-            int nextMonth = dateTime.getMonthValue();
-            endTime = LocalDate.of(years, nextMonth, salaryConfig.getSalaryCycleEndDay());
-        } else {
-            endTime = startTime.with(TemporalAdjusters.lastDayOfMonth());
+        HrmSalaryMonthRecord lockedSourceSalaryMonthRecord = getById(sourceSalaryMonthRecord.getSRecordId());
+        if (lockedSourceSalaryMonthRecord == null) {
+            throw new HrmException(6001, "薪资月记录不存在");
         }
-        //当前月薪资数据将变为归档状态
-        lastSalaryMonthRecord.setCheckStatus(SalaryRecordStatus.HISTORY.getValue());
-        computeSalaryCount(lastSalaryMonthRecord);
-        updateById(lastSalaryMonthRecord);
-        HrmSalaryMonthRecord salaryMonthRecord = new HrmSalaryMonthRecord();
-        salaryMonthRecord.setTitle(HrmLanguageEnum.parseName(months) + HrmLanguageEnum.SALARY_REPORT.getName());
-        salaryMonthRecord.setYear(years);
-        salaryMonthRecord.setMonth(months);
-        salaryMonthRecord.setStartTime(startTime);
-        salaryMonthRecord.setEndTime(endTime);
-        salaryMonthRecord.setCreateTime(LocalDateTime.now());
-        salaryMonthRecord.setNum(queryPaySalaryEmployeeListByType(1, null).size());
-        save(salaryMonthRecord);
+        lockedSourceSalaryMonthRecord.setCheckStatus(SalaryRecordStatus.HISTORY.getValue());
+        computeSalaryCount(lockedSourceSalaryMonthRecord);
+        updateById(lockedSourceSalaryMonthRecord);
+        createNextSalaryMonthRecord(lockedSourceSalaryMonthRecord);
         return null;
     }
 
@@ -1459,32 +1478,8 @@ public class SalaryMonthRecordService_Bak extends BaseServiceImpl<HrmSalaryMonth
                 salaryMonthRecord.setCheckStatus(SalaryRecordStatus.HISTORY.getValue());
                 computeSalaryCount(salaryMonthRecord);
                 updateById(salaryMonthRecord);
-
-                //生成下月工资
-                HrmSalaryConfig salaryConfig = hrmSalaryConfigService.getOne(Wrappers.emptyWrapper());
-                LocalDate date = LocalDateTimeUtil.offset(LocalDateTimeUtil.of(DateUtil.parse(salaryMonthRecord.getYear() + "-" + salaryMonthRecord.getMonth(), "yy-MM")), 1, ChronoUnit.MONTHS).toLocalDate();
-                int month = date.getMonthValue();
-                int year = date.getYear();
-                LocalDate startTime = LocalDate.of(year, month, salaryConfig.getSalaryCycleStartDay());
-                LocalDate endTime;
-                if (salaryConfig.getSalaryCycleStartDay() > 1) {
-                    LocalDate dateTime = LocalDateTimeUtil.offset(startTime.atStartOfDay(), 1, ChronoUnit.MONTHS).toLocalDate();
-                    int nextMonth = dateTime.getMonthValue();
-                    endTime = LocalDate.of(year, nextMonth, salaryConfig.getSalaryCycleEndDay());
-                } else {
-                    endTime = startTime.with(TemporalAdjusters.lastDayOfMonth());
-                }
-                HrmSalaryMonthRecord salaryMonthRecordNext = new HrmSalaryMonthRecord();
-                salaryMonthRecordNext.setTitle(HrmLanguageEnum.parseName(month) + HrmLanguageEnum.SALARY_REPORT.getName());
-                salaryMonthRecordNext.setYear(year);
-                salaryMonthRecordNext.setMonth(month);
-                salaryMonthRecordNext.setStartTime(startTime);
-                salaryMonthRecordNext.setEndTime(endTime);
-                salaryMonthRecordNext.setCreateTime(LocalDateTime.now());
-                salaryMonthRecordNext.setNum(queryPaySalaryEmployeeListByType(1, null).size());
-                save(salaryMonthRecordNext);
-                salaryActionRecordService.addNextMonthSalaryLog(salaryMonthRecordNext);
-                operationLog.setOperationObject(salaryMonthRecordNext.getSRecordId(), year + "-" + salaryMonthRecordNext.getTitle());
+                HrmSalaryMonthRecord salaryMonthRecordNext = createNextSalaryMonthRecord(salaryMonthRecord);
+                operationLog.setOperationObject(salaryMonthRecordNext.getSRecordId(), salaryMonthRecordNext.getYear() + "-" + salaryMonthRecordNext.getTitle());
                 operationLog.setOperationInfo("总经理审核通过");
 
             }
@@ -1676,7 +1671,7 @@ public class SalaryMonthRecordService_Bak extends BaseServiceImpl<HrmSalaryMonth
         HashMap<String,Double> workTimesMap = new HashMap<>();
         if(!isProduce)
         {
-            //非生产部的，工作时长为8小时
+            //行政体系按固定 8 小时工作日计算。
             for(String date : dates)
             {
                 workTimesMap.put(date,8d);
@@ -1776,14 +1771,14 @@ public class SalaryMonthRecordService_Bak extends BaseServiceImpl<HrmSalaryMonth
             {
                 //获取员工对应的病假时间
                 Double sickHours = employeeDayAttendanceList.stream().mapToDouble(HrmAttendanceSummaryDayVo::getBingjia).sum();
-                //非生产部门，算出对应的天数,按一天8小时计算
+                //行政体系按一天 8 小时折算病假天数。
                 leavelDays = new BigDecimal(sickHours).divide(new BigDecimal(8)).setScale(2, RoundingMode.HALF_UP);
             }
             else if("1".equals(type))
             {
                 //获取员工对应的事假时间
                 Double shiJiaHours = employeeDayAttendanceList.stream().mapToDouble(HrmAttendanceSummaryDayVo::getShijia).sum();
-                //非生产部门，算出对应的天数,按一天8小时计算
+                //行政体系按一天 8 小时折算事假天数。
                 leavelDays = new BigDecimal(shiJiaHours).divide(new BigDecimal(8)).setScale(2, RoundingMode.HALF_UP);
             }
 
@@ -1838,64 +1833,6 @@ public class SalaryMonthRecordService_Bak extends BaseServiceImpl<HrmSalaryMonth
 //        return days;
 //
 //    }
-
-
-    /**
-     * 获取员工全勤天数
-     * @param empAttendanceSummary
-     * @param isProduce
-     * @param daysInMonth
-     * @return
-     */
-
-    private Double getNormalDays(HrmAttendanceSummaryVo empAttendanceSummary,boolean isProduce,int daysInMonth)
-    {
-        Double normalDays =1d;
-        if(!isProduce)
-        {
-            //非生产类型部门，请假小时换算为天数时，一天按8小时计算
-            Double shijia = 0d;
-            if(empAttendanceSummary.getShijia()!=null && empAttendanceSummary.getShijia()!=0)
-            {
-                //事假
-                BigDecimal b1 = new BigDecimal(empAttendanceSummary.getShijia());
-                shijia = b1.divide(new BigDecimal(8),BigDecimal.ROUND_CEILING).setScale(2, RoundingMode.HALF_UP).doubleValue();
-                empAttendanceSummary.setShijia(shijia);
-            }
-            Double bingjia = 0d;
-            if(empAttendanceSummary.getBingjia()!=null && empAttendanceSummary.getBingjia()!=0)
-            {
-                //病假
-                BigDecimal b1 = new BigDecimal(empAttendanceSummary.getBingjia());
-                bingjia = b1.divide(new BigDecimal(8),BigDecimal.ROUND_CEILING).setScale(2, RoundingMode.HALF_UP).doubleValue();
-                empAttendanceSummary.setBingjia(bingjia);
-            }
-            Double burujia = 0d;
-            if(empAttendanceSummary.getBurujia()!=null && empAttendanceSummary.getBurujia()!=0)
-            {
-                //哺乳假
-                BigDecimal b1 = new BigDecimal(empAttendanceSummary.getBurujia());
-                burujia = b1.divide(new BigDecimal(8),BigDecimal.ROUND_CEILING).setScale(2, RoundingMode.HALF_UP).doubleValue();
-                empAttendanceSummary.setBingjia(burujia);
-            }
-            //应出勤天数=实际出勤天数+事假+病假+婚嫁+陪产假+丧假+哺乳假+产假 +旷工天数
-            normalDays = empAttendanceSummary.getActualityDays()
-                    +empAttendanceSummary.getAbsenteeismDays()
-                    +empAttendanceSummary.getChanjia()
-                    +empAttendanceSummary.getHunjia()
-                    +empAttendanceSummary.getPeichanjia()
-                    +empAttendanceSummary.getSangjia()
-                    +empAttendanceSummary.getShijia()
-                    +empAttendanceSummary.getBingjia()
-                    +empAttendanceSummary.getBurujia();
-        }
-        else
-        {
-            //生产部门，应出勤天数=当月总天数-4（4为休息天数）
-            normalDays = (double)(daysInMonth -4);
-        }
-        return normalDays;
-    }
 
 
     /**

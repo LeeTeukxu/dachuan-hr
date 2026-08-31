@@ -5,6 +5,8 @@ import io.swagger.annotations.ApiModelProperty;
 import lombok.Getter;
 import lombok.Setter;
 
+import java.util.List;
+
 @Getter
 @Setter
 public class QueryMonthAttendanceBO extends MyPageEntity {
@@ -20,4 +22,7 @@ public class QueryMonthAttendanceBO extends MyPageEntity {
 
     @ApiModelProperty(value = "部门类型 1、行政部门 2、生产部门")
     private Integer department;
+
+    @ApiModelProperty(value = "员工所属部门ID集合")
+    private List<Long> deptIds;
 }

@@ -10,7 +10,13 @@
         </if>
     </select>
     <select id="queryFiledListByEmployeeId" resultType="com.alibaba.fastjson.JSONObject">
-        select a.*,b.field_name,b.type
+        select a.field_id as fieldId,
+        a.employee_id as employeeId,
+        a.field_value as fieldValue,
+        a.field_value_desc as fieldValueDesc,
+        b.field_name as fieldName,
+        b.name as name,
+        b.type as type
         from hrm_employee_data as a
         left join hrm_employee_field as b on a.field_id = b.field_id
         where a.employee_id = #{employeeId}

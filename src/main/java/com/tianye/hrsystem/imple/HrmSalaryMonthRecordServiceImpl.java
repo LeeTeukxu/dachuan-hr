@@ -375,8 +375,8 @@ public class HrmSalaryMonthRecordServiceImpl extends BaseServiceImpl<HrmSalaryMo
 //                salaryMonthEmpRecord = new HrmSalaryMonthEmpRecord();
 //                salaryMonthEmpRecord.setSRecordId(salaryMonthRecord.getSRecordId());
 //                salaryMonthEmpRecord.setEmployeeId(employeeId);
-//                salaryMonthEmpRecord.setActualWorkDay(new BigDecimal("21.75"));
-//                salaryMonthEmpRecord.setNeedWorkDay(new BigDecimal("21.75"));
+//                salaryMonthEmpRecord.setActualWorkDay(actualWorkDay);
+//                salaryMonthEmpRecord.setNeedWorkDay(needWorkDay);
 //                salaryMonthEmpRecord.setYear(year);
 //                salaryMonthEmpRecord.setMonth(month);
 //                salaryMonthEmpRecordService.save(salaryMonthEmpRecord);
@@ -397,7 +397,7 @@ public class HrmSalaryMonthRecordServiceImpl extends BaseServiceImpl<HrmSalaryMo
 //                    optionValueList.addAll(fixedOptionValueList);
 //                } else {
 //                    if (!salaryMonthEmpRecordOpt.isPresent()) {
-//                        salaryMonthEmpRecord.setNeedWorkDay(new BigDecimal("21.75"));
+//                        salaryMonthEmpRecord.setNeedWorkDay(needWorkDay);
 //                    }
 //                }
 //            } catch (Exception e) {

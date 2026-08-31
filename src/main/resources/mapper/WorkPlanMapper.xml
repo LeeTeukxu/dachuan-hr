@@ -3,7 +3,20 @@
 <mapper namespace="com.tianye.hrsystem.mapper.WorkPlanMapper">
 
     <select id="getMaxDate" resultType="com.tianye.hrsystem.model.tbplanlist">
-        SELECT ID, ProductName, LinkName, WorkDate, GroupID, ClassID, UserID, CreateTime
+        SELECT ID,
+               ProductName,
+               LinkName,
+               workshop_name AS workshopName,
+               WorkDate,
+               GroupID,
+               ClassID,
+               UserID,
+               CreateTime,
+               shift_source AS shiftType,
+               custom_shift_id AS customShiftId,
+               custom_shift_period AS customShiftPeriod,
+               custom_continuous_shift AS customContinuousShift,
+               rest_shift_type AS restShiftType
         FROM tbplanlist
         WHERE WorkDate = (SELECT MAX(WorkDate) FROM tbplanlist)
         ORDER by ${sortField} ${sortOrder}

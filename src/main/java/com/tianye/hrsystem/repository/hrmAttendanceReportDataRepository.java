@@ -13,6 +13,7 @@ public interface hrmAttendanceReportDataRepository  extends JpaRepository<HrmAtt
         int countAllByEmpIdAndWorkDateBetween(Long empId,Date begin,Date End);
         List<HrmAttendanceReportData> findAllByWorkDateBetweenOrderByWorkDate(Date Begin,Date End);
         List<HrmAttendanceReportData> findAllByEmpIdInAndFieldIdInAndWorkDateIn(List<Long> empIds,List<Long> fieldIds,List<Date> dates);
+        List<HrmAttendanceReportData> findAllByEmpIdAndWorkDateBetweenAndFieldNameIn(Long empId, Date begin, Date end, List<String> fieldNames);
         Integer countByWorkDateBetween(Date Begin,Date End);
         List<HrmAttendanceReportData> findAllByWorkDate(Date workDate);
         int countAllByEmpIdAndWorkDateBetweenAndFieldIdIn(Long empId,Date Begin,Date End,List<Long> fieldIds);

@@ -10,4 +10,6 @@ import java.util.Optional;
 @Repository
 public interface hrmAttendanceHistoryShiftRepository extends JpaRepository<HrmAttendanceHistoryShift,Integer>  {
     Optional<HrmAttendanceHistoryShift> findFirstByUpdateTimeBetween(Date Begin, Date End);
+
+    Optional<HrmAttendanceHistoryShift> findFirstByShiftIdOrderByUpdateTimeDesc(Integer shiftId);
 }

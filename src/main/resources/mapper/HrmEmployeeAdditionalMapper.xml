@@ -9,5 +9,6 @@
         <if test="data.employeeName != ''">
             AND a.employee_id in (select employee_id from hrm_employee where employee_Name like concat('%',#{data.employeeName},'%'))
         </if>
+        order by a.`year` desc, a.employee_additional_id desc
     </select>
 </mapper>

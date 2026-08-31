@@ -27,6 +27,9 @@ public class QueryBounsVO {
     @ApiModelProperty(value = "奖金")
     private BigDecimal bonus;
 
+    @ApiModelProperty(value = "只计税奖金")
+    private BigDecimal taxOnlyBonus;
+
     @ApiModelProperty(value = "年")
     private Integer year;
 

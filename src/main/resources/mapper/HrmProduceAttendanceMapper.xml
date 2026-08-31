@@ -6,18 +6,65 @@
     </select>
 
     <select id="queryProduceAttendanceList" resultType="com.tianye.hrsystem.entity.vo.QueryMonthAttendanceVO">
-        select * from hrm_produce_attendance where 1=1
+        select
+            p.summary_id as summaryId,
+            p.`year`,
+            p.`month`,
+            p.employee_id as employeeId,
+            p.employee_name as employeeName,
+            p.department,
+            p.positive_attendance as actualAttendance,
+            p.probation_attendance as accruedAttendance,
+            case when e.affiliation_system = 2 and e.rest_type = 2 then p.work_over_time else 0 end as workOverTime,
+            case when e.affiliation_system = 2 and e.rest_type = 2 then p.overtime_pay else 0 end as overtimePay,
+            p.empty_class as emptyClass,
+            p.middle_class as middleClass,
+            case when e.affiliation_system = 2 and e.rest_type = 2 then p.night_shift else 0 end as nightShift,
+            case when e.affiliation_system = 2 and e.rest_type = 2 then p.night_subsidy else 0 end as nightSubsidy,
+            p.current_month_vacation as currentMonthVacation,
+            p.loan,
+            p.other_subsidies as otherSubsidies,
+            p.other_deductions as otherDeductions,
+            p.remark
+        from hrm_produce_attendance p
+        left join hrm_employee e on p.employee_id = e.employee_id
+        where 1=1
         <if test="data.employeeName != null and data.employeeName != ''">
-            AND employee_Name = #{data.employeeName}
+            AND p.employee_Name = #{data.employeeName}
         </if>
         <if test="data.year != null and data.year != '' and data.year != 0">
-            AND year = #{data.year}
+            AND p.year = #{data.year}
         </if>
         <if test="data.month != null and data.month != '' and data.month != 0">
-            AND month = #{data.month}
+            AND p.month = #{data.month}
         </if>
         <if test="data.department != null and data.department != '' and data.department != 0">
-            AND department = #{data.department}
+            AND p.department = #{data.department}
         </if>
+        <if test="data.deptIds != null and data.deptIds.size > 0">
+            AND e.dept_id in
+            <foreach collection="data.deptIds" item="deptId" open="(" close=")" separator=",">
+                #{deptId}
+            </foreach>
+        </if>
+    </select>
+
+    <select id="queryAdministrativeAttendanceReportMetrics" resultType="com.tianye.hrsystem.entity.vo.AdministrativeAttendanceReportMetricVO">
+        select
+            emp_id as employeeId,
+            sum(CASE WHEN field_name in ('旷工天数','旷工迟到天数') THEN value ELSE 0 END) as absenteeismDays,
+            sum(CASE WHEN field_name = '迟到次数' THEN value ELSE 0 END) as lateCount,
+            sum(CASE WHEN field_name = '早退次数' THEN value ELSE 0 END) as earlyCount,
+            sum(CASE WHEN field_name = '上班缺卡次数' THEN value ELSE 0 END) as onDutyMissingCardCount,
+            sum(CASE WHEN field_name = '下班缺卡次数' THEN value ELSE 0 END) as offDutyMissingCardCount
+        from hrm_attendance_report_data
+        where work_date between #{beginDate} and #{endDate}
+        <if test="employeeIds != null and employeeIds.size > 0">
+            and emp_id in
+            <foreach collection="employeeIds" item="employeeId" open="(" close=")" separator=",">
+                #{employeeId}
+            </foreach>
+        </if>
+        group by emp_id
     </select>
 </mapper>

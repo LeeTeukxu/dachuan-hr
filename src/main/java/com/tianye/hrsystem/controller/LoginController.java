@@ -51,6 +51,8 @@ public class LoginController {
     com.tianye.hrsystem.common.Redis redis;
     @Autowired
     com.tianye.hrsystem.common.PasswordService passwordService;
+    @Autowired
+    com.tianye.hrsystem.common.TokenRevocationService tokenRevocation;
 
     private static final String LOGIN_FAIL_KEY_PREFIX = "hr:loginfail:";
     private static final String LOGIN_LOCK_KEY_PREFIX = "hr:loginlock:";
@@ -127,9 +129,13 @@ public class LoginController {
 
             clearLoginFail(account);
             matched.setSuffix(databasesuffix);
+            matched.setAccount(account);
+            // 校验通过即视为合法用户：清除可能因连续输错密码产生的封禁，避免“登录成功却被强制下线”的死循环
+            tokenRevocation.unbanAccount(account);
             Integer pcr = userMapper.getPwdChangeRequired(matched.getAccount(), matched.getCompanyId(), databasesuffix);
             matched.setMustChangePassword(pcr != null && pcr == 1);
             matched.setPassword(null);
+            matched.setSessionSeed(tokenRevocation.getSessionSeed(account));
             fillPermissionMenus(matched);
             String Token= JWTTokenUtils.getToken(matched);
             matched.setToken(Token);
@@ -188,9 +194,13 @@ public class LoginController {
             // 密码已在首次 /login 时于基准公司验证，此处不再逐企业验密（密码与授权脱钩）
             clearLoginFail(account);
             matched.setSuffix(databasesuffix);
+            matched.setAccount(account);
+            // 校验通过即视为合法用户：清除可能因连续输错密码产生的封禁，避免“登录成功却被强制下线”的死循环
+            tokenRevocation.unbanAccount(account);
             Integer pcr2 = userMapper.getPwdChangeRequired(matched.getAccount(), matched.getCompanyId(), databasesuffix);
             matched.setMustChangePassword(pcr2 != null && pcr2 == 1);
             matched.setPassword(null);
+            matched.setSessionSeed(tokenRevocation.getSessionSeed(account));
             fillPermissionMenus(matched);
             String Token = JWTTokenUtils.getToken(matched);
             matched.setToken(Token);
@@ -365,6 +375,33 @@ public class LoginController {
      * A：自助改密（登录态下）。原密码连续错 5 次 → 锁定账号(canLogin=0)，需平台超管重置解锁。
      * 新密码统一走 BCrypt（与开通/登录一致，不影响既有账号）。
      */
+    /**
+     * 退出登录：把当前令牌的 jti 写入 Redis 黑名单，使其立即失效（前端应清除本地令牌）。
+     * 令牌无效/已失效时也幂等返回成功。
+     */
+    @PostMapping("/logout")
+    public successResult logout(String token) {
+        successResult result = new successResult();
+        try {
+            if (StringUtils.isEmpty(token)) {
+                token = "";
+            }
+            if (!StringUtils.isEmpty(token)) {
+                // 仅当令牌本身有效时才登记吊销，避免对非法串写无效黑名单
+                JWTTokenUtils.GetByToken(token);
+                String jti = JWTTokenUtils.getJti(token);
+                if (jti != null) {
+                    tokenRevocation.revokeToken(jti);
+                }
+            }
+            result.setMessage("已退出登录");
+        } catch (Exception e) {
+            // 令牌本就无效，视为已退出
+            result.setMessage("已退出登录");
+        }
+        return result;
+    }
+
     @PostMapping("/changePassword")
     public successResult changePassword(String oldPassword, String newPassword) {
         successResult result = new successResult();
@@ -387,6 +424,8 @@ public class LoginController {
                 userMapper.incChangePwdFail(me.getAccount(), me.getCompanyId(), databasesuffix);
                 Integer fail = userMapper.getChangePwdFail(me.getAccount(), me.getCompanyId(), databasesuffix);
                 if (fail != null && fail >= 5) {
+                    // 账号锁定：封禁其所有在途令牌，使其立即失效（需平台超管重置解锁）
+                    tokenRevocation.banAccount(me.getAccount());
                     throw new Exception("原密码连续错误 5 次，账号已锁定，请联系平台超管重置");
                 }
                 throw new Exception("原密码错误");
@@ -394,6 +433,8 @@ public class LoginController {
             // 兼容历史双重 MD5：此处统一升级为 BCrypt
             String hash = passwordService.encode(newPassword);
             userMapper.selfChangePassword(me.getAccount(), me.getCompanyId(), databasesuffix, hash);
+            // 改密后使该账号所有在途会话失效（含当前会话），需重新登录；但不锁定账号，可凭新密码登录
+            tokenRevocation.bumpSessionSeed(me.getAccount());
             result.setMessage("密码修改成功，请妥善保管");
         } catch (Exception ax) {
             result.raiseException(ax);

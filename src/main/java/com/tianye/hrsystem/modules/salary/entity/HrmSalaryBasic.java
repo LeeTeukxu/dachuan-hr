@@ -45,6 +45,26 @@ public class HrmSalaryBasic implements Serializable {
     @ApiModelProperty(value = "夜班补贴")
     private BigDecimal subsidy;
 
+    @ApiModelProperty(value = "普通员工全勤金额")
+    @TableField("ordinary_full_attendance_amount")
+    private BigDecimal ordinaryFullAttendanceAmount;
+
+    @ApiModelProperty(value = "领导全勤金额")
+    @TableField("leader_full_attendance_amount")
+    private BigDecimal leaderFullAttendanceAmount;
+
+    @ApiModelProperty(value = "生产体系员工月度休息天数")
+    @TableField("production_monthly_rest_days")
+    private Integer productionMonthlyRestDays;
+
+    @ApiModelProperty(value = "大额医疗保险金额")
+    @TableField("large_medical_insurance_amount")
+    private BigDecimal largeMedicalInsuranceAmount;
+
+    @ApiModelProperty(value = "长期护理保险金额")
+    @TableField("long_term_care_insurance_amount")
+    private BigDecimal longTermCareInsuranceAmount;
+
     @TableField(fill = FieldFill.INSERT)
     @JsonSerialize(using = ToStringSerializer.class)
     private Long createUserId;
@@ -60,4 +80,3 @@ public class HrmSalaryBasic implements Serializable {
     private LocalDateTime updateTime;
 
 }
-

@@ -10,6 +10,8 @@ import com.tianye.hrsystem.enums.FieldEnum;
 import com.tianye.hrsystem.enums.LabelGroupEnum;
 import org.springframework.web.multipart.MultipartFile;
 
+import javax.servlet.http.HttpServletResponse;
+import java.io.IOException;
 import java.time.LocalDate;
 import java.util.Collection;
 import java.util.List;
@@ -266,6 +268,28 @@ public interface IHrmEmployeeService extends BaseService<HrmEmployee> {
      * @return
      */
     List<Map<String, Object>> export(QueryEmployeePageListBO employeePageListBO);
+
+    /**
+     * 按员工基础信息模板导出员工列表
+     *
+     * @param employeePageListBO 查询条件
+     * @param response 响应对象
+     */
+    void exportBasicInfoTemplate(QueryEmployeePageListBO employeePageListBO, HttpServletResponse response) throws IOException;
+
+    /**
+     * 导出部门人员明细
+     *
+     * @param response 响应对象
+     */
+    void exportDepartmentDetail(HttpServletResponse response) throws IOException;
+
+    /**
+     * 集团部门人员明细汇总（行政经理专用，跨公司实时计算，不构建 Excel）
+     *
+     * @return data: total / companies / departmentDetails
+     */
+    Map<String, Object> departmentDetailGroupSummary();
 
     /**
      * 字段唯一验证

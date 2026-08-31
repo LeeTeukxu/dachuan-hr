@@ -21,9 +21,13 @@ public interface hrmEmployeeRepository  extends JpaRepository<HrmEmployee,Long> 
 
     List<HrmEmployee> findAllByEmployeeIdIn(List<Long> employeeIds);
 
+    List<HrmEmployee> findAllByIsDelAndEntryStatusIn(Integer isDel, List<Integer> entryStatuses);
+
     Optional<HrmEmployee> findFirstByEmployeeName(String userName);
 
     List<HrmEmployee>  findAllByDeptId(Long DeptId);
 
     List<HrmEmployee> findAllByEmployeeName(String EmployeeName);
+
+    long countByParentIdAndIsDel(Long parentId, Integer isDel);
 }

@@ -49,8 +49,10 @@ public class HrmAttendanceReportManager implements IHrmAttendanceReport {
     @Autowired
     hrmEmployeeOverTimeRecordRepository overTimeRep;
     Long PreNum = 19000000L;
-    SimpleDateFormat simple = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss");
-    SimpleDateFormat shortFormat = new SimpleDateFormat("yyyy-MM-dd");
+    private static final ThreadLocal<SimpleDateFormat> SIMPLE =
+            ThreadLocal.withInitial(() -> new SimpleDateFormat("yyyy-MM-dd HH:mm:ss"));
+    private static final ThreadLocal<SimpleDateFormat> SHORT_FORMAT =
+            ThreadLocal.withInitial(() -> new SimpleDateFormat("yyyy-MM-dd"));
     List<String> overTimes = Arrays.asList("工作日加班", "休息日加班", "节假日加班");
 
     Logger logger = LoggerFactory.getLogger(HrmAttendanceReportManager.class);
@@ -129,12 +131,12 @@ public class HrmAttendanceReportManager implements IHrmAttendanceReport {
                         result.setCreatetime(new Date());
                         result.setCompanyId(Info.getCompanyId());
                         result.setContent(JSON.toJSONString(rsp));
-                        result.setBegin(cimple.format(begin));
-                        result.setEnd(cimple.format(end));
+                        result.setBegin(CIMPLE.get().format(begin));
+                        result.setEnd(CIMPLE.get().format(end));
                         result.setEmpId(empId);
                         result.setUserId(userId);  // 【修复重名员工问题】：保存userId用于去重
                         ddRep.save(result);
-                        logger.info("插入了一条"+shortFormat.format(begin)+"-"+shortFormat.format(end)+"的考勤报表数据!");
+                        logger.info("插入了一条"+SHORT_FORMAT.get().format(begin)+"-"+SHORT_FORMAT.get().format(end)+"的考勤报表数据!");
                         break;
                     } else {
                         if(i==2){
@@ -180,7 +182,7 @@ public class HrmAttendanceReportManager implements IHrmAttendanceReport {
                     OapiAttendanceGetcolumnvalResponse rsp = client.execute(req, password);
                     if (rsp.isSuccess()) {
                         SaveReportData(empId,rsp);
-                        logger.info("插入了一条"+shortFormat.format(begin)+"-"+shortFormat.format(end)+"的考勤报表数据!");
+                        logger.info("插入了一条"+SHORT_FORMAT.get().format(begin)+"-"+SHORT_FORMAT.get().format(end)+"的考勤报表数据!");
                         break;
                     } else {
                         if(i==2){
@@ -208,7 +210,8 @@ public class HrmAttendanceReportManager implements IHrmAttendanceReport {
 
     @Autowired
     ddtaskresultRepository ddRep;
-    SimpleDateFormat cimple=new SimpleDateFormat("yyyyMMdd");
+    private static final ThreadLocal<SimpleDateFormat> CIMPLE =
+            ThreadLocal.withInitial(() -> new SimpleDateFormat("yyyyMMdd"));
     @Override
     public void UpdateHolidayReport(String userId, Long empId, Date begin, Date end) throws ApiException {
         List<HrmAttendanceReportField> allFields = fieldRep.findAll();
@@ -239,12 +242,12 @@ public class HrmAttendanceReportManager implements IHrmAttendanceReport {
                         result.setCreatetime(new Date());
                         result.setEmpId(empId);
                         result.setUserId(userId);  // 【修复重名员工问题】：保存userId用于去重
-                        result.setBegin(cimple.format(begin));
-                        result.setEnd(cimple.format(end));
+                        result.setBegin(CIMPLE.get().format(begin));
+                        result.setEnd(CIMPLE.get().format(end));
                         result.setCompanyId(Info.getCompanyId());
                         result.setContent(JSON.toJSONString(rsp));
                         ddRep.save(result);
-                        logger.info("插入了一条"+shortFormat.format(begin)+"-"+shortFormat.format(end)+"的请假报表数据!");
+                        logger.info("插入了一条"+SHORT_FORMAT.get().format(begin)+"-"+SHORT_FORMAT.get().format(end)+"的请假报表数据!");
                         break;
                     } else {
                         if(i==2){
@@ -288,7 +291,7 @@ public class HrmAttendanceReportManager implements IHrmAttendanceReport {
                 OapiAttendanceGetleavetimebynamesResponse rsp = client.execute(req, password);
                 if(rsp.isSuccess()){
                     SaveHolidayData(empId,rsp);
-                    logger.info("插入了一条"+shortFormat.format(begin)+"-"+shortFormat.format(end)+"的请假报表数据!");
+                    logger.info("插入了一条"+SHORT_FORMAT.get().format(begin)+"-"+SHORT_FORMAT.get().format(end)+"的请假报表数据!");
                 }
 
             } else {

@@ -1,6 +1,7 @@
 package com.tianye.hrsystem.modules.additional.controller;
 
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
+import com.tianye.hrsystem.common.ExcelTemplateDownloadUtils;
 import com.tianye.hrsystem.common.Result;
 import com.tianye.hrsystem.entity.vo.OperationResult;
 import com.tianye.hrsystem.modules.additional.bo.QueryAdditionalBO;
@@ -14,6 +15,9 @@ import io.swagger.annotations.ApiParam;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.multipart.MultipartFile;
+
+import javax.servlet.http.HttpServletResponse;
+import java.io.IOException;
 
 @RestController
 @RequestMapping("/hrmAdditional")
@@ -31,10 +35,13 @@ public class HrmAdditionalController {
     @ApiOperation(value = "导入个税专项附加报表数据")
     public Result importAdditional(@ApiParam("个税专项附加") @RequestParam(name = "additionalFile", required = false) MultipartFile additionalFile,
                                    @RequestParam(name = "year") String year, @RequestParam(name = "month") String month) {
+        if (isBlank(year) || isBlank(month)) {
+            return Result.Error(new IllegalArgumentException("请先选择年-月"));
+        }
         try {
             hrmAdditionalService.resolveAdditionalData(additionalFile, year, month);
         }catch (Exception ax) {
-            ax.printStackTrace();
+            return Result.Error(ax);
         }
         return Result.OK();
     }
@@ -51,7 +58,7 @@ public class HrmAdditionalController {
         try {
             hrmAdditionalService.resolveAdditionalInfoData(additionalInfoFile, year);
         }catch (Exception ax) {
-            ax.printStackTrace();
+            return Result.Error(ax);
         }
         return Result.OK();
     }
@@ -80,5 +87,15 @@ public class HrmAdditionalController {
     public Result deleteAdditional(@PathVariable("additionalId") Long additionalId) {
         OperationResult operationResult = hrmAdditionalService.deleteAdditional(additionalId);
         return Result.OK();
+    }
+
+    @GetMapping("/downloadAdditionalTemplate")
+    @ApiOperation("下载附加累计数据模版")
+    public void downloadAdditionalTemplate(HttpServletResponse response) throws IOException {
+        ExcelTemplateDownloadUtils.downloadClasspathTemplate("export/附加扣除累计.xls", "附加扣除累计.xls", response);
+    }
+
+    private static boolean isBlank(String value) {
+        return value == null || value.trim().isEmpty();
     }
 }

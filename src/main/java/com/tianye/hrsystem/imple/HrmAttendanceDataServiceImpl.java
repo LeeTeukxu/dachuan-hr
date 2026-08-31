@@ -20,6 +20,7 @@ import com.tianye.hrsystem.util.MyDateUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.support.TransactionTemplate;
@@ -44,9 +45,20 @@ public class HrmAttendanceDataServiceImpl implements IHrmAttendanceDataService {
     private static final String SYNC_STEP_KEY = "attendance:sync:step";
     private static final String SYNC_PROCESSED_EMPS_KEY = "attendance:sync:processed_emps";
     private static final String SYNC_PARAMS_KEY = "attendance:sync:params";
+    private static final String SYNC_STATUS_KEY = "attendance:sync:status";
+    private static final String SYNC_MESSAGE_KEY = "attendance:sync:message";
+    private static final String SYNC_ERRORS_KEY = "attendance:sync:errors";
     // 步骤7子步骤进度Key
     private static final String SYNC_STEP7A_PROCESSED_KEY = "attendance:sync:step7a_processed"; // 请假数据
     private static final String SYNC_STEP7B_PROCESSED_KEY = "attendance:sync:step7b_processed"; // 假期数据
+    // 进度写入的服务端时间戳与最近一次提交的排队标记：
+    // 前端用 updateTime >= queuedAt 判定完成信号属于本次运行，防止读到上一次运行的旧完成状态
+    private static final String SYNC_UPDATE_TIME_KEY = "attendance:sync:update_time";
+    private static final String SYNC_QUEUED_KEY = "attendance:sync:queued";
+    private static final String STATUS_RUNNING = "RUNNING";
+    private static final String STATUS_SUCCESS = "SUCCESS";
+    private static final String STATUS_FAILED = "FAILED";
+    private static final String STATUS_IDLE = "IDLE";
     // 进度过期时间：24小时
     private static final int PROGRESS_EXPIRE_SECONDS = 86400;
     // 并行处理线程数（步骤3-4调用钉钉API，保守设置）
@@ -57,6 +69,10 @@ public class HrmAttendanceDataServiceImpl implements IHrmAttendanceDataService {
     private static final int BATCH_SIZE = 1;
     // 步骤7每批次处理的员工数（降低批次大小以减少单请求处理时间）
     private static final int STEP7_BATCH_SIZE = 1;
+    // 数据库连接异常重试次数（用于大批量同步时的瞬时断连）
+    private static final int DB_RETRY_MAX_ATTEMPTS = 3;
+    // 明细接口天然支持最多 50 人批量查询，按接口上限分批可显著降低调用量
+    private static final int DETAIL_BATCH_SIZE = 50;
 
     @Autowired
     IAttendancePlanService planService;
@@ -84,31 +100,326 @@ public class HrmAttendanceDataServiceImpl implements IHrmAttendanceDataService {
     @Autowired
     Redis redis;
 
+    // 同步失败自动重试：次数与退避基数可配（默认 2 次自动重试、60s 起步指数退避、封顶 5 分钟）
+    @Value("${hrm.attendance-sync.auto-retry.attempts:2}")
+    private int syncAutoRetryAttempts = 2;
+    @Value("${hrm.attendance-sync.auto-retry.backoff-ms:60000}")
+    private long syncAutoRetryBackoffMs = 60000L;
+
     /**
      * 获取当前同步进度信息
      * @return 进度信息Map，包含step, processedEmps, params等
      */
+    /** 同步进度键按公司隔离：Redis 前缀为恒等实现，键名必须显式带 companyId，否则跨公司并发互相覆盖进度 */
+    private String syncKey(String baseKey) {
+        LoginUserInfo info = CompanyContext.get();
+        String companyId = info != null && info.getCompanyId() != null ? info.getCompanyId() : "unknown";
+        return baseKey + ":" + companyId;
+    }
+
+    private long parseRedisLong(String value) {
+        if (value == null || value.trim().isEmpty()) {
+            return 0L;
+        }
+        try {
+            return Long.parseLong(value.trim());
+        } catch (NumberFormatException ex) {
+            return 0L;
+        }
+    }
+
+    /** 提交同步时写入排队标记（服务端时间戳）：前端据此区分本次运行与上一次运行的旧进度 */
+    public long markSyncQueued() {
+        long queuedAt = System.currentTimeMillis();
+        redis.setex(syncKey(SYNC_QUEUED_KEY), PROGRESS_EXPIRE_SECONDS, String.valueOf(queuedAt));
+        return queuedAt;
+    }
+
+    /** 自动重试等待期：保持 RUNNING 状态并刷新文案，避免前端把中间失败当成最终结果 */
+    public void markSyncRetrying(int attempt, long backoffMs) {
+        redis.setex(syncKey(SYNC_STATUS_KEY), PROGRESS_EXPIRE_SECONDS, STATUS_RUNNING);
+        redis.setex(syncKey(SYNC_MESSAGE_KEY), PROGRESS_EXPIRE_SECONDS,
+                "同步中断，正在自动重试（第" + (attempt + 1) + "次），约" + Math.max(1, Math.round(backoffMs / 1000.0)) + "秒后开始");
+        redis.setex(syncKey(SYNC_UPDATE_TIME_KEY), PROGRESS_EXPIRE_SECONDS, System.currentTimeMillis());
+    }
+
+    /**
+     * 带自动重试的同步入口（/sync、/syncAll 使用）：
+     * 首次运行失败后按指数退避自动从断点续传（默认 2 次自动重试、60s 起步、封顶 5 分钟）；
+     * 重试等待期进度保持 RUNNING 并显示重试文案，仅在最终失败时置为 FAILED。
+     */
+    @Override
+    public boolean SyncDataWithAutoRetry(String EmpIDS, Date Begin, Date End) throws Exception {
+        int maxAttempts = 1 + Math.max(0, syncAutoRetryAttempts);
+        long backoffMs = Math.max(1000L, syncAutoRetryBackoffMs);
+        for (int attempt = 1; attempt <= maxAttempts; attempt++) {
+            try {
+                boolean ok = attempt == 1
+                        ? SyncData(EmpIDS, Begin, End)
+                        : SyncDataWithResume(EmpIDS, Begin, End, true);
+                if (attempt > 1) {
+                    logger.info("考勤同步第{}次自动重试成功", attempt);
+                }
+                return ok;
+            } catch (Exception ex) {
+                if (attempt >= maxAttempts) {
+                    logger.error("考勤同步自动重试{}次后仍失败", maxAttempts - 1, ex);
+                    throw ex; // SyncData/SyncDataWithResume 内部已把进度标为 FAILED
+                }
+                logger.warn("考勤同步第{}次运行失败，{}ms 后自动从断点重试: {}", attempt, backoffMs, ex.getMessage());
+                markSyncRetrying(attempt, backoffMs);
+                try {
+                    Thread.sleep(backoffMs);
+                } catch (InterruptedException interruptedException) {
+                    Thread.currentThread().interrupt();
+                    throw interruptedException;
+                }
+                backoffMs = Math.min(backoffMs * 2, 300_000L);
+            }
+        }
+        throw new IllegalStateException("unreachable");
+    }
+
+    @Override
     public Map<String, Object> getSyncProgress() {
         Map<String, Object> progress = new HashMap<>();
-        
-        Integer step = redis.get(SYNC_STEP_KEY);
-        String processedEmps = redis.get(SYNC_PROCESSED_EMPS_KEY);
-        String params = redis.get(SYNC_PARAMS_KEY);
-        
-        progress.put("hasProgress", step != null && step > 0);
-        progress.put("currentStep", step != null ? step : 0);
+
+        Integer step = redis.get(syncKey(SYNC_STEP_KEY));
+        String processedEmps = redis.get(syncKey(SYNC_PROCESSED_EMPS_KEY));
+        String params = redis.get(syncKey(SYNC_PARAMS_KEY));
+        String savedStatus = redis.get(syncKey(SYNC_STATUS_KEY));
+        String savedMessage = redis.get(syncKey(SYNC_MESSAGE_KEY));
+        String savedErrors = redis.get(syncKey(SYNC_ERRORS_KEY));
+        String step7aProcessed = redis.get(syncKey(SYNC_STEP7A_PROCESSED_KEY));
+        String step7bProcessed = redis.get(syncKey(SYNC_STEP7B_PROCESSED_KEY));
+        long updateTime = parseRedisLong(redis.get(syncKey(SYNC_UPDATE_TIME_KEY)));
+        long queuedAt = parseRedisLong(redis.get(syncKey(SYNC_QUEUED_KEY)));
+
+        boolean hasProgress = step != null && step > 0;
+        int currentStep = step != null ? Math.max(0, Math.min(7, step)) : 0;
+        int totalCount = parseTotalCountFromParams(params);
+        int processedCount = countCsvItems(processedEmps);
+        int step7aCount = countCsvItems(step7aProcessed);
+        int step7bCount = countCsvItems(step7bProcessed);
+        String status = normalizeSyncStatus(savedStatus, hasProgress);
+        boolean success = STATUS_SUCCESS.equals(status);
+        boolean failed = STATUS_FAILED.equals(status);
+        boolean done = success || failed;
+        int percent = success
+                ? 100
+                : calculateProgressPercent(currentStep, hasProgress, totalCount, processedCount, step7aCount, step7bCount);
+
+        progress.put("hasProgress", hasProgress && !success);
+        progress.put("currentStep", currentStep);
         progress.put("processedEmps", processedEmps != null ? processedEmps : "");
         progress.put("params", params != null ? params : "");
-        
+        progress.put("totalCount", totalCount);
+        progress.put("processedCount", processedCount);
+        progress.put("progress", percent);
+        progress.put("percent", percent);
+        progress.put("status", status);
+        progress.put("done", done);
+        progress.put("success", success);
+        progress.put("error", failed);
+        progress.put("errors", parseProgressErrors(savedErrors));
+        progress.put("message", resolveProgressMessage(savedMessage, status, currentStep, hasProgress));
+        progress.put("updateTime", updateTime);
+        progress.put("queuedAt", queuedAt);
+
         return progress;
+    }
+
+    private String normalizeSyncStatus(String status, boolean hasProgress) {
+        if (status == null || status.trim().isEmpty()) {
+            return hasProgress ? STATUS_RUNNING : STATUS_IDLE;
+        }
+        String normalized = status.trim().toUpperCase(Locale.ROOT);
+        if (STATUS_SUCCESS.equals(normalized) || STATUS_FAILED.equals(normalized) || STATUS_RUNNING.equals(normalized)) {
+            return normalized;
+        }
+        return hasProgress ? STATUS_RUNNING : STATUS_IDLE;
+    }
+
+    private List<String> parseProgressErrors(String savedErrors) {
+        if (savedErrors == null || savedErrors.trim().isEmpty()) {
+            return Collections.emptyList();
+        }
+        return Arrays.stream(savedErrors.split("\\n"))
+                .map(String::trim)
+                .filter(item -> !item.isEmpty())
+                .collect(Collectors.toList());
+    }
+
+    private String resolveProgressMessage(String savedMessage, String status, int step, boolean hasProgress) {
+        if (savedMessage != null && !savedMessage.trim().isEmpty()) {
+            return savedMessage;
+        }
+        if (STATUS_SUCCESS.equals(status)) {
+            return "同步完成，请确认后关闭进度条";
+        }
+        if (STATUS_FAILED.equals(status)) {
+            return "同步考勤失败，请处理提示中的数据问题后重试";
+        }
+        return hasProgress ? getStepLabel(step) : "暂无同步任务";
+    }
+
+    private int parseTotalCountFromParams(String params) {
+        if (params == null || params.trim().isEmpty()) {
+            return 0;
+        }
+        String[] segments = params.split("\\|", 3);
+        if (segments.length == 0) {
+            return 0;
+        }
+        return countCsvItems(segments[0]);
+    }
+
+    private int countCsvItems(String csv) {
+        if (csv == null || csv.trim().isEmpty()) {
+            return 0;
+        }
+        return (int) Arrays.stream(csv.split(","))
+                .map(String::trim)
+                .filter(item -> !item.isEmpty())
+                .distinct()
+                .count();
+    }
+
+    private int calculateProgressPercent(int step, boolean hasProgress, int totalCount, int processedCount,
+                                         int step7aCount, int step7bCount) {
+        if (!hasProgress || step <= 0) {
+            return 0;
+        }
+        double base;
+        switch (step) {
+            case 1:
+                base = 5;
+                break;
+            case 2:
+                base = 15;
+                break;
+            case 3:
+                base = 20 + getRatio(processedCount, totalCount) * 18;
+                break;
+            case 4:
+                base = 40 + getRatio(processedCount, totalCount) * 20;
+                break;
+            case 5:
+                base = 70;
+                break;
+            case 6:
+                base = 82;
+                break;
+            case 7:
+                double leaveRatio = getRatio(step7aCount, totalCount);
+                double holidayRatio = getRatio(step7bCount, totalCount);
+                base = 85 + ((leaveRatio + holidayRatio) / 2.0) * 14;
+                break;
+            default:
+                base = 96;
+                break;
+        }
+        return clampPercent(base);
+    }
+
+    private double getRatio(int done, int total) {
+        if (total <= 0) {
+            return 0;
+        }
+        return Math.min(1.0, Math.max(0.0, done * 1.0 / total));
+    }
+
+    private int clampPercent(double value) {
+        int rounded = (int) Math.round(value);
+        if (rounded < 0) {
+            return 0;
+        }
+        if (rounded > 99) {
+            return 99;
+        }
+        return rounded;
+    }
+
+    private String getStepLabel(int step) {
+        switch (step) {
+            case 1:
+                return "同步组织架构";
+            case 2:
+                return "同步用户信息";
+            case 3:
+                return "同步考勤计划";
+            case 4:
+                return "同步考勤明细";
+            case 5:
+                return "更新考勤报表";
+            case 6:
+                return "清理历史数据";
+            case 7:
+                return "同步请假与假期数据";
+            default:
+                return "准备同步";
+        }
+    }
+
+    /**
+     * 归一化用户映射，避免同一 userId 多条历史脏数据导致错配。
+     */
+    private List<tbattendanceuser> normalizeUsers(List<tbattendanceuser> users) {
+        if (users == null || users.isEmpty()) {
+            return Collections.emptyList();
+        }
+        Map<String, tbattendanceuser> byUserId = new LinkedHashMap<>();
+        for (tbattendanceuser user : users) {
+            if (user == null || user.getUserId() == null || user.getUserId().trim().isEmpty()) {
+                continue;
+            }
+            tbattendanceuser current = byUserId.get(user.getUserId());
+            if (current == null) {
+                byUserId.put(user.getUserId(), user);
+            } else {
+                byUserId.put(user.getUserId(), selectPreferredUser(current, user));
+            }
+        }
+        return new ArrayList<>(byUserId.values());
+    }
+
+    private tbattendanceuser selectPreferredUser(tbattendanceuser left, tbattendanceuser right) {
+        boolean leftValidEmp = left.getEmpId() != null && left.getEmpId() > 0;
+        boolean rightValidEmp = right.getEmpId() != null && right.getEmpId() > 0;
+        if (leftValidEmp != rightValidEmp) {
+            return leftValidEmp ? left : right;
+        }
+
+        Date leftCreate = left.getCreateTime();
+        Date rightCreate = right.getCreateTime();
+        if (leftCreate != null && rightCreate != null && !leftCreate.equals(rightCreate)) {
+            return leftCreate.after(rightCreate) ? left : right;
+        }
+        if (leftCreate == null && rightCreate != null) {
+            return right;
+        }
+        if (leftCreate != null && rightCreate == null) {
+            return left;
+        }
+
+        Integer leftId = left.getId();
+        Integer rightId = right.getId();
+        if (leftId != null && rightId != null && !leftId.equals(rightId)) {
+            return leftId > rightId ? left : right;
+        }
+        if (leftId == null && rightId != null) {
+            return right;
+        }
+        return left;
     }
 
     /**
      * 清除同步进度（同步成功或需要重新开始时调用）
      */
     public void clearSyncProgress() {
-        redis.del(SYNC_STEP_KEY, SYNC_PROCESSED_EMPS_KEY, SYNC_PARAMS_KEY, 
-                SYNC_STEP7A_PROCESSED_KEY, SYNC_STEP7B_PROCESSED_KEY);
+        redis.del(syncKey(SYNC_STEP_KEY), syncKey(SYNC_PROCESSED_EMPS_KEY), syncKey(SYNC_PARAMS_KEY),
+                syncKey(SYNC_STATUS_KEY), syncKey(SYNC_MESSAGE_KEY), syncKey(SYNC_ERRORS_KEY),
+                syncKey(SYNC_STEP7A_PROCESSED_KEY), syncKey(SYNC_STEP7B_PROCESSED_KEY));
         logger.info("已清除同步进度缓存");
     }
 
@@ -116,9 +427,76 @@ public class HrmAttendanceDataServiceImpl implements IHrmAttendanceDataService {
      * 保存同步进度
      */
     private void saveSyncProgress(int step, String processedEmps, String params) {
-        redis.setex(SYNC_STEP_KEY, PROGRESS_EXPIRE_SECONDS, step);
-        redis.setex(SYNC_PROCESSED_EMPS_KEY, PROGRESS_EXPIRE_SECONDS, processedEmps);
-        redis.setex(SYNC_PARAMS_KEY, PROGRESS_EXPIRE_SECONDS, params);
+        redis.setex(syncKey(SYNC_STEP_KEY), PROGRESS_EXPIRE_SECONDS, step);
+        redis.setex(syncKey(SYNC_PROCESSED_EMPS_KEY), PROGRESS_EXPIRE_SECONDS, processedEmps);
+        redis.setex(syncKey(SYNC_PARAMS_KEY), PROGRESS_EXPIRE_SECONDS, params);
+        redis.setex(syncKey(SYNC_STATUS_KEY), PROGRESS_EXPIRE_SECONDS, STATUS_RUNNING);
+        redis.setex(syncKey(SYNC_MESSAGE_KEY), PROGRESS_EXPIRE_SECONDS, getStepLabel(step));
+        redis.setex(syncKey(SYNC_ERRORS_KEY), PROGRESS_EXPIRE_SECONDS, "");
+        redis.setex(syncKey(SYNC_UPDATE_TIME_KEY), PROGRESS_EXPIRE_SECONDS, System.currentTimeMillis());
+    }
+
+    private void saveFinalSyncProgress(String params) {
+        redis.setex(syncKey(SYNC_STEP_KEY), PROGRESS_EXPIRE_SECONDS, 7);
+        redis.setex(syncKey(SYNC_PARAMS_KEY), PROGRESS_EXPIRE_SECONDS, params);
+        redis.setex(syncKey(SYNC_STATUS_KEY), PROGRESS_EXPIRE_SECONDS, STATUS_SUCCESS);
+        redis.setex(syncKey(SYNC_MESSAGE_KEY), PROGRESS_EXPIRE_SECONDS, "同步完成，请确认后关闭进度条");
+        redis.setex(syncKey(SYNC_ERRORS_KEY), PROGRESS_EXPIRE_SECONDS, "");
+        redis.setex(syncKey(SYNC_UPDATE_TIME_KEY), PROGRESS_EXPIRE_SECONDS, System.currentTimeMillis());
+    }
+
+    private void saveFailedSyncProgress(int step, String params, Throwable throwable) {
+        int currentStep = Math.max(1, Math.min(7, step));
+        String message = toFriendlySyncErrorMessage(throwable);
+        redis.setex(syncKey(SYNC_STEP_KEY), PROGRESS_EXPIRE_SECONDS, currentStep);
+        redis.setex(syncKey(SYNC_PARAMS_KEY), PROGRESS_EXPIRE_SECONDS, params);
+        redis.setex(syncKey(SYNC_STATUS_KEY), PROGRESS_EXPIRE_SECONDS, STATUS_FAILED);
+        redis.setex(syncKey(SYNC_MESSAGE_KEY), PROGRESS_EXPIRE_SECONDS, message);
+        redis.setex(syncKey(SYNC_ERRORS_KEY), PROGRESS_EXPIRE_SECONDS, message);
+        redis.setex(syncKey(SYNC_UPDATE_TIME_KEY), PROGRESS_EXPIRE_SECONDS, System.currentTimeMillis());
+    }
+
+    public static String toFriendlySyncErrorMessage(Throwable throwable) {
+        String message = collectThrowableMessage(throwable);
+        String lower = message.toLowerCase(Locale.ROOT);
+        if (message.contains("请选择") || message.contains("不能为空")) {
+            return "请选择需要同步的员工和同步月份后重试";
+        }
+        if (message.contains("CompanyContext") || message.contains("租户上下文") || message.contains("登录")) {
+            return "当前登录信息已失效，请重新登录后再同步考勤";
+        }
+        if (lower.contains("permission") || message.contains("权限") || lower.contains("forbidden")) {
+            return "当前账号或钉钉应用没有同步考勤权限，请联系管理员处理后重试";
+        }
+        if (message.contains("钉钉") || lower.contains("dingtalk") || lower.contains("oapi")
+                || lower.contains("api") || message.contains("限流") || message.contains("频控")) {
+            return "钉钉考勤接口繁忙或权限不足，请稍后重试或联系管理员检查钉钉配置";
+        }
+        if (lower.contains("sql") || lower.contains("jdbc") || lower.contains("database")
+                || lower.contains("unknown column") || lower.contains("communications link")
+                || lower.contains("connection") || message.contains("数据库")) {
+            return "同步考勤失败，数据库连接或表结构需要管理员检查，当前进度已保留，可处理后重试";
+        }
+        if (message.contains("员工") || message.contains("步骤")) {
+            return "部分员工考勤同步失败，请检查员工钉钉信息或缩小同步范围后重试，当前进度已保留";
+        }
+        return "同步考勤失败，请处理提示中的数据问题后重试";
+    }
+
+    private static String collectThrowableMessage(Throwable throwable) {
+        if (throwable == null) {
+            return "";
+        }
+        StringBuilder builder = new StringBuilder();
+        Throwable current = throwable;
+        while (current != null) {
+            if (current.getMessage() != null) {
+                builder.append(current.getMessage()).append(' ');
+            }
+            builder.append(current.getClass().getName()).append(' ');
+            current = current.getCause();
+        }
+        return builder.toString();
     }
 
     /**
@@ -128,21 +506,28 @@ public class HrmAttendanceDataServiceImpl implements IHrmAttendanceDataService {
      */
     @Override
     public boolean SyncData(String EmpIDS, Date Begin, Date End) throws Exception {
+        // 防重入互斥已上移到 AttendanceSyncTaskLauncher（按公司粒度，提交时同步抢占、后台任务 finally 释放）。
+        // 本方法只负责断点续传判定与执行，由后台线程调用。
+        String normalizedEmpIds = normalizeEmpIdCsv(EmpIDS);
+        if (normalizedEmpIds.isEmpty()) {
+            throw new IllegalArgumentException("EmpID不能为空");
+        }
         SimpleDateFormat sdf = new SimpleDateFormat("yyyy-MM-dd");
-        String currentParams = EmpIDS + "|" + sdf.format(Begin) + "|" + sdf.format(End);
-        
+        String currentParams = normalizedEmpIds + "|" + sdf.format(Begin) + "|" + sdf.format(End);
+
         // 根据Redis进度记录自动判断是否从断点恢复
         Map<String, Object> progress = getSyncProgress();
-        boolean hasValidProgress = (Boolean) progress.get("hasProgress") 
+        boolean hasValidProgress = (Boolean) progress.get("hasProgress")
+                && STATUS_FAILED.equals(progress.get("status"))
                 && currentParams.equals(progress.get("params"));
-        
+
         if (hasValidProgress) {
             logger.info("检测到有效的断点进度，将从步骤{}恢复", progress.get("currentStep"));
         } else {
             logger.info("无有效断点进度，将从头开始同步");
         }
-        
-        return SyncDataWithResume(EmpIDS, Begin, End, hasValidProgress);
+
+        return SyncDataWithResume(normalizedEmpIds, Begin, End, hasValidProgress);
     }
 
     /**
@@ -150,16 +535,18 @@ public class HrmAttendanceDataServiceImpl implements IHrmAttendanceDataService {
      * 注意：不使用@Transactional，让每个步骤独立提交，避免异常时回滚已处理的数据
      */
     public boolean SyncDataWithResume(String EmpIDS, Date Begin, Date End, boolean resumeFromBreakpoint) throws Exception {
+        String normalizedEmpIds = normalizeEmpIdCsv(EmpIDS);
+        if (normalizedEmpIds.isEmpty()) {
+            throw new IllegalArgumentException("EmpID不能为空");
+        }
         SimpleDateFormat sdf = new SimpleDateFormat("yyyy-MM-dd");
-        String currentParams = EmpIDS + "|" + sdf.format(Begin) + "|" + sdf.format(End);
-        
-        List<String> allEmpIds = Arrays.asList(EmpIDS.split(","));
+        String currentParams = normalizedEmpIds + "|" + sdf.format(Begin) + "|" + sdf.format(End);
+
+        List<String> allEmpIds = normalizeEmpIdList(normalizedEmpIds);
         List<String> remainingEmpIds = new ArrayList<>(allEmpIds);
-        int startStep = 1; // TODO: 临时调试 - 强制从步骤7开始
+        int startStep = 1;
         Set<String> processedEmpSet = new HashSet<>();
-        
-        // 全量员工相关变量，用于步骤6-7
-        String allEmpIDS = EmpIDS;
+
         List<Long> allEmpIDD = allEmpIds.stream().map(Long::parseLong).collect(Collectors.toList());
 
         // 检查是否需要从断点恢复
@@ -194,21 +581,21 @@ public class HrmAttendanceDataServiceImpl implements IHrmAttendanceDataService {
             clearSyncProgress();
             return true;
         }
-        
+
         // 如果员工级步骤已完成但还有后续步骤（5-7），继续执行
         if (remainingEmpIds.isEmpty() && startStep <= 7) {
             logger.info("员工级步骤（3-4）已完成，继续执行步骤{}-7", startStep);
         }
-                
+
         // 待处理员工，用于步骤3-4的断点续传
-        String remainingEmpIDS = String.join(",", remainingEmpIds);
-                
         logger.info("========== 开始同步考勤数据 (步骤{}/7起) ==========", startStep);
         logger.info("总员工数: {}，待处理员工数: {}", allEmpIds.size(), remainingEmpIds.size());
 
+        int activeStep = startStep;
         try {
             // 步骤1: 同步组织架构
             if (startStep <= 1) {
+                activeStep = 1;
                 logger.info("[步骤1/7] 同步钉钉组织架构...");
                 groupManager.GetAndSave();
                 saveSyncProgress(2, String.join(",", processedEmpSet), currentParams);
@@ -216,17 +603,21 @@ public class HrmAttendanceDataServiceImpl implements IHrmAttendanceDataService {
 
             // 步骤2: 同步用户信息
             if (startStep <= 2) {
+                activeStep = 2;
                 logger.info("[步骤2/7] 同步钉钉用户信息...");
                 userManager.GetAndSave();
                 saveSyncProgress(3, String.join(",", processedEmpSet), currentParams);
             }
 
             List<tbattendanceuser> users = userRep.findAll();
+            List<tbattendanceuser> normalizedUsers = normalizeUsers(users);
+            logger.info("同步用户映射加载完成: 原始{}条，去重后{}条", users.size(), normalizedUsers.size());
             // 创建线程安全的users副本，避免并行处理时的状态共享问题
-            final List<tbattendanceuser> threadSafeUsers = Collections.unmodifiableList(new ArrayList<>(users));
+            final List<tbattendanceuser> threadSafeUsers = Collections.unmodifiableList(new ArrayList<>(normalizedUsers));
 
             // 步骤3: 同步考勤计划（并行处理，支持断点）
             if (startStep <= 3) {
+                activeStep = 3;
                 logger.info("[步骤3/7] 同步考勤计划（并行模式，线程数: {}）", PARALLEL_THREADS);
                 // 每个员工的删除和保存在同一个短事务中完成，避免锁冲突
                 syncByEmployeeBatchParallelSafe(remainingEmpIds, processedEmpSet, Begin, End, currentParams, 3,
@@ -236,6 +627,7 @@ public class HrmAttendanceDataServiceImpl implements IHrmAttendanceDataService {
 
             // 步骤4: 同步考勤明细（并行处理，支持断点）
             if (startStep <= 4) {
+                activeStep = 4;
                 logger.info("[步骤4/7] 同步考勤明细（并行模式，线程数: {}）", PARALLEL_THREADS);
                 // 重置已处理集合用于此步骤
                 Set<String> step4Processed = ConcurrentHashMap.newKeySet();
@@ -246,6 +638,7 @@ public class HrmAttendanceDataServiceImpl implements IHrmAttendanceDataService {
 
             // 步骤5: 更新考勤报表字段
             if (startStep <= 5) {
+                activeStep = 5;
                 logger.info("[步骤5/7] 更新考勤报表字段");
                 report.UpdateReportFields();
                 saveSyncProgress(6, String.join(",", processedEmpSet), currentParams);
@@ -253,6 +646,7 @@ public class HrmAttendanceDataServiceImpl implements IHrmAttendanceDataService {
 
             // 步骤6: 删除历史数据（只删除当前批次要处理的员工，保留已处理员工的数据）
             if (startStep <= 6) {
+                activeStep = 6;
                 logger.info("[步骤6/7] 删除历史数据，处理所有员工: {} 人", allEmpIDD.size());
                 // 使用事务模板执行删除操作
                 TransactionTemplate transactionTemplate = ApplicationContextHolder.getBean(TransactionTemplate.class);
@@ -265,12 +659,13 @@ public class HrmAttendanceDataServiceImpl implements IHrmAttendanceDataService {
 
             // 步骤7: 同步请假和假期数据（并行处理，支持断点续传）
             if (startStep <= 7) {
+                activeStep = 7;
                 logger.info("[步骤7/7] 同步请假和假期数据（并行模式，处理所有员工: {}，线程数: {}）", allEmpIds.size(), STEP7_PARALLEL_THREADS);
-                
+
                 // 步骤7a: 请假数据同步（支持断点续传）
                 Set<String> step7aProcessed = ConcurrentHashMap.newKeySet();
                 if (resumeFromBreakpoint) {
-                    String saved7a = redis.get(SYNC_STEP7A_PROCESSED_KEY);
+                    String saved7a = redis.get(syncKey(SYNC_STEP7A_PROCESSED_KEY));
                     if (saved7a != null && !saved7a.isEmpty()) {
                         step7aProcessed.addAll(Arrays.asList(saved7a.split(",")));
                         logger.info("[步骤7a/7] 从断点恢复，已处理: {} 人", step7aProcessed.size());
@@ -278,18 +673,18 @@ public class HrmAttendanceDataServiceImpl implements IHrmAttendanceDataService {
                 }
                 logger.info("[步顂7a/7] 开始同步请假数据");
                 try {
-                    syncByEmployeeBatchParallelSafe(allEmpIds, step7aProcessed, Begin, End, 
+                    syncByEmployeeBatchParallelSafe(allEmpIds, step7aProcessed, Begin, End,
                             currentParams, 7, threadSafeUsers, leaveService);
                     logger.info("[步顂7a/7] 请假数据同步完成");
                 } catch (Exception e) {
                     logger.error("[步顂7a/7] 请假数据同步失败，已保存进度，可从断点恢复", e);
                     throw e; // 重新抛出异常，不执行后续步骤
                 }
-                            
+
                 // 步骤7b: 假期数据同步（支持断点续传）
                 Set<String> step7bProcessed = ConcurrentHashMap.newKeySet();
                 if (resumeFromBreakpoint) {
-                    String saved7b = redis.get(SYNC_STEP7B_PROCESSED_KEY);
+                    String saved7b = redis.get(syncKey(SYNC_STEP7B_PROCESSED_KEY));
                     if (saved7b != null && !saved7b.isEmpty()) {
                         step7bProcessed.addAll(Arrays.asList(saved7b.split(",")));
                         logger.info("[步骤7b/7] 从断点恢复，已处理: {} 人", step7bProcessed.size());
@@ -297,7 +692,7 @@ public class HrmAttendanceDataServiceImpl implements IHrmAttendanceDataService {
                 }
                 logger.info("[步顂7b/7] 开始同步假期数据");
                 try {
-                    syncByEmployeeBatchParallelSafe(allEmpIds, step7bProcessed, Begin, End, 
+                    syncByEmployeeBatchParallelSafe(allEmpIds, step7bProcessed, Begin, End,
                             currentParams, 7, threadSafeUsers, holidayService);
                     logger.info("[步顂7b/7] 假期数据同步完成");
                 } catch (Exception e) {
@@ -306,12 +701,13 @@ public class HrmAttendanceDataServiceImpl implements IHrmAttendanceDataService {
                 }
             }
 
-            // 同步成功，清除进度缓存
-            clearSyncProgress();
+            // 同步成功后保留最终进度，等待操作人员在前端确认后关闭进度条。
+            saveFinalSyncProgress(currentParams);
             logger.info("========== 考勤数据同步完成 ==========");
             return true;
 
         } catch (Exception e) {
+            saveFailedSyncProgress(activeStep, currentParams, e);
             logger.error("同步过程中发生异常，进度已保存，可调用 SyncDataWithResume(..., true) 从断点恢复", e);
             throw e;
         }
@@ -320,23 +716,23 @@ public class HrmAttendanceDataServiceImpl implements IHrmAttendanceDataService {
     /**
      * 按员工批量同步（串行版本，保留作为备用）
      */
-    private void syncByEmployeeBatch(List<String> empIds, Set<String> processedSet, 
+    private void syncByEmployeeBatch(List<String> empIds, Set<String> processedSet,
                                       Date begin, Date end, String params, int currentStep,
                                       EmployeeSyncAction action) throws Exception {
         int total = empIds.size();
         int processed = 0;
-        
+
         for (String empId : empIds) {
             if (processedSet.contains(empId)) {
                 processed++;
                 continue;
             }
-            
+
             try {
                 action.sync(empId);
                 processedSet.add(empId);
                 processed++;
-                
+
                 // 每处理10个员工保存一次进度
                 if (processed % 10 == 0) {
                     saveSyncProgress(currentStep, String.join(",", processedSet), params);
@@ -353,16 +749,26 @@ public class HrmAttendanceDataServiceImpl implements IHrmAttendanceDataService {
 
     /**
      * 按员工并行同步（线程安全版本）
-     * 使用同步块保证 setUsers 和 Sync 的原子性
+     * users 通过方法参数传递，服务单例不持有共享可变状态
      */
     private void syncByEmployeeBatchParallelSafe(List<String> empIds, Set<String> processedSet,
                                                   Date begin, Date end, String params, int currentStep,
                                                   List<tbattendanceuser> users, Object service) throws Exception {
+        if (service instanceof IAttendancePlanService) {
+            syncPlanByDateForAllEmployees(empIds, processedSet, begin, end, params, currentStep, users,
+                    (IAttendancePlanService) service);
+            return;
+        }
+        if (service instanceof IAttendanceDetailService) {
+            syncDetailByBatch(empIds, processedSet, begin, end, params, currentStep, users,
+                    (IAttendanceDetailService) service);
+            return;
+        }
         // 过滤掉已处理的员工
         List<String> toProcess = empIds.stream()
                 .filter(id -> !processedSet.contains(id))
                 .collect(Collectors.toList());
-        
+
         if (toProcess.isEmpty()) {
             logger.info("[步骤{}/7] 所有员工已处理完成", currentStep);
             return;
@@ -377,6 +783,13 @@ public class HrmAttendanceDataServiceImpl implements IHrmAttendanceDataService {
         Set<String> threadSafeProcessedSet = ConcurrentHashMap.newKeySet();
         threadSafeProcessedSet.addAll(processedSet);
 
+        // 先校验租户上下文再创建线程池：避免校验失败抛出时，线程池（非 daemon 线程）泄漏
+        final LoginUserInfo mainThreadContext = CompanyContext.get();
+        if (mainThreadContext == null) {
+            logger.error("主线程 CompanyContext 为 null，无法进行并行处理");
+            throw new Exception("缺少租户上下文（CompanyContext），请确保通过正常 API 调用");
+        }
+
         // 创建线程池
         ExecutorService executor = Executors.newFixedThreadPool(PARALLEL_THREADS);
         List<Future<?>> futures = new ArrayList<>();
@@ -384,17 +797,10 @@ public class HrmAttendanceDataServiceImpl implements IHrmAttendanceDataService {
         // 分批提交任务
         List<List<String>> batches = partitionList(toProcess, BATCH_SIZE);
 
-        logger.info("[步骤{}/7] 开始并行处理，总员工数: {}，分 {} 批，每批 {} 人", 
+        logger.info("[步骤{}/7] 开始并行处理，总员工数: {}，分 {} 批，每批 {} 人",
                 currentStep, total, batches.size(), BATCH_SIZE);
 
         long startTime = System.currentTimeMillis();
-
-        // 保存主线程的 CompanyContext，供子线程使用
-        final LoginUserInfo mainThreadContext = CompanyContext.get();
-        if (mainThreadContext == null) {
-            logger.error("主线程 CompanyContext 为 null，无法进行并行处理");
-            throw new Exception("缺少租户上下文（CompanyContext），请确保通过正常 API 调用");
-        }
         logger.info("[步骤{}/7] 主线程上下文: companyId={}", currentStep, mainThreadContext.getCompanyId());
 
         for (List<String> batch : batches) {
@@ -404,28 +810,24 @@ public class HrmAttendanceDataServiceImpl implements IHrmAttendanceDataService {
                 try {
                     for (String empId : batch) {
                         try {
-                            // 移除同步锁，实现真正的并行处理
+                            // users 以参数逐层传入，单例服务不再持有共享可变状态
                             if (service instanceof IAttendancePlanService) {
                                 IAttendancePlanService planSvc = (IAttendancePlanService) service;
-                                planSvc.setUsers(users);
-                                planSvc.Sync(empId, begin, end);
+                                runWithDbRetry(currentStep, empId, () -> planSvc.Sync(empId, begin, end, users));
                             } else if (service instanceof IAttendanceDetailService) {
                                 IAttendanceDetailService detailSvc = (IAttendanceDetailService) service;
-                                detailSvc.setUsers(users);
-                                detailSvc.Sync(empId, begin, end);
+                                runWithDbRetry(currentStep, empId, () -> detailSvc.Sync(empId, begin, end, users));
                             } else if (service instanceof ILeaveRecordDtaService) {
                                 ILeaveRecordDtaService leaveSvc = (ILeaveRecordDtaService) service;
-                                leaveSvc.setUsers(users);
-                                leaveSvc.Sync(empId, begin, end);
+                                runWithDbRetry(currentStep, empId, () -> leaveSvc.Sync(empId, begin, end, users));
                             } else if (service instanceof IHolidayDataService) {
                                 IHolidayDataService holidaySvc = (IHolidayDataService) service;
-                                holidaySvc.setUsers(users);
-                                holidaySvc.Sync(empId, begin, end);
+                                runWithDbRetry(currentStep, empId, () -> holidaySvc.Sync(empId, begin, end, users));
                             }
-                            
+
                             threadSafeProcessedSet.add(empId);
                             int count = processed.incrementAndGet();
-                            
+
                             // 每处理20个员工保存一次进度并打印日志
                             if (count % 20 == 0) {
                                 synchronized (this) {
@@ -435,7 +837,7 @@ public class HrmAttendanceDataServiceImpl implements IHrmAttendanceDataService {
                                 double speed = count / (double) Math.max(elapsed, 1);
                                 int remaining = total - count;
                                 long eta = (long) (remaining / Math.max(speed, 0.1));
-                                logger.info("[步骤{}/7] 进度: {}/{} ({}员工/秒)，预计剩余: {}秒", 
+                                logger.info("[步骤{}/7] 进度: {}/{} ({}员工/秒)，预计剩余: {}秒",
                                         currentStep, count, total, String.format("%.1f", speed), eta);
                             }
                         } catch (Exception e) {
@@ -482,14 +884,58 @@ public class HrmAttendanceDataServiceImpl implements IHrmAttendanceDataService {
         saveSyncProgress(currentStep, String.join(",", processedSet), params);
 
         long totalTime = (System.currentTimeMillis() - startTime) / 1000;
-        logger.info("[步骤{}/7] 完成！成功: {}，失败: {}，总耗时: {}秒", 
+        logger.info("[步骤{}/7] 完成！成功: {}，失败: {}，总耗时: {}秒",
                 currentStep, processed.get(), failed.get(), totalTime);
 
         // 如果有失败，抛出异常以便断点续传
         if (failed.get() > 0) {
-            logger.error("步骤{}有{}个员工处理失败，失败员工ID: {}，已保存进度，可重试", 
+            logger.error("步骤{}有{}个员工处理失败，失败员工ID: {}，已保存进度，可重试",
                     currentStep, failed.get(), String.join(",", failedEmpIds));
             throw new Exception(String.format("步骤%d有%d个员工处理失败，已保存进度，可重试", currentStep, failed.get()));
+        }
+    }
+
+    private void syncPlanByDateForAllEmployees(List<String> empIds, Set<String> processedSet,
+                                               Date begin, Date end, String params, int currentStep,
+                                               List<tbattendanceuser> users,
+                                               IAttendancePlanService planSvc) throws Exception {
+        List<String> toProcess = empIds.stream()
+                .filter(id -> !processedSet.contains(id))
+                .collect(Collectors.toList());
+        if (toProcess.isEmpty()) {
+            logger.info("[步骤{}/7] 所有员工已处理完成", currentStep);
+            return;
+        }
+
+        String batchEmpIds = String.join(",", toProcess);
+        logger.info("[步骤{}/7] 使用日期级批量模式同步考勤计划，员工数: {}", currentStep, toProcess.size());
+        runWithDbRetry(currentStep, batchEmpIds, () -> planSvc.Sync(batchEmpIds, begin, end, users));
+        processedSet.addAll(toProcess);
+        saveSyncProgress(currentStep, String.join(",", processedSet), params);
+        logger.info("[步骤{}/7] 考勤计划批量同步完成，处理员工数: {}", currentStep, toProcess.size());
+    }
+
+    private void syncDetailByBatch(List<String> empIds, Set<String> processedSet,
+                                   Date begin, Date end, String params, int currentStep,
+                                   List<tbattendanceuser> users,
+                                   IAttendanceDetailService detailSvc) throws Exception {
+        List<String> toProcess = empIds.stream()
+                .filter(id -> !processedSet.contains(id))
+                .collect(Collectors.toList());
+        if (toProcess.isEmpty()) {
+            logger.info("[步骤{}/7] 所有员工已处理完成", currentStep);
+            return;
+        }
+
+        List<List<String>> batches = partitionList(toProcess, DETAIL_BATCH_SIZE);
+        int processedCount = 0;
+        for (List<String> batch : batches) {
+            String batchEmpIds = String.join(",", batch);
+            runWithDbRetry(currentStep, batchEmpIds, () -> detailSvc.Sync(batchEmpIds, begin, end, users));
+            processedSet.addAll(batch);
+            processedCount += batch.size();
+            saveSyncProgress(currentStep, String.join(",", processedSet), params);
+            logger.info("[步骤{}/7] 考勤明细批量同步进度: {}/{}", currentStep, processedCount, toProcess.size());
         }
     }
 
@@ -504,7 +950,7 @@ public class HrmAttendanceDataServiceImpl implements IHrmAttendanceDataService {
         List<String> toProcess = empIds.stream()
                 .filter(id -> !processedSet.contains(id))
                 .collect(Collectors.toList());
-        
+
         if (toProcess.isEmpty()) {
             logger.info("[步骤{}/7] 所有员工已处理完成", currentStep);
             return;
@@ -519,6 +965,13 @@ public class HrmAttendanceDataServiceImpl implements IHrmAttendanceDataService {
         Set<String> threadSafeProcessedSet = ConcurrentHashMap.newKeySet();
         threadSafeProcessedSet.addAll(processedSet);
 
+        // 先校验租户上下文再创建线程池：避免校验失败抛出时，线程池（非 daemon 线程）泄漏
+        final LoginUserInfo mainThreadContext = CompanyContext.get();
+        if (mainThreadContext == null) {
+            logger.error("主线程 CompanyContext 为 null，无法进行并行处理");
+            throw new Exception("缺少租户上下文（CompanyContext），请确保通过正常 API 调用");
+        }
+
         // 创建线程池
         ExecutorService executor = Executors.newFixedThreadPool(PARALLEL_THREADS);
         List<Future<?>> futures = new ArrayList<>();
@@ -526,17 +979,10 @@ public class HrmAttendanceDataServiceImpl implements IHrmAttendanceDataService {
         // 分批提交任务
         List<List<String>> batches = partitionList(toProcess, BATCH_SIZE);
 
-        logger.info("[步骤{}/7] 开始并行处理，总员工数: {}，分 {} 批，每批 {} 人", 
+        logger.info("[步骤{}/7] 开始并行处理，总员工数: {}，分 {} 批，每批 {} 人",
                 currentStep, total, batches.size(), BATCH_SIZE);
 
         long startTime = System.currentTimeMillis();
-
-        // 保存主线程的 CompanyContext，供子线程使用
-        final LoginUserInfo mainThreadContext = CompanyContext.get();
-        if (mainThreadContext == null) {
-            logger.error("主线程 CompanyContext 为 null，无法进行并行处理");
-            throw new Exception("缺少租户上下文（CompanyContext），请确保通过正常 API 调用");
-        }
 
         for (List<String> batch : batches) {
             Future<?> future = executor.submit(() -> {
@@ -548,7 +994,7 @@ public class HrmAttendanceDataServiceImpl implements IHrmAttendanceDataService {
                             action.sync(empId);
                             threadSafeProcessedSet.add(empId);
                             int count = processed.incrementAndGet();
-                            
+
                             // 每处理20个员工保存一次进度并打印日志
                             if (count % 20 == 0) {
                                 synchronized (this) {
@@ -558,7 +1004,7 @@ public class HrmAttendanceDataServiceImpl implements IHrmAttendanceDataService {
                                 double speed = count / (double) Math.max(elapsed, 1);
                                 int remaining = total - count;
                                 long eta = (long) (remaining / Math.max(speed, 0.1));
-                                logger.info("[步骤{}/7] 进度: {}/{} ({}员工/秒)，预计剩余: {}秒", 
+                                logger.info("[步骤{}/7] 进度: {}/{} ({}员工/秒)，预计剩余: {}秒",
                                         currentStep, count, total, String.format("%.1f", speed), eta);
                             }
                         } catch (Exception e) {
@@ -605,17 +1051,17 @@ public class HrmAttendanceDataServiceImpl implements IHrmAttendanceDataService {
         saveSyncProgress(currentStep, String.join(",", processedSet), params);
 
         long totalTime = (System.currentTimeMillis() - startTime) / 1000;
-        logger.info("[步骤{}/7] 完成！成功: {}，失败: {}，总耗时: {}秒", 
+        logger.info("[步骤{}/7] 完成！成功: {}，失败: {}，总耗时: {}秒",
                 currentStep, processed.get(), failed.get(), totalTime);
 
         // 如果有失败，抛出异常以便断点续传
         if (failed.get() > 0) {
-            logger.error("步骤{}有{}个员工处理失败，失败员工ID: {}，已保存进度，可重试", 
+            logger.error("步骤{}有{}个员工处理失败，失败员工ID: {}，已保存进度，可重试",
                     currentStep, failed.get(), String.join(",", failedEmpIds));
             throw new Exception(String.format("步骤%d有%d个员工处理失败，已保存进度，可重试", currentStep, failed.get()));
         }
     }
-    
+
     /**
      * 将列表分割成指定大小的批次
      */
@@ -626,7 +1072,69 @@ public class HrmAttendanceDataServiceImpl implements IHrmAttendanceDataService {
         }
         return batches;
     }
-    
+
+    @FunctionalInterface
+    private interface SyncAction {
+        void run() throws Exception;
+    }
+
+    private void runWithDbRetry(int step, String targetId, SyncAction action) throws Exception {
+        int attempt = 1;
+        while (true) {
+            try {
+                action.run();
+                return;
+            } catch (Exception ex) {
+                if (!isRetryableDbConnectionError(ex) || attempt >= DB_RETRY_MAX_ATTEMPTS) {
+                    throw ex;
+                }
+                logger.warn("[步骤{}/7] 处理目标 {} 出现数据库连接异常，重试 {}/{}：{}",
+                        step, targetId, attempt, DB_RETRY_MAX_ATTEMPTS, ex.getMessage());
+                sleepQuietly(1000L * attempt);
+                attempt++;
+            }
+        }
+    }
+
+    private boolean isRetryableDbConnectionError(Throwable throwable) {
+        Throwable current = throwable;
+        while (current != null) {
+            String className = current.getClass().getName();
+            String message = current.getMessage();
+            if (className.contains("CommunicationsException")
+                    || className.contains("JDBCConnectionException")
+                    || current instanceof java.sql.SQLTransientConnectionException
+                    || (message != null && message.toLowerCase().contains("communications link failure"))) {
+                return true;
+            }
+            current = current.getCause();
+        }
+        return false;
+    }
+
+    private void sleepQuietly(long millis) {
+        try {
+            Thread.sleep(millis);
+        } catch (InterruptedException interruptedException) {
+            Thread.currentThread().interrupt();
+        }
+    }
+
+    private String normalizeEmpIdCsv(String empIdsCsv) {
+        return String.join(",", normalizeEmpIdList(empIdsCsv));
+    }
+
+    private List<String> normalizeEmpIdList(String empIdsCsv) {
+        if (empIdsCsv == null || empIdsCsv.trim().isEmpty()) {
+            return Collections.emptyList();
+        }
+        return Arrays.stream(empIdsCsv.split(","))
+                .map(String::trim)
+                .filter(item -> !item.isEmpty())
+                .distinct()
+                .collect(Collectors.toList());
+    }
+
     /**
      * 步骤7批次并行同步（支持断点续传）
      * 将员工分成多个批次，每个批次在独立线程中调用服务的Sync方法
@@ -635,13 +1143,13 @@ public class HrmAttendanceDataServiceImpl implements IHrmAttendanceDataService {
      */
     private void syncStep7BatchParallelWithResume(List<String> empIds, Set<String> processedSet,
                                                     Date begin, Date end, String params,
-                                                    List<tbattendanceuser> users, Object service, 
+                                                    List<tbattendanceuser> users, Object service,
                                                     String serviceName, String progressKey) throws Exception {
         // 过滤已处理的员工
         List<String> toProcess = empIds.stream()
                 .filter(id -> !processedSet.contains(id))
                 .collect(Collectors.toList());
-        
+
         if (toProcess.isEmpty()) {
             logger.info("[步骤7/7] {}数据所有员工已处理完成", serviceName);
             return;
@@ -651,20 +1159,10 @@ public class HrmAttendanceDataServiceImpl implements IHrmAttendanceDataService {
         AtomicInteger processedCount = new AtomicInteger(0);
         AtomicInteger failedCount = new AtomicInteger(0);
         List<String> failedEmpIds = Collections.synchronizedList(new ArrayList<>());
-        
+
         // 线程安全的已处理集合
         Set<String> threadSafeProcessedSet = ConcurrentHashMap.newKeySet();
         threadSafeProcessedSet.addAll(processedSet);
-
-        ExecutorService executor = Executors.newFixedThreadPool(STEP7_PARALLEL_THREADS);
-        List<Future<?>> futures = new ArrayList<>();
-
-        List<List<String>> batches = partitionList(toProcess, STEP7_BATCH_SIZE);
-
-        logger.info("[步骤7/7] {}数据开始批次并行处理，待处理: {}人，分 {} 批，每批 {} 人，线程数: {}", 
-                serviceName, total, batches.size(), STEP7_BATCH_SIZE, STEP7_PARALLEL_THREADS);
-
-        long startTime = System.currentTimeMillis();
 
         final LoginUserInfo mainThreadContext = CompanyContext.get();
         if (mainThreadContext == null) {
@@ -672,27 +1170,35 @@ public class HrmAttendanceDataServiceImpl implements IHrmAttendanceDataService {
             throw new Exception("缺少租户上下文（CompanyContext）");
         }
 
+        ExecutorService executor = Executors.newFixedThreadPool(STEP7_PARALLEL_THREADS);
+        List<Future<?>> futures = new ArrayList<>();
+
+        List<List<String>> batches = partitionList(toProcess, STEP7_BATCH_SIZE);
+
+        logger.info("[步骤7/7] {}数据开始批次并行处理，待处理: {}人，分 {} 批，每批 {} 人，线程数: {}",
+                serviceName, total, batches.size(), STEP7_BATCH_SIZE, STEP7_PARALLEL_THREADS);
+
+        long startTime = System.currentTimeMillis();
+
         for (List<String> batch : batches) {
             final String batchEmpIds = String.join(",", batch);
-            
+
             Future<?> future = executor.submit(() -> {
                 CompanyContext.set(mainThreadContext);
                 try {
                     // 调用服务的Sync方法
                     if (service instanceof ILeaveRecordDtaService) {
                         ILeaveRecordDtaService svc = (ILeaveRecordDtaService) service;
-                        svc.setUsers(users);
-                        svc.Sync(batchEmpIds, begin, end);
+                        runWithDbRetry(7, batchEmpIds, () -> svc.Sync(batchEmpIds, begin, end, users));
                     } else if (service instanceof IHolidayDataService) {
                         IHolidayDataService svc = (IHolidayDataService) service;
-                        svc.setUsers(users);
-                        svc.Sync(batchEmpIds, begin, end);
+                        runWithDbRetry(7, batchEmpIds, () -> svc.Sync(batchEmpIds, begin, end, users));
                     }
-                    
+
                     // 批次成功，记录已处理的员工
                     threadSafeProcessedSet.addAll(batch);
                     int count = processedCount.addAndGet(batch.size());
-                    
+
                     // 每处理20人或每5批保存一次进度并打印日志
                     if (count % 20 == 0 || count == total) {
                         synchronized (this) {
@@ -702,14 +1208,14 @@ public class HrmAttendanceDataServiceImpl implements IHrmAttendanceDataService {
                         double speed = count / (double) Math.max(elapsed, 1);
                         int remaining = total - count;
                         long eta = (long) (remaining / Math.max(speed, 0.1));
-                        logger.info("[步骤7/7] {}进度: {}/{} ({}%)，{}员工/秒，预计剩余: {}秒", 
+                        logger.info("[步骤7/7] {}进度: {}/{} ({}%)，{}员工/秒，预计剩余: {}秒",
                                 serviceName, count, total, String.format("%.1f", count * 100.0 / total),
                                 String.format("%.1f", speed), eta);
                     }
                 } catch (Exception e) {
                     failedCount.addAndGet(batch.size());
                     failedEmpIds.addAll(batch);
-                    logger.error("[步骤7/7] {}批次处理失败，员工数: {}，异常: {}", 
+                    logger.error("[步骤7/7] {}批次处理失败，员工数: {}，异常: {}",
                             serviceName, batch.size(), e.getMessage(), e);
                 } finally {
                     CompanyContext.clear();
@@ -746,12 +1252,12 @@ public class HrmAttendanceDataServiceImpl implements IHrmAttendanceDataService {
         redis.setex(progressKey, PROGRESS_EXPIRE_SECONDS, String.join(",", processedSet));
 
         long totalTime = (System.currentTimeMillis() - startTime) / 1000;
-        logger.info("[步骤7/7] {}完成！成功: {}，失败: {}，总耗时: {}秒", 
+        logger.info("[步骤7/7] {}完成！成功: {}，失败: {}，总耗时: {}秒",
                 serviceName, processedCount.get(), failedCount.get(), totalTime);
 
         // 如果有失败，抛出异常以便断点续传
         if (failedCount.get() > 0) {
-            logger.error("步骤7{}有{}个员工处理失败，失败员工ID: {}，已保存进度，可重试", 
+            logger.error("步骤7{}有{}个员工处理失败，失败员工ID: {}，已保存进度，可重试",
                     serviceName, failedCount.get(), String.join(",", failedEmpIds));
             throw new Exception(String.format("步骤7%s有%d个员工处理失败，已保存进度，可重试", serviceName, failedCount.get()));
         }

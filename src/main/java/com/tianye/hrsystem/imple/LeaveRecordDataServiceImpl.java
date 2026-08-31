@@ -1,6 +1,5 @@
 package com.tianye.hrsystem.imple;
 
-import com.tianye.hrsystem.model.HrmAttendanceReportField;
 import com.tianye.hrsystem.model.tbattendanceuser;
 import com.tianye.hrsystem.repository.hrmAttendanceReportDataRepository;
 import com.tianye.hrsystem.repository.hrmAttendanceReportFieldRepository;
@@ -12,8 +11,12 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.Date;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
 import java.util.stream.Collectors;
 
 /**
@@ -34,22 +37,14 @@ public class LeaveRecordDataServiceImpl implements ILeaveRecordDtaService {
     hrmAttendanceReportDataRepository dataRep;
     @Autowired
     hrmAttendanceReportFieldRepository fieldRep;
-    List<tbattendanceuser> users;
     @Override
-    public void setUsers(List<tbattendanceuser> users) {
-        this.users=users;
-    }
-    @Override
-    public void Sync(String EmpIDS, Date Begin, Date End) throws Exception {
+    public void Sync(String EmpIDS, Date Begin, Date End, List<tbattendanceuser> users) throws Exception {
         List<Date[]> Dates = dateUtils.getDateRangeByLimit(Begin, End, 15);
-        List<Long> IDS = Arrays.stream(EmpIDS.split(",")).map(f -> Long.parseLong(f)).collect(Collectors.toList());
-        List<tbattendanceuser> users = userRep.findAllByEmpIdIn(IDS);
-        List<Long> Fields=getFieldByType(1);
-        for (int a = 0; a < users.size(); a++) {
-            tbattendanceuser user = users.get(a);
+        List<tbattendanceuser> matchedUsers = resolveTargetUsers(EmpIDS, users);
+        for (int a = 0; a < matchedUsers.size(); a++) {
+            tbattendanceuser user = matchedUsers.get(a);
             String userId = user.getUserId();
             Long EmpID = user.getEmpId();
-            //dataRep.deleteAllByEmpIdAndWorkDateBetweenAndFieldIdIn(EmpID,Begin,End,Fields);
             for (int i = 0; i < Dates.size(); i++) {
                 Date[] D = Dates.get(i);
                 Date BeginDate = D[0];
@@ -58,8 +53,41 @@ public class LeaveRecordDataServiceImpl implements ILeaveRecordDtaService {
             }
         }
     }
-    private List<Long> getFieldByType(Integer Type){
-        List<HrmAttendanceReportField> fields=fieldRep.findAllByType(Type);
-        return fields.stream().map(f->f.getFieldId()).collect(Collectors.toList());
+
+    private List<tbattendanceuser> resolveTargetUsers(String empIds, List<tbattendanceuser> users) {
+        List<Long> ids = parseEmpIds(empIds);
+        if (ids.isEmpty()) {
+            return Collections.emptyList();
+        }
+        List<tbattendanceuser> sourceUsers =
+                users == null || users.isEmpty() ? userRep.findAllByEmpIdIn(ids) : users;
+        if (sourceUsers == null || sourceUsers.isEmpty()) {
+            return Collections.emptyList();
+        }
+        Set<Long> targetEmpIds = ids.stream().collect(Collectors.toSet());
+        Map<String, tbattendanceuser> byUserId = new LinkedHashMap<>();
+        for (tbattendanceuser user : sourceUsers) {
+            if (user == null || user.getEmpId() == null || user.getUserId() == null) {
+                continue;
+            }
+            String userId = user.getUserId().trim();
+            if (userId.isEmpty() || !targetEmpIds.contains(user.getEmpId())) {
+                continue;
+            }
+            byUserId.putIfAbsent(userId, user);
+        }
+        return byUserId.values().stream().collect(Collectors.toList());
+    }
+
+    private List<Long> parseEmpIds(String empIds) {
+        if (empIds == null || empIds.trim().isEmpty()) {
+            return Collections.emptyList();
+        }
+        return Arrays.stream(empIds.split(","))
+                .map(String::trim)
+                .filter(item -> !item.isEmpty())
+                .map(Long::parseLong)
+                .distinct()
+                .collect(Collectors.toList());
     }
 }

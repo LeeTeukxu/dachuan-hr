@@ -5,6 +5,8 @@ import cn.hutool.poi.excel.ExcelUtil;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.tianye.hrsystem.base.BaseServiceImpl;
+import com.tianye.hrsystem.common.CrmException;
+import com.tianye.hrsystem.enums.HrmCodeEnum;
 import com.tianye.hrsystem.modules.additional.bo.QueryAdditionalBO;
 import com.tianye.hrsystem.modules.additional.entity.HrmAdditional;
 import com.tianye.hrsystem.modules.additional.entity.HrmEmployeeAdditional;
@@ -13,6 +15,7 @@ import com.tianye.hrsystem.modules.additional.mapper.HrmEmployeeAdditionalMapper
 import com.tianye.hrsystem.modules.additional.vo.QueryEmployeeAdditionalVO;
 import com.tianye.hrsystem.modules.bonus.bo.QueryBonusBO;
 import com.tianye.hrsystem.modules.bonus.vo.QueryBounsVO;
+import com.tianye.hrsystem.modules.salary.support.TaxImportEmployeeMatcher;
 import com.tianye.hrsystem.repository.hrmEmployeeRepository;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
@@ -22,7 +25,9 @@ import org.springframework.web.multipart.MultipartFile;
 
 import java.math.BigDecimal;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 
 @Service
 public class HrmEmployeeAdditionalService extends BaseServiceImpl<HrmEmployeeAdditionalMapper, HrmEmployeeAdditional> {
@@ -38,46 +43,66 @@ public class HrmEmployeeAdditionalService extends BaseServiceImpl<HrmEmployeeAdd
     @Transactional(rollbackFor = Exception.class)
     public void resolveEmployeeAdditionalData(MultipartFile multipartFile) throws Exception {
         if (multipartFile != null) {
-            Integer year = 0;
             ExcelReader reader = ExcelUtil.getReader(multipartFile.getInputStream());
             List<HrmEmployeeAdditional> list = new ArrayList<>();
             List<List<Object>> read = reader.read();
             List<com.tianye.hrsystem.model.HrmEmployee> listHrmEmployees = employeeRepository.findAll();
+            Set<Integer> importYears = new HashSet<>();
+            Set<String> importedKeys = new HashSet<>();
             for (int i = TWO; i < read.size(); i++) {
-                HrmEmployeeAdditional hrmEmployeeAdditional = new HrmEmployeeAdditional();
                 List<Object> row = read.get(i);
-                String EmployeeName = row.get(0).toString();
-                listHrmEmployees.stream().forEach(f -> {
-                    if (f.getEmployeeName().equals(EmployeeName)) {
-                        hrmEmployeeAdditional.setEmployeeId(f.getEmployeeId());
-                    }
-                });
+                if (TaxImportEmployeeMatcher.isBlankRow(row)) {
+                    continue;
+                }
 
-                if (!row.get(1).toString().equals("")) {
-                    hrmEmployeeAdditional.setChildrenEducation(new BigDecimal(row.get(1).toString()));
+                HrmEmployeeAdditional hrmEmployeeAdditional = new HrmEmployeeAdditional();
+                int displayRow = i + 1;
+                String employeeName = TaxImportEmployeeMatcher.readCellText(row, 0);
+                String mobile = TaxImportEmployeeMatcher.readCellText(row, 8);
+                Long employeeId = TaxImportEmployeeMatcher.resolveEmployeeId(listHrmEmployees, employeeName, mobile, displayRow);
+                Integer year = TaxImportEmployeeMatcher.readInteger(row, 7);
+                if (year == null) {
+                    throw new CrmException(HrmCodeEnum.TEMPLATE_SAVE_PARAM_ERROR, "第" + displayRow + "行年份不能为空");
                 }
-                if (!row.get(2).toString().equals("")) {
-                    hrmEmployeeAdditional.setHousingLoanInterest(new BigDecimal(row.get(2).toString()));
+                TaxImportEmployeeMatcher.ensureUniqueEmployeePeriod(importedKeys, employeeId, employeeName, String.valueOf(year), displayRow);
+                importYears.add(year);
+                hrmEmployeeAdditional.setEmployeeId(employeeId);
+
+                BigDecimal childrenEducation = TaxImportEmployeeMatcher.readBigDecimal(row, 1);
+                if (childrenEducation != null) {
+                    hrmEmployeeAdditional.setChildrenEducation(childrenEducation);
                 }
-                if (!row.get(3).toString().equals("")) {
-                    hrmEmployeeAdditional.setHousingRent(new BigDecimal(row.get(3).toString()));
+                BigDecimal housingLoanInterest = TaxImportEmployeeMatcher.readBigDecimal(row, 2);
+                if (housingLoanInterest != null) {
+                    hrmEmployeeAdditional.setHousingLoanInterest(housingLoanInterest);
                 }
-                if (!row.get(4).toString().equals("")) {
-                    hrmEmployeeAdditional.setSupportingTheElderly(new BigDecimal(row.get(4).toString()));
+                BigDecimal housingRent = TaxImportEmployeeMatcher.readBigDecimal(row, 3);
+                if (housingRent != null) {
+                    hrmEmployeeAdditional.setHousingRent(housingRent);
                 }
-                if (!row.get(5).toString().equals("")) {
-                    hrmEmployeeAdditional.setContinuingEducation(new BigDecimal(row.get(5).toString()));
+                BigDecimal supportingTheElderly = TaxImportEmployeeMatcher.readBigDecimal(row, 4);
+                if (supportingTheElderly != null) {
+                    hrmEmployeeAdditional.setSupportingTheElderly(supportingTheElderly);
                 }
-                if (!row.get(6).toString().equals("")) {
-                    hrmEmployeeAdditional.setRaisingGirls(new BigDecimal(row.get(6).toString()));
+                BigDecimal continuingEducation = TaxImportEmployeeMatcher.readBigDecimal(row, 5);
+                if (continuingEducation != null) {
+                    hrmEmployeeAdditional.setContinuingEducation(continuingEducation);
                 }
-                year = Integer.parseInt(row.get(7).toString());
-                hrmEmployeeAdditional.setYear(Integer.parseInt(row.get(7).toString()));
+                BigDecimal raisingGirls = TaxImportEmployeeMatcher.readBigDecimal(row, 6);
+                if (raisingGirls != null) {
+                    hrmEmployeeAdditional.setRaisingGirls(raisingGirls);
+                }
+                hrmEmployeeAdditional.setYear(year);
                 list.add(hrmEmployeeAdditional);
             }
-            LambdaQueryWrapper<HrmEmployeeAdditional> wrappers = new LambdaQueryWrapper<>();
-            wrappers.eq(HrmEmployeeAdditional::getYear, year);
-            hrmEmployeeAdditionalMapper.delete(wrappers);
+            if (list.isEmpty()) {
+                return;
+            }
+            for (Integer importYear : importYears) {
+                LambdaQueryWrapper<HrmEmployeeAdditional> wrappers = new LambdaQueryWrapper<>();
+                wrappers.eq(HrmEmployeeAdditional::getYear, importYear);
+                hrmEmployeeAdditionalMapper.delete(wrappers);
+            }
             saveBatch(list);
         }
     }

@@ -5,8 +5,6 @@ import io.swagger.annotations.ApiModelProperty;
 import lombok.Getter;
 import lombok.Setter;
 
-import java.math.BigDecimal;
-
 @Getter
 @Setter
 public class QueryAttendanceInfoVO {
@@ -20,9 +18,6 @@ public class QueryAttendanceInfoVO {
 
     @ApiModelProperty(value = "月")
     private Integer month;
-
-    @ApiModelProperty(value = "部门类型 0、行政部 1、生产部")
-    private Integer deptType;
 
     @ApiModelProperty(value = "应出勤天数")
     private Integer actualWorkDay;

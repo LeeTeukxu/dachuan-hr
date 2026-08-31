@@ -5,7 +5,7 @@
     <select id="queryRoleTypesList" resultType="com.tianye.hrsystem.modules.role.vo.QueryRoleTypesVO">
         select a.* from tbroletypes as a
         WHERE 1=1
-        <if test="data.name != ''">
+        <if test="data.name != null and data.name != ''">
             AND a.name=#{data.name}
         </if>
     </select>

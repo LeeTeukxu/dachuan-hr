@@ -11,6 +11,7 @@ import org.springframework.stereotype.Service;
 
 import javax.annotation.Resource;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -244,11 +245,10 @@ public class RedisImpl implements Redis {
      */
     @Override
     public void mSet(Map<String, Object> map) {
-        for (String key : map.keySet()) {
-            Object value = map.remove(key);
-            map.put(appendKeyPrefix(key), value);
-        }
-        redisTemplate.opsForValue().multiSet(map);
+        // 前缀补齐写入新 Map：原实现遍历 keySet 时 remove+put，多项时必抛 ConcurrentModificationException
+        Map<String, Object> prefixed = new HashMap<>(map.size() * 2);
+        map.forEach((key, value) -> prefixed.put(appendKeyPrefix(key), value));
+        redisTemplate.opsForValue().multiSet(prefixed);
     }
 
     /**
@@ -258,11 +258,10 @@ public class RedisImpl implements Redis {
      */
     @Override
     public void mSetNx(Map<String, Object> map) {
-        for (String key : map.keySet()) {
-            Object value = map.remove(key);
-            map.put(appendKeyPrefix(key), value);
-        }
-        redisTemplate.opsForValue().multiSetIfAbsent(map);
+        // 同 mSet：避免遍历中结构性修改
+        Map<String, Object> prefixed = new HashMap<>(map.size() * 2);
+        map.forEach((key, value) -> prefixed.put(appendKeyPrefix(key), value));
+        redisTemplate.opsForValue().multiSetIfAbsent(prefixed);
     }
 
 

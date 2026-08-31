@@ -14,7 +14,10 @@ import java.util.List;
 public interface hrmAttendancePlanRepository  extends JpaRepository<HrmAttendancePlan,Integer>  {
     int countByWorkDate(Date workDate);
     List<HrmAttendancePlan> findAllByWorkDate(Date WorkDate);
+    List<HrmAttendancePlan> findAllByWorkDateBetween(Date beginDate, Date endDate);
     List<HrmAttendancePlan> findAllByWorkDateAndEmpId(Date WorkDate,Long EmpID);
+    List<HrmAttendancePlan> findAllByEmpIdAndWorkDateBetween(Long empId, Date beginDate, Date endDate);
+    List<HrmAttendancePlan> findAllByEmpIdOrderByWorkDateDesc(Long empId);
     int deleteAllByEmpIdAndWorkDate(Long EmpID,Date workDate);
     
     @Modifying

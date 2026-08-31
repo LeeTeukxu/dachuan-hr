@@ -13,7 +13,6 @@ import javax.servlet.http.HttpServletRequest;
 
 @RestController
 @RequestMapping("/demo")
-@CrossOrigin
 public class DemoController
 {
     @Autowired

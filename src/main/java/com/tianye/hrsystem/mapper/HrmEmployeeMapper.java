@@ -79,6 +79,9 @@ public interface HrmEmployeeMapper extends BaseMapper<HrmEmployee> {
 
     List<Map<String, Object>> export(@Param("data") QueryEmployeePageListBO employeePageListBO);
 
+    @InterceptorIgnore(tenantLine = "true")
+    List<Map<String, Object>> queryDepartmentDetailExportList();
+
     Set<Long> filterDeleteEmployeeIds(@Param("employeeIds") Set<Long> employeeIds);
 
     Set<String> queryEntryStatusList(@Param("data") QueryNotesStatusBO queryNotesStatusBO,

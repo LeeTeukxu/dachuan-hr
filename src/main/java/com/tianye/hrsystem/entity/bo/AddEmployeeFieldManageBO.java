@@ -4,6 +4,7 @@ import io.swagger.annotations.ApiModelProperty;
 import lombok.Getter;
 import lombok.Setter;
 
+import java.math.BigDecimal;
 import java.util.List;
 
 @Getter
@@ -17,6 +18,14 @@ public class AddEmployeeFieldManageBO {
     private Long employeeId;
     @ApiModelProperty(value = "入职状态 1 在职 2 待入职 ")
     private Integer entryStatus;
+    @ApiModelProperty("薪资等级")
+    private String salaryLevel;
+    @ApiModelProperty("固定绩效")
+    private BigDecimal fixedPerformance;
+    @ApiModelProperty("职务补助")
+    private BigDecimal dutySubsidy;
+    @ApiModelProperty("其他补助")
+    private BigDecimal otherSubsidy;
     @ApiModelProperty("员工个人字段列表")
     private List<EmployeeFieldBO> employeeFieldList;
     @ApiModelProperty("员工岗位字段列表")
@@ -70,6 +79,10 @@ public class AddEmployeeFieldManageBO {
                 ", candidateId=" + candidateId +
                 ", employeeId=" + employeeId +
                 ", entryStatus=" + entryStatus +
+                ", salaryLevel='" + salaryLevel + '\'' +
+                ", fixedPerformance=" + fixedPerformance +
+                ", dutySubsidy=" + dutySubsidy +
+                ", otherSubsidy=" + otherSubsidy +
                 ", employeeFieldList=" + employeeFieldList +
                 ", postFieldList=" + postFieldList +
                 '}';

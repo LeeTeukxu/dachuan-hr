@@ -48,7 +48,11 @@ public class AttachmentServiceImpl implements IAttachmentService {
         String uploadFileName = uuId + "." + extName;
         String targetFile = CompanyPathUtils.getFullPath("Temp", uploadFileName);
         File fx = new File(targetFile);
-        FileUtils.writeByteArrayToFile(fx, file.getBytes());
+        if (fx.exists()) {
+            fx.delete();
+        }
+        // transferTo 流式落盘，避免 file.getBytes() 把整个上传文件一次性读入堆
+        file.transferTo(fx);
         if (fx.exists()) {
             try {
                 fileInputStream = new FileInputStream(fx);
@@ -63,14 +67,18 @@ public class AttachmentServiceImpl implements IAttachmentService {
                     tb.setCreateMan(Integer.parseInt(loginInfo.getUserId()));
                     tb.setCreateManName(loginInfo.getUserName());
                     tb.setCreateTime(new Date());
-                    fileInputStream.close();
                     return attRep.save(tb);
                 } else throw new Exception("上传文件:" + fileName + "失败!");
 
-            } catch (Exception ax) {
-                throw ax;
             } finally {
-                FileUtils.forceDeleteOnExit(fx);
+                try {
+                    if (fileInputStream != null) fileInputStream.close();
+                } catch (Exception ignore) {
+                }
+                // 上传结束立即删除本地临时文件；原先 deleteOnExit 要等 JVM 退出，Temp 目录无限膨胀
+                if (!fx.delete()) {
+                    fx.deleteOnExit();
+                }
             }
         } else throw new Exception("保存上传文件失败!");
     }

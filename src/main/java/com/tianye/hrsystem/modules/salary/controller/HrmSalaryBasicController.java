@@ -3,6 +3,7 @@ package com.tianye.hrsystem.modules.salary.controller;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.tianye.hrsystem.entity.vo.Result;
 import com.tianye.hrsystem.modules.salary.dto.QuerySalaryBasicDto;
+import com.tianye.hrsystem.modules.salary.dto.UpdateEmployeeFullAttendanceAmountDto;
 import com.tianye.hrsystem.modules.salary.service.HrmSalaryBasicService;
 import com.tianye.hrsystem.modules.salary.vo.QuerySalaryBasicVO;
 import com.tianye.hrsystem.modules.salary.vo.QuerySalaryConfigVO;
@@ -38,6 +39,12 @@ public class HrmSalaryBasicController {
     public Result saveSalaryBasic(@RequestBody QuerySalaryBasicDto querySalaryBasicDto){
         hrmSalaryBasicService.saveSalaryBasic(querySalaryBasicDto);
         return Result.ok();
+    }
+
+    @PostMapping("/updateEmployeeFullAttendanceAmount")
+    @ApiOperation("批量设置员工级全勤金额")
+    public Result<Integer> updateEmployeeFullAttendanceAmount(@RequestBody UpdateEmployeeFullAttendanceAmountDto dto) {
+        return Result.ok(hrmSalaryBasicService.updateEmployeeFullAttendanceAmount(dto));
     }
 
     @PostMapping("/queryById/{id}")

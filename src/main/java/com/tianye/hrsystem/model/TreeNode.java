@@ -13,6 +13,7 @@ import java.util.List;
 public class TreeNode implements Serializable {
     private Integer id;
     private Integer pid;
+    private String type;
     private String text;
     private List<TreeNode> children;
 
@@ -30,6 +31,14 @@ public class TreeNode implements Serializable {
 
     public void setPid(Integer pid) {
         this.pid = pid;
+    }
+
+    public String getType() {
+        return type;
+    }
+
+    public void setType(String type) {
+        this.type = type;
     }
 
     public String getText() {

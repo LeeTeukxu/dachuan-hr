@@ -59,7 +59,7 @@ public class InsuranceSchemeDto extends MyPageEntity {
         @ApiModelProperty(value = "项目id")
         private Long projectId;
 
-        @ApiModelProperty(value = "1 养老保险基数 2 医疗保险基数 3 失业保险基数 4 工伤保险基数 5 生育保险基数 6 补充大病医疗保险 7 补充养老保险 8 残保险 9 社保自定义 10 公积金 11 公积金自定义")
+        @ApiModelProperty(value = "1 养老保险基数 2 医疗保险基数 3 失业保险基数 4 工伤保险基数 5 生育保险基数 6 补充大病医疗保险 7 补充养老保险 8 残保险 9 社保自定义 10 公积金 11 公积金自定义 12 医疗长期护理保险")
         private Integer type;
 
         @ApiModelProperty(value = "项目名称")
@@ -85,6 +85,9 @@ public class InsuranceSchemeDto extends MyPageEntity {
         @DecimalMin(value = "0", message = "个人缴纳金额金额必须是正数")
         private BigDecimal personalAmount;
 
+        @ApiModelProperty(value = "是否启用：0 禁用 1 启用")
+        private Integer isEnabled;
+
         @Override
         public String toString() {
             return "HrmInsuranceProjectBO{" +
@@ -96,6 +99,7 @@ public class InsuranceSchemeDto extends MyPageEntity {
                     ", personalProportion=" + personalProportion +
                     ", corporateAmount=" + corporateAmount +
                     ", personalAmount=" + personalAmount +
+                    ", isEnabled=" + isEnabled +
                     '}';
         }
     }

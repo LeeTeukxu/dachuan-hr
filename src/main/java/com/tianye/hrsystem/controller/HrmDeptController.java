@@ -3,6 +3,7 @@ package com.tianye.hrsystem.controller;
 import cn.hutool.core.convert.Convert;
 import com.tianye.hrsystem.common.BasePage;
 import com.tianye.hrsystem.entity.bo.AddDeptBO;
+import com.tianye.hrsystem.entity.bo.GenerateDeptCodeBO;
 import com.tianye.hrsystem.entity.bo.QueryDeptListBO;
 import com.tianye.hrsystem.entity.bo.QueryEmployeeByDeptIdBO;
 import com.tianye.hrsystem.entity.vo.QueryEmployeeListByDeptIdVO;
@@ -43,6 +44,13 @@ public class HrmDeptController {
     public Result setDept(@Valid @RequestBody AddDeptBO addDeptBO) {
         deptService.addOrUpdate(addDeptBO);
         return Result.ok();
+    }
+
+    @PostMapping("/generateCode")
+    @ApiOperation("生成部门编码")
+    public Result<String> generateCode(@RequestBody(required = false) GenerateDeptCodeBO generateDeptCodeBO) {
+        Long deptId = generateDeptCodeBO == null ? null : generateDeptCodeBO.getDeptId();
+        return Result.ok(deptService.generateCode(deptId));
     }
 
     @PostMapping("/queryById/{deptId}")

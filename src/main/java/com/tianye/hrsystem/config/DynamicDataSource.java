@@ -1,52 +1,52 @@
 package com.tianye.hrsystem.config;
 
 import com.tianye.hrsystem.model.LoginUserInfo;
-import com.tianye.hrsystem.model.ConnectionInfo;
-import com.zaxxer.hikari.HikariDataSource;
-import org.springframework.boot.jdbc.DataSourceBuilder;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.jdbc.datasource.lookup.AbstractRoutingDataSource;
 
 import javax.sql.DataSource;
-import java.sql.SQLException;
 import java.util.Map;
 
-public class DynamicDataSource extends AbstractRoutingDataSource{
-    Map<Object,Object> OX=null;
+/**
+ * SaaS 改造（数据源治理 #2）：租户数据源创建逻辑统一收敛到
+ * CompanyDataSourceProvider（懒加载 + 静态缓存），本类不再自带一套
+ * ConnectionParsor 解析/建池代码，消除双路径不一致的隐患。
+ */
+@Slf4j
+public class DynamicDataSource extends AbstractRoutingDataSource {
+    Map<Object, Object> OX = null;
+
     @Override
     public void setDefaultTargetDataSource(Object defaultTargetDataSource) {
         super.setDefaultTargetDataSource(defaultTargetDataSource);
     }
+
     @Override
     protected Object determineCurrentLookupKey() {
-        LoginUserInfo info= CompanyContext.get();
-        String Key="";
-        if(info!=null) Key= info.getCompanyId();else Key= "Default";
-        if(OX.containsKey(Key)==false){
-            ConnectionParsor connectionParsor=new ConnectionParsor();
-            DataSource defaultDataSource=(DataSource) OX.get("Default");
-            try {
-                connectionParsor.setConnection(defaultDataSource.getConnection());
-            } catch (SQLException e) {
-                e.printStackTrace();
+        LoginUserInfo info = CompanyContext.get();
+        String Key = "";
+        if (info != null) Key = info.getCompanyId();
+        else Key = "Default";
+        if (OX.containsKey(Key) == false) {
+            if ("Default".equals(Key)) {
+                log.warn("【数据源路由】Default 数据源缺失");
+                return Key;
             }
-            ConnectionInfo Info = connectionParsor.getByID(Key);
-            DataSourceBuilder dataSourceBuilder = DataSourceBuilder.create();
-            String url="jdbc:mysql://"+Info.getServer()+ ":"+Info.getPort()+"/"+Info.getDataBase()+"?useUnicode=true&characterEncoding=gbk&autoReconnect=true&serverTimezone=Asia/Shanghai&useSSL=false&autoReconnectForPools=true";
-            dataSourceBuilder.url(url);
-
-            dataSourceBuilder.username(Info.getUsername());
-            dataSourceBuilder.password(Info.getPassword());
-            dataSourceBuilder.driverClassName("com.mysql.cj.jdbc.Driver");
-
-            HikariDataSource tinySource = (HikariDataSource) dataSourceBuilder.build();
-            OX.put(Key,tinySource);
+            // 统一走 Provider 懒加载（内部含缓存与连接池配置）
+            DataSource tenantSource = CompanyDataSourceProvider.getDataSource(Key);
+            if (tenantSource == null) {
+                log.error("【数据源路由】租户 {} 的数据源不存在（未开通或已停用）", Key);
+                throw new IllegalStateException("租户数据源不存在: hr_" + Key);
+            }
+            OX.put(Key, tenantSource);
             super.setTargetDataSources(OX);
             super.afterPropertiesSet();
         }
         return Key;
     }
-    public  void setDataSource(Map<Object,Object> dataSources){
-        OX=dataSources;
+
+    public void setDataSource(Map<Object, Object> dataSources) {
+        OX = dataSources;
         super.setTargetDataSources(dataSources);
     }
 }

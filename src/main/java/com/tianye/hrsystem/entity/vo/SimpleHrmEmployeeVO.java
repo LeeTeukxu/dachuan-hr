@@ -24,6 +24,9 @@ public class SimpleHrmEmployeeVO implements Serializable {
     @ApiModelProperty(value = "员工姓名")
     private String employeeName;
 
+    @ApiModelProperty(value = "部门ID")
+    private Long deptId;
+
     @ApiModelProperty(value = "部门名称")
     private String deptName;
 

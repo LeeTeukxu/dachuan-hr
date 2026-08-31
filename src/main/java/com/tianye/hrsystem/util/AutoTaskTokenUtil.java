@@ -21,39 +21,40 @@ import java.util.Date;
 public class AutoTaskTokenUtil {
     @Autowired
     UpdateRecordTemplate redisRep;
-    SimpleDateFormat format=new SimpleDateFormat("yyyy-MM-dd HH:mm:ss");
+    private static final ThreadLocal<SimpleDateFormat> FORMAT =
+            ThreadLocal.withInitial(() -> new SimpleDateFormat("yyyy-MM-dd HH:mm:ss"));
     public boolean hasKey(Date date,Class<?>classInfo){
         LoginUserInfo Info= CompanyContext.get();
-        String subKey=format.format(date);
+        String subKey=FORMAT.get().format(date);
         String mainKey=  Info.getCompanyId()+"::"+classInfo.getName();
         return redisRep.hasKey(mainKey,subKey);
     }
     public boolean hasKey(Date begin,Date end,Class<?> classInfo){
         LoginUserInfo Info= CompanyContext.get();
-        String subKey=format.format(begin)+"::"+format.format(end);
+        String subKey=FORMAT.get().format(begin)+"::"+FORMAT.get().format(end);
         String mainKey=  Info.getCompanyId()+"::"+classInfo.getName();
         return redisRep.hasKey(mainKey,subKey);
     }
     public void  addOne(Date date,Class<?> classInfo){
         LoginUserInfo Info= CompanyContext.get();
-        String subKey=format.format(date);
+        String subKey=FORMAT.get().format(date);
         String mainKey=  Info.getCompanyId()+"::"+classInfo.getName();
         redisRep.put(mainKey,subKey,"1");
     }
 
     public void  addOne(Date begin,Date end,Class<?> classInfo){
         LoginUserInfo Info= CompanyContext.get();
-        String subKey=format.format(begin)+"::"+format.format(end);
+        String subKey=FORMAT.get().format(begin)+"::"+FORMAT.get().format(end);
         String mainKey=  Info.getCompanyId()+"::"+classInfo.getName();
         redisRep.put(mainKey,subKey,"1");
     }
     public String getLoggerText(Date begin,Date end,String method){
-        String bText=format.format(begin);
-        String eText=format.format(end);
+        String bText=FORMAT.get().format(begin);
+        String eText=FORMAT.get().format(end);
         return "已完成同步:"+bText+"到:"+eText+"的"+method+"内容....";
     }
     public String getLoggerText(Date begin,String method){
-        String bText=format.format(begin);
+        String bText=FORMAT.get().format(begin);
         return "已完成同步:"+bText+"的"+method+"内容....";
     }
 }

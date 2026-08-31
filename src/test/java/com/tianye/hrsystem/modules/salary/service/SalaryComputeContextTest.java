@@ -16,10 +16,9 @@ public class SalaryComputeContextTest {
             .attendanceDataMap(Collections.emptyMap())
             .noFixedSalaryOptionList(Collections.emptyList())
             .produceAttendanceMap(Collections.emptyMap())
-            .normalDaysByDeptType(Collections.emptyMap())
+            .expectedAttendanceDaysByEmployee(Collections.singletonMap(101L, new BigDecimal("22.00")))
             .optionParentCodeMap(Collections.emptyMap())
             .lastMonthTaxDataMap(Collections.emptyMap())
-            .lastYearAccumulatedIncomeMap(Collections.emptyMap())
             .socialSecurityEmpRecordMap(Collections.emptyMap())
             .additionalDeductionMap(Collections.emptyMap())
             .midMonthArchivesOptionMap(Collections.emptyMap())
@@ -30,6 +29,7 @@ public class SalaryComputeContextTest {
         Assert.assertTrue(ctx.getIsSyncInsuranceData());
         Assert.assertFalse(ctx.getIsSyncAttendanceData());
         Assert.assertNotNull(ctx.getAttendanceDataMap());
+        Assert.assertEquals(new BigDecimal("22.00"), ctx.getExpectedAttendanceDaysByEmployee().get(101L));
     }
 
     @Test
@@ -46,12 +46,10 @@ public class SalaryComputeContextTest {
         Assert.assertTrue(ctx.getNoFixedSalaryOptionList().isEmpty());
         Assert.assertNotNull(ctx.getProduceAttendanceMap());
         Assert.assertTrue(ctx.getProduceAttendanceMap().isEmpty());
-        Assert.assertNotNull(ctx.getNormalDaysByDeptType());
-        Assert.assertTrue(ctx.getNormalDaysByDeptType().isEmpty());
+        Assert.assertNotNull(ctx.getExpectedAttendanceDaysByEmployee());
+        Assert.assertTrue(ctx.getExpectedAttendanceDaysByEmployee().isEmpty());
         Assert.assertNotNull(ctx.getOptionParentCodeMap());
         Assert.assertTrue(ctx.getOptionParentCodeMap().isEmpty());
-        Assert.assertNotNull(ctx.getLastYearAccumulatedIncomeMap());
-        Assert.assertTrue(ctx.getLastYearAccumulatedIncomeMap().isEmpty());
         Assert.assertNotNull(ctx.getSocialSecurityEmpRecordMap());
         Assert.assertTrue(ctx.getSocialSecurityEmpRecordMap().isEmpty());
         Assert.assertNotNull(ctx.getAdditionalDeductionMap());

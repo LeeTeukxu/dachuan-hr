@@ -35,6 +35,9 @@ public interface HrmInsuranceMonthRecordMapper extends BaseMapper<HrmInsuranceMo
     Page<QueryInsuranceRecordListVO> queryInsuranceRecordList(Page<QueryInsuranceRecordListVO> parse,
                                                               @Param("data") QueryInsuranceRecordListBO recordListBO);
 
+    @InterceptorIgnore(tenantLine = "true")
+    void setGroupConcatMaxLen();
+
     Page<QueryInsurancePageListVO> queryInsurancePageList(Page<QueryInsurancePageListVO> parse, @Param("data") QueryInsurancePageListBO queryInsurancePageListBO);
 
     @InterceptorIgnore(tenantLine = "true")

@@ -60,6 +60,9 @@ public class HrmProduceAttendance implements Serializable {
     @ApiModelProperty(value = "加班/小时")
     private BigDecimal workOverTime;
 
+    @ApiModelProperty(value = "加班工资")
+    private BigDecimal overtimePay;
+
     @ApiModelProperty(value = "空班/次")
     private Integer emptyClass;
 

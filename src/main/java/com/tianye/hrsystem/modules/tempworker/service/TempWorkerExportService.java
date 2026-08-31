@@ -267,8 +267,12 @@ public class TempWorkerExportService
                 .build();
 
         writeSheet.setHead(headTitles);
-        excelWriter.write(dataList, writeSheet);
-        excelWriter.finish();
+        try {
+            excelWriter.write(dataList, writeSheet);
+        } finally {
+            // 异常时也要 finish 释放 POI 资源
+            excelWriter.finish();
+        }
 
     }
 

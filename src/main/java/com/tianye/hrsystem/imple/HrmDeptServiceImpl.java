@@ -51,16 +51,35 @@ public class HrmDeptServiceImpl extends BaseServiceImpl<HrmDeptMapper, HrmDept> 
     @Override
     public void addOrUpdate(AddDeptBO AddDeptBo) {
         HrmDept hrmDept = BeanUtil.copyProperties(AddDeptBo, HrmDept.class);
-        boolean exists;
-        if (AddDeptBo.getDeptId() == null) {
-            exists = lambdaQuery().eq(HrmDept::getCode, AddDeptBo.getCode()).exists();
-        } else {
-            exists = lambdaQuery().eq(HrmDept::getCode, AddDeptBo.getCode()).ne(HrmDept::getDeptId, AddDeptBo.getDeptId()).exists();
-        }
-        if (exists) {
-            throw new CrmException(HrmCodeEnum.DEPT_CODE_ALREADY_EXISTS);
-        }
+        hrmDept.setCode(generateCode(AddDeptBo.getDeptId()));
         saveOrUpdate(hrmDept);
+    }
+
+    @Override
+    public String generateCode(Long deptId) {
+        Set<Integer> usedCodes = list().stream()
+                .filter(dept -> deptId == null || !Objects.equals(dept.getDeptId(), deptId))
+                .map(HrmDept::getCode)
+                .map(this::parsePositiveCode)
+                .filter(Objects::nonNull)
+                .collect(Collectors.toSet());
+        int code = 1;
+        while (usedCodes.contains(code)) {
+            code++;
+        }
+        return String.valueOf(code);
+    }
+
+    private Integer parsePositiveCode(String code) {
+        if (StrUtil.isBlank(code) || !code.matches("\\d+")) {
+            return null;
+        }
+        try {
+            int value = Integer.parseInt(code);
+            return value > 0 ? value : null;
+        } catch (NumberFormatException e) {
+            return null;
+        }
     }
 
     @Override

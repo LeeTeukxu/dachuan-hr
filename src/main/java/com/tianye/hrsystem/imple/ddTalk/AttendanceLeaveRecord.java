@@ -41,25 +41,24 @@ public class AttendanceLeaveRecord implements ILeaveRecord {
     hrmEmployeeLeaveRecordRepository leaveRep;
     @Autowired
     hrmEmployeeOverTimeRecordRepository overTimeRep;
-    List<tbattendanceuser> users = new ArrayList<>();
     @Autowired
     StringRedisTemplate redisRep;
 
     @Autowired
     IAccessToken tokenCreator;
     Logger logger= LoggerFactory.getLogger(AttendanceLeaveRecord.class);
-    SimpleDateFormat simple = new SimpleDateFormat("yyyy-MM-dd");
-    String LeaveKey ="";
+    private static final ThreadLocal<SimpleDateFormat> SIMPLE =
+            ThreadLocal.withInitial(() -> new SimpleDateFormat("yyyy-MM-dd"));
     @Override
-    public void GetAndSave(Date WorkDate) throws ApiException {
+    public void GetAndSave(Date WorkDate, List<tbattendanceuser> users) throws ApiException {
         LoginUserInfo Info = CompanyContext.get();
         String companyId = Info.getCompanyId();
-        LeaveKey = companyId + "::Leave::Record";
+        String LeaveKey = companyId + "::Leave::Record";
         DingTalkClient client = new DefaultDingTalkClient("https://oapi.dingtalk.com/topapi/attendance/getupdatedata");
         String password = tokenCreator.Refresh();
         for (int i = 0; i < users.size(); i++) {
             tbattendanceuser user = users.get(i);
-            String storeKey = simple.format(WorkDate) + "::" + Long.toString(user.getEmpId());
+            String storeKey = SIMPLE.get().format(WorkDate) + "::" + Long.toString(user.getEmpId());
             if (redisRep.opsForHash().hasKey(LeaveKey, storeKey) == false) {
                 OapiAttendanceGetupdatedataRequest req = new OapiAttendanceGetupdatedataRequest();
                 req.setUserid(user.getUserId());
@@ -70,7 +69,7 @@ public class AttendanceLeaveRecord implements ILeaveRecord {
                     List<OapiAttendanceGetupdatedataResponse.AtApproveForOpenVo> Os = rspp.getApproveList();
                     List<OapiAttendanceGetupdatedataResponse.AtAttendanceResultForOpenVo> Cs = rspp.getAttendanceResultList();
                     if (Os.size() > 0) {
-                        AddLeaveRecordOrOverTimeRecord(user,WorkDate,Os,Cs);
+                        AddLeaveRecordOrOverTimeRecord(user,WorkDate,Os,Cs,LeaveKey);
 
                     } else {
                         redisRep.opsForHash().put(LeaveKey, storeKey, "1");
@@ -82,16 +81,17 @@ public class AttendanceLeaveRecord implements ILeaveRecord {
     private void AddLeaveRecordOrOverTimeRecord(tbattendanceuser user,
             Date WorkDate,
             List<OapiAttendanceGetupdatedataResponse.AtApproveForOpenVo> Os,
-            List<OapiAttendanceGetupdatedataResponse.AtAttendanceResultForOpenVo> Cs ){
+            List<OapiAttendanceGetupdatedataResponse.AtAttendanceResultForOpenVo> Cs,
+            String LeaveKey ){
 
-        String storeKey = simple.format(WorkDate) + "::" + Long.toString(user.getEmpId());
+        String storeKey = SIMPLE.get().format(WorkDate) + "::" + Long.toString(user.getEmpId());
         for (int n = 0; n < Os.size(); n++) {
             OapiAttendanceGetupdatedataResponse.AtApproveForOpenVo O = Os.get(n);
             String subType = O.getSubType();
             Long bizType=O.getBizType();
             String approveId = O.getProcInstId();
             if (bizType==1L) {//加班记录
-                logger.info("开始同步{}在{}的加班记录！",user.getUserName(),simple.format(WorkDate));
+                logger.info("开始同步{}在{}的加班记录！",user.getUserName(),SIMPLE.get().format(WorkDate));
                 Optional<HrmEmployeeOverTimeRecord> findOvers = overTimeRep.findFirstByExamineId(approveId);
                 if (findOvers.isPresent() == false) {
                     HrmEmployeeOverTimeRecord overTimeRecord = new HrmEmployeeOverTimeRecord();
@@ -120,7 +120,7 @@ public class AttendanceLeaveRecord implements ILeaveRecord {
                     redisRep.opsForHash().put(LeaveKey, storeKey, "1");
                 }
             } else {
-                logger.info("开始同步{}在{}的请假记录！",user.getUserName(),simple.format(WorkDate));
+                logger.info("开始同步{}在{}的请假记录！",user.getUserName(),SIMPLE.get().format(WorkDate));
                 Optional<HrmEmployeeOverTimeRecord> findOvers = overTimeRep.findFirstByExamineId(approveId);
                 if (findOvers.isPresent() == false) {
                     HrmEmployeeLeaveRecord leaveRecord = new HrmEmployeeLeaveRecord();
@@ -141,8 +141,4 @@ public class AttendanceLeaveRecord implements ILeaveRecord {
         }
     }
 
-    @Override
-    public void setUsers(List<tbattendanceuser> users) {
-        this.users = users;
-    }
 }

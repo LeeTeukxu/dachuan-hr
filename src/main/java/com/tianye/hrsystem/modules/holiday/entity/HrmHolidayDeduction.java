@@ -33,7 +33,7 @@ public class HrmHolidayDeduction implements Serializable {
 
     @TableId(value = "deduction_id", type = IdType.ASSIGN_ID)
     @JsonSerialize(using = ToStringSerializer.class)
-    private Long deductionId;
+    private String deductionId;
 
     @ApiModelProperty(value = "假期余额ID")
     @JsonSerialize(using = ToStringSerializer.class)

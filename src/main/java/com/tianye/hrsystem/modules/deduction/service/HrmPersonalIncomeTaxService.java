@@ -16,6 +16,7 @@ import com.tianye.hrsystem.modules.deduction.entity.HrmPersonalIncomeTax;
 import com.tianye.hrsystem.modules.deduction.mapper.HrmPersonalIncomeTaxMapper;
 import com.tianye.hrsystem.modules.deduction.vo.QueryPersonalIncomeTaxVO;
 import com.tianye.hrsystem.modules.insurance.dto.UpdateInsuranceProjectBO;
+import com.tianye.hrsystem.modules.salary.support.TaxImportEmployeeMatcher;
 import com.tianye.hrsystem.repository.hrmEmployeeRepository;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
@@ -27,8 +28,10 @@ import org.springframework.web.multipart.MultipartFile;
 import java.math.BigDecimal;
 import java.net.Inet4Address;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 @Service
 public class HrmPersonalIncomeTaxService extends BaseServiceImpl<HrmPersonalIncomeTaxMapper, HrmPersonalIncomeTax> {
@@ -48,37 +51,46 @@ public class HrmPersonalIncomeTaxService extends BaseServiceImpl<HrmPersonalInco
             List<HrmPersonalIncomeTax> list = new ArrayList<>();
             List<List<Object>> read = reader.read();
             List<com.tianye.hrsystem.model.HrmEmployee> listHrmEmployees = employeeRepository.findAll();
-            Integer year = 0;
-            Integer month = 0;
+            String[] date = dates.split("-");
+            Integer year = Integer.parseInt(date[0]);
+            Integer month = Integer.parseInt(date[1]);
+            Set<String> importedKeys = new HashSet<>();
             for (int i = TWO; i < read.size(); i++) {
-                HrmPersonalIncomeTax hrmPersonalIncomeTax = new HrmPersonalIncomeTax();
                 List<Object> row = read.get(i);
-                String EmployeeName = row.get(0).toString();
-                listHrmEmployees.stream().forEach(f -> {
-                    if (f.getEmployeeName().equals(EmployeeName)) {
-                        hrmPersonalIncomeTax.setEmployeeId(f.getEmployeeId());
-                    }
-                });
-
-                if (!row.get(4).toString().equals("")) {
-                    hrmPersonalIncomeTax.setAccumulatedIncome(new BigDecimal(row.get(4).toString()));
-                }
-                if (!row.get(5).toString().equals("")) {
-                    hrmPersonalIncomeTax.setAccumulatedDeductionOfExpenses(new BigDecimal(row.get(5).toString()));
-                }
-                if (!row.get(6).toString().equals("")) {
-                    hrmPersonalIncomeTax.setAccumulatedProvidentFund(new BigDecimal(row.get(6).toString()));
-                }
-                if (!row.get(7).toString().equals("")) {
-                    hrmPersonalIncomeTax.setAccumulatedTaxPayment(new BigDecimal(row.get(7).toString()));
+                if (TaxImportEmployeeMatcher.isBlankRow(row)) {
+                    continue;
                 }
 
-                String[] date = dates.split("-");
-                year = Integer.parseInt(date[0]);
-                month = Integer.parseInt(date[1]);
+                HrmPersonalIncomeTax hrmPersonalIncomeTax = new HrmPersonalIncomeTax();
+                int displayRow = i + 1;
+                String employeeName = TaxImportEmployeeMatcher.readCellText(row, 0);
+                String mobile = TaxImportEmployeeMatcher.readCellText(row, 8);
+                Long employeeId = TaxImportEmployeeMatcher.resolveEmployeeId(listHrmEmployees, employeeName, mobile, displayRow);
+                TaxImportEmployeeMatcher.ensureUniqueEmployeePeriod(importedKeys, employeeId, employeeName, dates, displayRow);
+                hrmPersonalIncomeTax.setEmployeeId(employeeId);
+
+                BigDecimal accumulatedIncome = TaxImportEmployeeMatcher.readBigDecimal(row, 4);
+                if (accumulatedIncome != null) {
+                    hrmPersonalIncomeTax.setAccumulatedIncome(accumulatedIncome);
+                }
+                BigDecimal accumulatedDeductionOfExpenses = TaxImportEmployeeMatcher.readBigDecimal(row, 5);
+                if (accumulatedDeductionOfExpenses != null) {
+                    hrmPersonalIncomeTax.setAccumulatedDeductionOfExpenses(accumulatedDeductionOfExpenses);
+                }
+                BigDecimal accumulatedProvidentFund = TaxImportEmployeeMatcher.readBigDecimal(row, 6);
+                if (accumulatedProvidentFund != null) {
+                    hrmPersonalIncomeTax.setAccumulatedProvidentFund(accumulatedProvidentFund);
+                }
+                BigDecimal accumulatedTaxPayment = TaxImportEmployeeMatcher.readBigDecimal(row, 7);
+                if (accumulatedTaxPayment != null) {
+                    hrmPersonalIncomeTax.setAccumulatedTaxPayment(accumulatedTaxPayment);
+                }
                 hrmPersonalIncomeTax.setYear(year);
                 hrmPersonalIncomeTax.setEndMonth(month);
                 list.add(hrmPersonalIncomeTax);
+            }
+            if (list.isEmpty()) {
+                return;
             }
             LambdaQueryWrapper<HrmPersonalIncomeTax> wrappers = new LambdaQueryWrapper<>();
             wrappers.eq(HrmPersonalIncomeTax::getYear, year).eq(HrmPersonalIncomeTax::getEndMonth, month);

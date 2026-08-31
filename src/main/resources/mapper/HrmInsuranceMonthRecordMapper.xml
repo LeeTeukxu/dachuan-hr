@@ -9,10 +9,16 @@
           and a.is_del = 0
           and a.entry_status != 4
     </select>
+    <update id="setGroupConcatMaxLen">
+        SET SESSION group_concat_max_len = 4194304
+    </update>
     <select id="queryInsuranceRecordList" resultType="com.tianye.hrsystem.modules.insurance.vo.QueryInsuranceRecordListVO">
         select a.i_record_id,a.month,a.year,a.title,
         count(b.status=1 and (a.status = 1 or (a.status = 0 and c.is_del = 0)) OR NULL) as num,
+        count(b.status = 1 and (a.status = 1 or (a.status = 0 and c.is_del = 0)) OR NULL) as insuredNum,
         count(b.status=0 and (a.status = 1 or (a.status = 0 and c.is_del = 0)) OR NULL) as stopNum,a.status,
+        coalesce(GROUP_CONCAT(distinct case when b.status = 1 and (a.status = 1 or (a.status = 0 and c.is_del = 0)) then c.employee_name end order by c.employee_name SEPARATOR '、'),'') as insuredEmployeeNames,
+        coalesce(GROUP_CONCAT(distinct case when b.status = 0 and (a.status = 1 or (a.status = 0 and c.is_del = 0)) then c.employee_name end order by c.employee_name SEPARATOR '、'),'') as stoppedEmployeeNames,
         sum(if(b.status = 1 and (a.status = 1 or (a.status = 0 and c.is_del = 0)),b.personal_insurance_amount,0)) as
         personal_insurance_amount,
         sum(if(b.status = 1 and (a.status = 1 or (a.status = 0 and c.is_del = 0)),b.personal_provident_fund_amount,0))
@@ -25,8 +31,26 @@
         left join hrm_insurance_month_emp_record b on a.i_record_id = b.i_record_id
         left join hrm_employee c on b.employee_id = c.employee_id
         where 1=1
-        <if test="data.year != null">
+        <if test="data.startPeriod != null">
+            and (a.year * 100 + a.month) &gt;= #{data.startPeriod}
+        </if>
+        <if test="data.endPeriod != null">
+            and (a.year * 100 + a.month) &lt;= #{data.endPeriod}
+        </if>
+        <if test="data.startPeriod == null and data.endPeriod == null and data.year != null">
             and a.year = #{data.year}
+        </if>
+        <if test="data.deptIds != null and data.deptIds.size > 0">
+            and c.dept_id in
+            <foreach collection="data.deptIds" index="index" item="deptId" open="(" close=")" separator=",">
+                #{deptId}
+            </foreach>
+        </if>
+        <if test="data.employeeIds != null and data.employeeIds.size > 0">
+            and c.employee_id in
+            <foreach collection="data.employeeIds" index="index" item="employeeId" open="(" close=")" separator=",">
+                #{employeeId}
+            </foreach>
         </if>
 <!--        <if test="!isAll">-->
 <!--            <choose>-->
@@ -49,7 +73,8 @@
         entry_time,b.post,b.mobile,b.job_number,
         c.name as deptName,d.city,d.scheme_name,d.scheme_id,
         a.personal_insurance_amount,a.personal_provident_fund_amount,
-        a.corporate_insurance_amount,a.corporate_provident_fund_amount,b.is_del
+        a.corporate_insurance_amount,a.corporate_provident_fund_amount,
+        a.include_salary_basic_insurance_amount,b.is_del
         from hrm_insurance_month_emp_record a
         left join hrm_employee b on a.employee_id = b.employee_id
         left join hrm_dept c on b.dept_id = c.dept_id

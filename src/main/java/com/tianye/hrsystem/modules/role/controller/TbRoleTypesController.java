@@ -30,4 +30,26 @@ public class TbRoleTypesController {
             return Result.Error(ax);
         }
     }
+
+    @PostMapping("/saveRoleType")
+    @ApiOperation("保存角色")
+    public Result saveRoleType(@RequestBody QueryRoleTypesBO queryRoleTypesBO) {
+        try {
+            Integer result = tbRoleTypesService.saveRoleType(queryRoleTypesBO);
+            return Result.OK(result);
+        }catch (Exception ax) {
+            return Result.Error(ax);
+        }
+    }
+
+    @PostMapping("/deleteRoleType")
+    @ApiOperation("删除角色")
+    public Result deleteRoleType(@RequestBody QueryRoleTypesBO queryRoleTypesBO) {
+        try {
+            Integer result = tbRoleTypesService.deleteRoleType(queryRoleTypesBO.getId());
+            return Result.OK(result);
+        }catch (Exception ax) {
+            return Result.Error(ax);
+        }
+    }
 }

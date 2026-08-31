@@ -4,6 +4,7 @@ package com.tianye.hrsystem.service.employee;
 import com.tianye.hrsystem.base.BaseService;
 import com.tianye.hrsystem.entity.po.HrmEmployeeContract;
 import com.tianye.hrsystem.entity.vo.ContractInformationVO;
+import org.springframework.web.multipart.MultipartFile;
 
 import java.util.List;
 
@@ -31,6 +32,14 @@ public interface IHrmEmployeeContractService extends BaseService<HrmEmployeeCont
      * @param employeeContract
      */
     void addOrUpdateContract(HrmEmployeeContract employeeContract);
+
+    /**
+     * 导入员工合同
+     *
+     * @param file 合同导入 Excel
+     * @return 导入合同数量
+     */
+    Integer importContracts(MultipartFile file) throws Exception;
 
     /**
      * 删除合同

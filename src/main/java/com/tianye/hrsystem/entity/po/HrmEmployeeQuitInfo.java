@@ -60,6 +60,9 @@ public class HrmEmployeeQuitInfo implements Serializable {
     @ApiModelProperty("离职之前员工状态")
     private Integer oldStatus;
 
+    @ApiModelProperty(value = "是否归档：0否 1是（再次入职后归档保留）")
+    private Integer isArchived;
+
     @TableField(fill = FieldFill.INSERT)
     private LocalDateTime createTime;
 

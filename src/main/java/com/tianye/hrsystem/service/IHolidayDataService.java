@@ -7,6 +7,5 @@ import java.util.List;
 
 public interface IHolidayDataService {
 
-    void setUsers(List<tbattendanceuser> users);
-    void Sync(String EmpIDS, Date Begin, Date End) throws Exception;
+    void Sync(String EmpIDS, Date Begin, Date End, List<tbattendanceuser> users) throws Exception;
 }

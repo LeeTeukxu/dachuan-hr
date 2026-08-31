@@ -6,9 +6,16 @@
         select a.*, b.employee_name from hrm_additional as a left join hrm_employee as b
         on a.employee_id = b.employee_id
         WHERE 1=1
-        <if test="data.employeeName != ''">
+        <if test="data.employeeName != null and data.employeeName != ''">
             AND a.employee_id in (select employee_id from hrm_employee where employee_Name like concat('%',#{data.employeeName},'%'))
         </if>
+        <if test="data.year != null">
+            AND a.`year` = #{data.year}
+        </if>
+        <if test="data.month != null">
+            AND a.`month` = #{data.month}
+        </if>
+        order by a.`year` desc, a.`month` desc, a.additional_id desc
     </select>
 
     <select id="getEmployeeAdditional" parameterType="java.util.HashMap" resultType="com.tianye.hrsystem.modules.additional.vo.QueryAdditionalVO">

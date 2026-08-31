@@ -22,6 +22,16 @@ public class QuerySalaryBasicDto extends MyPageEntity {
 
     private BigDecimal subsidy;
 
+    private BigDecimal ordinaryFullAttendanceAmount;
+
+    private BigDecimal leaderFullAttendanceAmount;
+
+    private Integer productionMonthlyRestDays;
+
+    private BigDecimal largeMedicalInsuranceAmount;
+
+    private BigDecimal longTermCareInsuranceAmount;
+
     @Override
     public String toString() {
         return "QuerySalaryBasicDto{" +
@@ -29,6 +39,11 @@ public class QuerySalaryBasicDto extends MyPageEntity {
                 ", salaryBasic='" + salaryBasic +
                 ", overtimePay=" + overtimePay +
                 ", subsidy='" + subsidy +
+                ", ordinaryFullAttendanceAmount=" + ordinaryFullAttendanceAmount +
+                ", leaderFullAttendanceAmount=" + leaderFullAttendanceAmount +
+                ", productionMonthlyRestDays=" + productionMonthlyRestDays +
+                ", largeMedicalInsuranceAmount=" + largeMedicalInsuranceAmount +
+                ", longTermCareInsuranceAmount=" + longTermCareInsuranceAmount +
                 '}';
     }
 }

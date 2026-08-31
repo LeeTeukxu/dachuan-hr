@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.tianye.hrsystem.modules.dashboard.mapper.HrmKeyPostConfigMapper">
+
+    <select id="listPostsWithFlag" resultType="java.util.Map">
+        SELECT
+            e.post AS postName,
+            COUNT(*) AS empCount,
+            CASE WHEN k.id IS NULL THEN 0 ELSE 1 END AS isKey
+        FROM hrm_employee e
+        LEFT JOIN hrm_key_post_config k ON k.post_name = e.post
+        WHERE e.is_del = 0 AND e.post IS NOT NULL AND e.post != ''
+        GROUP BY e.post
+        ORDER BY isKey DESC, empCount DESC
+    </select>
+
+</mapper>

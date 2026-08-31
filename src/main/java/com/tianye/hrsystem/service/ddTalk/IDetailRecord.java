@@ -13,7 +13,6 @@ import java.util.List;
  * @CreateTime: 2024年03月18日 11:25
  **/
 public interface IDetailRecord {
-    void GetAndSave(Date Begin,Date End) throws ApiException;
-    void GetAndSave(String EmpID,Date Begin, Date End) throws ApiException;
-    void setUsers(List<tbattendanceuser> users);
+    void GetAndSave(Date Begin,Date End, List<tbattendanceuser> users) throws ApiException;
+    void GetAndSave(String EmpID,Date Begin, Date End, List<tbattendanceuser> users) throws ApiException;
 }

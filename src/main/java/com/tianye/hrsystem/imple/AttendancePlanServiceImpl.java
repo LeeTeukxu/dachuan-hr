@@ -24,23 +24,17 @@ public class AttendancePlanServiceImpl implements IAttendancePlanService {
     @Autowired
     MyDateUtils dateUtils;
 
-    List<tbattendanceuser> users;
     @Override
-    public void setUsers(List<tbattendanceuser> users) {
-        this.users=users;
-    }
-
-    @Override
-    public void Sync(String EmpIDS, Date Begin, Date End)throws Exception {
+    public void Sync(String EmpIDS, Date Begin, Date End, List<tbattendanceuser> users)throws Exception {
         // 不在这里删除，由外层 HrmAttendanceDataServiceImpl 统一删除
         
-        // 循环调用获取和保存（不执行删除）
+        // 循环调用获取和保存（不执行删除）；users 由调用方逐层传参，消除单例共享可变字段
         List<Date> Dates=dateUtils.rangeDate(Begin,End);
         for(int i=0;i<Dates.size();i++){
             Date D=Dates.get(i);
-            planRecord.setUsers(users);
-            planRecord.GetAndSaveWithoutDelete(EmpIDS,D);
+            planRecord.GetAndSaveWithoutDelete(EmpIDS,D,users);
         }
-        planRecord.DeleteRepeatUser(Begin,End);
+        // 不能按“同名+无排班”删除映射，否则会误删重名员工（如不同部门同名）
+        // 映射关系应保持稳定，由 userId/empId 唯一标识，不在同步计划阶段做破坏性清理
     }
 }

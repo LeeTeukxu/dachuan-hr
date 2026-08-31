@@ -5,6 +5,8 @@ import io.swagger.annotations.ApiModelProperty;
 import lombok.Getter;
 import lombok.Setter;
 
+import java.util.List;
+
 @Getter
 @Setter
 public class QuerySalaryExportDto  {
@@ -20,6 +22,9 @@ public class QuerySalaryExportDto  {
 
     private String employeeName;
 
+    @ApiModelProperty("员工id集合")
+    private List<Long> employeeIds;
+
     @Override
     public String toString() {
         return "QuerySalaryPageListBO{" +
@@ -28,6 +33,7 @@ public class QuerySalaryExportDto  {
                 ", deptId=" + deptId +
                 ", type=" + type +
                 ", employeeName='" + employeeName + '\'' +
+                ", employeeIds=" + employeeIds +
                 '}';
     }
 }

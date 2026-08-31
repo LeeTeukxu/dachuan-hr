@@ -9,6 +9,7 @@ import com.tianye.hrsystem.modules.loginuser.vo.QueryLoginUserVO;
 import io.swagger.annotations.Api;
 import io.swagger.annotations.ApiOperation;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -43,7 +44,19 @@ public class TbLoginUserController {
             return Result.ok(result);
         }catch (Exception ax) {
             ax.printStackTrace();
-            return Result.error(ResultCode.INTERNAL_SERVER_ERROR.code(),"保存失败");
+            return Result.error(ResultCode.INTERNAL_SERVER_ERROR.code(),ax.getMessage());
+        }
+    }
+
+    @PostMapping("/Delete/{id}")
+    @ApiOperation("删除登陆用户")
+    public Result Delete(@PathVariable("id") Integer id) {
+        try {
+            Integer result = tbLoginUserService.Delete(id);
+            return Result.ok(result);
+        } catch (Exception ax) {
+            ax.printStackTrace();
+            return Result.error(ResultCode.INTERNAL_SERVER_ERROR.code(), ax.getMessage());
         }
     }
 }

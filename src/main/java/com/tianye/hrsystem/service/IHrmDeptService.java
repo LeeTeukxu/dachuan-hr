@@ -27,6 +27,14 @@ public interface IHrmDeptService extends BaseService<HrmDept> {
     void addOrUpdate(AddDeptBO addDeptBO);
 
     /**
+     * 生成可用部门编码
+     *
+     * @param deptId 编辑时当前部门ID，新增时为空
+     * @return 可用部门编码
+     */
+    String generateCode(Long deptId);
+
+    /**
      * 查询部门详情
      *
      * @param deptId

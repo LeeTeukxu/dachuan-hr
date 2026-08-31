@@ -49,16 +49,18 @@ public class AttachmentController {
 
     @RequestMapping("/download")
     public void Download(String AttID, HttpServletResponse response) {
+        FTPUtil ftpUtil = null;
+        File tempFile = null;
         try {
             Optional<tbattachment> findOne = attRep.findById(AttID);
             if (findOne.isPresent()) {
                 tbattachment tb = findOne.get();
                 String Path = tb.getSavePath();
-                FTPUtil ftpUtil = new FTPUtil();
-                String SavePath = CompanyPathUtils.getFullPath("Temp", tb.getName());
+                ftpUtil = new FTPUtil();
+                tempFile = new File(CompanyPathUtils.getFullPath("Temp", tb.getName()));
                 if (ftpUtil.connect() == true) {
-                    ftpUtil.download(Path, SavePath);
-                    WebFileUtils.download(tb.getName(), new File(SavePath), response);
+                    ftpUtil.download(Path, tempFile.getPath());
+                    WebFileUtils.download(tb.getName(), tempFile, response);
                 } else response.getWriter().write("FTP登录失败!");
             } else response.getWriter().write("下载的文件不存在!");
         } catch (Exception ax) {
@@ -66,6 +68,14 @@ public class AttachmentController {
                 response.getWriter().write(ax.getMessage());
             } catch (IOException e) {
                 e.printStackTrace();
+            }
+        } finally {
+            // 归还 FTP 连接并清理本地临时文件，避免连接泄漏与 Temp 目录无限膨胀
+            if (ftpUtil != null) {
+                ftpUtil.close();
+            }
+            if (tempFile != null && tempFile.exists() && !tempFile.delete()) {
+                tempFile.deleteOnExit();
             }
         }
     }

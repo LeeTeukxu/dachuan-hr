@@ -15,16 +15,36 @@ public class tbplanlist implements Serializable {
   private String productName;
   @Column(name = "LinkName")
   private String linkName;
+  @Column(name = "workshop_name")
+  private String workshopName;
   @Column(name = "WorkDate")
   private Date workDate;
   @Column(name = "GroupID")
   private String groupId;
   @Column(name = "ClassID")
   private String classId;
+  @Column(name = "custom_shift_id")
+  private Long customShiftId;
+  @Column(name = "custom_shift_period")
+  private String customShiftPeriod;
+  @Column(name = "custom_continuous_shift")
+  private Boolean customContinuousShift;
+  @Column(name = "rest_shift_type")
+  private String restShiftType;
   @Column(name = "UserID")
   private String userId;
   @Column(name = "CreateTime")
   private Date createTime;
+  @Column(name = "shift_source")
+  private String shiftType;
+  @Transient
+  private String customStart;
+  @Transient
+  private String customEnd;
+  @Transient
+  private Boolean customCrossDay;
+  @Transient
+  private Boolean customContinuousShiftExplicit;
 
   public Integer getId() {
     return id;
@@ -47,6 +67,14 @@ public class tbplanlist implements Serializable {
   }
   public void setLinkName(String linkName) {
     this.linkName = linkName;
+  }
+
+
+  public String getWorkshopName() {
+    return workshopName;
+  }
+  public void setWorkshopName(String workshopName) {
+    this.workshopName = workshopName;
   }
 
 
@@ -81,12 +109,84 @@ public class tbplanlist implements Serializable {
     this.userId = userId;
   }
 
+  public Long getCustomShiftId() {
+    return customShiftId;
+  }
+
+  public void setCustomShiftId(Long customShiftId) {
+    this.customShiftId = customShiftId;
+  }
+
+  public String getCustomShiftPeriod() {
+    return customShiftPeriod;
+  }
+
+  public void setCustomShiftPeriod(String customShiftPeriod) {
+    this.customShiftPeriod = customShiftPeriod;
+  }
+
+  public Boolean getCustomContinuousShift() {
+    return customContinuousShift;
+  }
+
+  public void setCustomContinuousShift(Boolean customContinuousShift) {
+    this.customContinuousShift = customContinuousShift;
+  }
+
+  public String getRestShiftType() {
+    return restShiftType;
+  }
+
+  public void setRestShiftType(String restShiftType) {
+    this.restShiftType = restShiftType;
+  }
+
 
   public Date getCreateTime() {
     return createTime;
   }
   public void setCreateTime(Date createTime) {
     this.createTime = createTime;
+  }
+
+  public String getShiftType() {
+    return shiftType;
+  }
+
+  public void setShiftType(String shiftType) {
+    this.shiftType = shiftType;
+  }
+
+  public String getCustomStart() {
+    return customStart;
+  }
+
+  public void setCustomStart(String customStart) {
+    this.customStart = customStart;
+  }
+
+  public String getCustomEnd() {
+    return customEnd;
+  }
+
+  public void setCustomEnd(String customEnd) {
+    this.customEnd = customEnd;
+  }
+
+  public Boolean getCustomCrossDay() {
+    return customCrossDay;
+  }
+
+  public void setCustomCrossDay(Boolean customCrossDay) {
+    this.customCrossDay = customCrossDay;
+  }
+
+  public Boolean getCustomContinuousShiftExplicit() {
+    return customContinuousShiftExplicit;
+  }
+
+  public void setCustomContinuousShiftExplicit(Boolean customContinuousShiftExplicit) {
+    this.customContinuousShiftExplicit = customContinuousShiftExplicit;
   }
 
 }

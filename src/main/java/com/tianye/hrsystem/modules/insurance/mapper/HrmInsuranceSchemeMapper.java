@@ -1,6 +1,7 @@
 package com.tianye.hrsystem.modules.insurance.mapper;
 
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
+import com.baomidou.mybatisplus.annotation.InterceptorIgnore;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.tianye.hrsystem.modules.insurance.entity.HrmInsuranceScheme;
 import com.tianye.hrsystem.modules.insurance.vo.InsuranceSchemeListVO;
@@ -19,6 +20,9 @@ public interface HrmInsuranceSchemeMapper extends BaseMapper<HrmInsuranceScheme>
 
 
     Page<InsuranceSchemeListVO> queryInsuranceSchemePageList(Page<InsuranceSchemeListVO> parse);
+
+    @InterceptorIgnore(tenantLine = "true")
+    void setGroupConcatMaxLen();
 
     /**
      * 查询社保方案统计

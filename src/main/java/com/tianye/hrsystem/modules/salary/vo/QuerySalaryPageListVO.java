@@ -42,6 +42,12 @@ public class QuerySalaryPageListVO {
     @ApiModelProperty(value = "是否生产部门")
     private String isProduceDept;
 
+    @ApiModelProperty(value = "所属体系 1、行政 2、生产")
+    private Integer affiliationSystem;
+
+    @ApiModelProperty(value = "休息制度 1、行政单双休 2、固定月休4天")
+    private Integer restType;
+
     @ApiModelProperty(value = "入职时间")
     private String entryTime;
 

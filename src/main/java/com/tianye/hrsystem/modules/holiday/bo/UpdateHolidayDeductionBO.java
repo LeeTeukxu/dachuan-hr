@@ -13,7 +13,7 @@ public class UpdateHolidayDeductionBO extends MyPageEntity {
     private static final long serialVersionUID = 1L;
 
     @ApiModelProperty(value = "主键ID")
-    private Long deductionId;
+    private String deductionId;
 
     @ApiModelProperty(value = "假期余额ID")
     private Long holidayId;

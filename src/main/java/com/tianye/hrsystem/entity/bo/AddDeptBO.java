@@ -33,7 +33,6 @@ public class AddDeptBO {
     private String name;
 
     @ApiModelProperty(value = "部门编码")
-    @NotBlank(message = "部门编码不能为空")
     private String code;
 
     @ApiModelProperty(value = "部门负责人ID")

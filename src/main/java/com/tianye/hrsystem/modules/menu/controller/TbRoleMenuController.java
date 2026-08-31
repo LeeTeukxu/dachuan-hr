@@ -30,7 +30,7 @@ public class TbRoleMenuController {
             return Result.ok(result);
         }catch (Exception ax) {
             ax.printStackTrace();
-            return Result.error(ResultCode.INTERNAL_SERVER_ERROR.code(),"保存失败");
+            return Result.error(ResultCode.INTERNAL_SERVER_ERROR.code(),ax.getMessage());
         }
     }
 

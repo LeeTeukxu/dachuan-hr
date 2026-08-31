@@ -18,6 +18,9 @@ import com.tianye.hrsystem.modules.salary.service.SalaryMonthRecordServiceNew;
 import com.tianye.hrsystem.modules.salary.vo.QuerySalaryMonthRecordVO;
 import com.tianye.hrsystem.modules.salary.vo.QuerySalaryMonthRecrodButtonStatusVO;
 import com.tianye.hrsystem.modules.salary.vo.QuerySalaryPageListVO;
+import com.tianye.hrsystem.modules.salary.vo.SalaryMonthRecoveryPreviewVO;
+import com.tianye.hrsystem.modules.salary.vo.SalaryMonthRecoveryResultVO;
+import com.tianye.hrsystem.modules.salary.vo.SalaryComputeProgressVO;
 import com.tianye.hrsystem.modules.salary.vo.SalaryOptionHeadVO;
 import com.tianye.hrsystem.service.employee.IHrmEmployeeService;
 import io.swagger.annotations.Api;
@@ -70,10 +73,29 @@ public class HrmSalaryMonthRecordController
     public Result computeSalaryData(@ApiParam("薪资记录id") @RequestParam("srecordId") Long srecordId,
                                     @ApiParam("是否同步社保数据") @RequestParam("isSyncInsuranceData") Boolean isSyncInsuranceData,
                                     @ApiParam("是否同步考勤数据") @RequestParam(name = "isSyncAttendanceData", defaultValue = "false") Boolean isSyncAttendanceData,
-                                    @ApiParam("员工id") @RequestParam(name = "employeeId", required = false) Long employeeId
+                                    @ApiParam("员工id") @RequestParam(name = "employeeId", required = false) Long employeeId,
+                                    @ApiParam("员工id集合") @RequestParam(name = "employeeIds", required = false) List<Long> employeeIds
     ) {
-        salaryMonthRecordService.computeSalaryData(srecordId, isSyncInsuranceData, isSyncAttendanceData, employeeId);
+        salaryMonthRecordService.computeSalaryData(srecordId, isSyncInsuranceData, isSyncAttendanceData, employeeId, employeeIds);
         return Result.ok();
+    }
+
+    @PostMapping("/queryComputeProgress")
+    @ApiOperation("查询核算薪资进度")
+    public Result<SalaryComputeProgressVO> queryComputeProgress(
+            @ApiParam("薪资记录id") @RequestParam("srecordId") Long srecordId,
+            @ApiParam("员工id") @RequestParam(name = "employeeId", required = false) Long employeeId,
+            @ApiParam("员工id集合") @RequestParam(name = "employeeIds", required = false) List<Long> employeeIds) {
+        SalaryComputeProgressVO progress = salaryMonthRecordService.queryComputeProgress(srecordId, employeeId, employeeIds);
+        return Result.ok(progress);
+    }
+
+    @PostMapping("/queryComputeSalaryEmployeeList")
+    @ApiOperation("查询核算薪资同口径计薪员工列表")
+    public Result<List<Map<String, Object>>> queryComputeSalaryEmployeeList(
+            @ApiParam("薪资记录id，不传默认最新月薪资记录")
+            @RequestParam(name = "srecordId", required = false) Long srecordId) {
+        return Result.ok(salaryMonthRecordService.queryComputeSalaryEmployeeList(srecordId));
     }
 
 //    @PostMapping("/computeSalaryData")
@@ -119,6 +141,22 @@ public class HrmSalaryMonthRecordController
     public Result addNextMonthSalary() {
         OperationLog operationLog = salaryMonthRecordService.addNextMonthSalary();
         return Result.ok(operationLog);
+    }
+
+    @PostMapping("/previewSalaryMonthRecovery")
+    @ApiOperation("预览薪资月份恢复")
+    public Result<SalaryMonthRecoveryPreviewVO> previewSalaryMonthRecovery(@RequestBody SalaryMonthRecoveryDto recoveryDto) {
+        SalaryMonthRecoveryPreviewVO preview = salaryMonthRecordService.previewSalaryMonthRecovery(
+                recoveryDto.getYear(), recoveryDto.getMonth());
+        return Result.ok(preview);
+    }
+
+    @PostMapping("/recoverSalaryMonth")
+    @ApiOperation("恢复薪资月份")
+    public Result<SalaryMonthRecoveryResultVO> recoverSalaryMonth(@RequestBody SalaryMonthRecoveryDto recoveryDto) {
+        SalaryMonthRecoveryResultVO result = salaryMonthRecordService.recoverSalaryMonth(
+                recoveryDto.getYear(), recoveryDto.getMonth());
+        return Result.ok(result);
     }
 
     @PostMapping("/querySalaryOptionHead")
@@ -307,14 +345,7 @@ public class HrmSalaryMonthRecordController
     @PostMapping("/exportSalary")
     @ApiOperation("工资导出")
     public void exportSalary(@RequestBody QuerySalaryExportDto querySalaryExportDto, HttpServletResponse response)
-    {
-        try
-        {
-            salaryMonthRecordService.exportSalaryNew(querySalaryExportDto,response);
-        }
-        catch (Exception ex)
-        {
-            ex.printStackTrace();
-        }
+            throws IOException {
+        salaryMonthRecordService.exportSalaryNew(querySalaryExportDto,response);
     }
 }

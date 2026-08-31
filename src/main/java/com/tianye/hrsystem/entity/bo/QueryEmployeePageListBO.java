@@ -23,8 +23,41 @@ public class QueryEmployeePageListBO extends PageEntity {
     @ApiModelProperty(value = "性别 1 男 2 女")
     private Integer sex;
 
+    @ApiModelProperty(value = "年龄下限")
+    private Integer ageMin;
+
+    @ApiModelProperty(value = "年龄上限")
+    private Integer ageMax;
+
+    @ApiModelProperty(value = "出生月份 1-12")
+    private Integer birthMonth;
+
     @ApiModelProperty(value = "入职时间")
     private List<LocalDate> entryTime;
+
+    @ApiModelProperty(value = "司龄下限（年）")
+    private Integer companyAgeMin;
+
+    @ApiModelProperty(value = "司龄上限（年）")
+    private Integer companyAgeMax;
+
+    @ApiModelProperty(value = "劳动合同结束时间")
+    private List<LocalDate> contractEndTime;
+
+    @ApiModelProperty(value = "离职时间")
+    private List<LocalDate> quitTime;
+
+    @ApiModelProperty(value = "劳动合同签订次数")
+    private Integer contractSignCount;
+
+    @ApiModelProperty(value = "用工性质 1 劳动用工 2 劳务用工")
+    private Integer employmentNature;
+
+    @ApiModelProperty(value = "学历 1小学 2初中 3中专 4中职 5中技 6高中 7大专 8本科 9硕士 10博士 11博士后 12其他")
+    private Integer education;
+
+    @ApiModelProperty(value = "政治面貌")
+    private String politicalStatus;
 
     @ApiModelProperty(value = "工号")
     private String jobNumber;
@@ -67,7 +100,17 @@ public class QueryEmployeePageListBO extends PageEntity {
                 "employeeName='" + employeeName + '\'' +
                 ", mobile='" + mobile + '\'' +
                 ", sex=" + sex +
+                ", ageMin=" + ageMin +
+                ", ageMax=" + ageMax +
+                ", birthMonth=" + birthMonth +
                 ", entryTime=" + entryTime +
+                ", companyAgeMin=" + companyAgeMin +
+                ", companyAgeMax=" + companyAgeMax +
+                ", contractEndTime=" + contractEndTime +
+                ", quitTime=" + quitTime +
+                ", contractSignCount=" + contractSignCount +
+                ", employmentNature=" + employmentNature +
+                ", politicalStatus='" + politicalStatus + '\'' +
                 ", jobNumber='" + jobNumber + '\'' +
                 ", deptId=" + deptId +
                 ", post='" + post + '\'' +

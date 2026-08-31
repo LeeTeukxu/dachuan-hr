@@ -65,6 +65,12 @@ public class tbattendanceapprove implements Serializable {
   @Column(name="workDate")
   private Date workDate;
 
+  /**
+   * 统计参与状态：空=参与统计，取消至统计=不参与统计
+   */
+  @Column(name="statisticsStatus")
+  private String statisticsStatus;
+
   public String getId() {
     return id;
   }
@@ -156,5 +162,13 @@ public class tbattendanceapprove implements Serializable {
 
   public void setWorkDate(Date workDate) {
     this.workDate = workDate;
+  }
+
+  public String getStatisticsStatus() {
+    return statisticsStatus;
+  }
+
+  public void setStatisticsStatus(String statisticsStatus) {
+    this.statisticsStatus = statisticsStatus;
   }
 }

@@ -52,12 +52,10 @@ public class AttendanceDetailServiceImplTest {
 
     @Test
     public void sync_shouldSkipDeleteAndFetch_whenNoMappedUsers() throws Exception {
-        attendanceDetailService.setUsers(Collections.emptyList());
-
-        attendanceDetailService.Sync("1001", begin, end);
+        attendanceDetailService.Sync("1001", begin, end, Collections.emptyList());
 
         verify(clockRep, never()).deleteAllByClockEmployeeIdInAndWorkDateBetween(anyList(), any(Date.class), any(Date.class));
-        verify(detailRecord, never()).GetAndSave(any(String.class), any(Date.class), any(Date.class));
+        verify(detailRecord, never()).GetAndSave(any(String.class), any(Date.class), any(Date.class), any(List.class));
     }
 
     @Test
@@ -66,13 +64,10 @@ public class AttendanceDetailServiceImplTest {
         mappedUser.setEmpId(1001L);
         mappedUser.setUserId("dingtalk_u1");
         List<tbattendanceuser> users = Collections.singletonList(mappedUser);
-        attendanceDetailService.setUsers(users);
-
-        attendanceDetailService.Sync("1001,1002", begin, end);
+        attendanceDetailService.Sync("1001,1002", begin, end, users);
 
         verify(clockRep).deleteAllByClockEmployeeIdInAndWorkDateBetween(eq(Collections.singletonList(1001L)), eq(begin), eq(end));
-        verify(detailRecord).setUsers(eq(users));
-        verify(detailRecord).GetAndSave(eq("1001"), eq(begin), eq(end));
-        verify(detailRecord, never()).GetAndSave(eq("1001,1002"), any(Date.class), any(Date.class));
+        verify(detailRecord).GetAndSave(eq("1001"), eq(begin), eq(end), eq(users));
+        verify(detailRecord, never()).GetAndSave(eq("1001,1002"), any(Date.class), any(Date.class), any(List.class));
     }
 }

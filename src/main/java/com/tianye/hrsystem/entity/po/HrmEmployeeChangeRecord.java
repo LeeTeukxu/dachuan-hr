@@ -10,9 +10,9 @@ import lombok.EqualsAndHashCode;
 import lombok.experimental.Accessors;
 
 import java.io.Serializable;
+import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
-import java.util.Date;
 
 /**
  * <p>
@@ -103,5 +103,20 @@ public class HrmEmployeeChangeRecord implements Serializable {
     @TableField(exist = false)
     private String remarks;
 
+    @ApiModelProperty("薪资等级")
+    @TableField(exist = false)
+    private String salaryLevel;
+
+    @ApiModelProperty("固定绩效")
+    @TableField(exist = false)
+    private BigDecimal fixedPerformance;
+
+    @ApiModelProperty("职务补助")
+    @TableField(exist = false)
+    private BigDecimal dutySubsidy;
+
+    @ApiModelProperty("其他补助")
+    @TableField(exist = false)
+    private BigDecimal otherSubsidy;
 
 }

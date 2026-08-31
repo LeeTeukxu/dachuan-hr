@@ -1,0 +1,70 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.tianye.hrsystem.mapper.HrmAttendanceApprovalMapper">
+    <select id="queryPageList" resultType="com.tianye.hrsystem.entity.vo.QueryAttendanceApprovalPageVO">
+        select
+            a.id as approvalId,
+            e.employee_id as employeeId,
+            coalesce(e.employee_name, u.userName) as employeeName,
+            e.mobile as mobile,
+            e.job_number as jobNumber,
+            d.name as deptName,
+            e.post as post,
+            a.tagName as tagName,
+            a.subType as subType,
+            a.bizType as bizType,
+            a.beginTime as beginTime,
+            a.endTime as endTime,
+            a.duration as duration,
+            a.durationUnit as durationUnit,
+            a.workDate as workDate,
+            a.createTime as createTime,
+            a.statisticsStatus as statisticsStatus
+        from tbattendanceapprove a
+        left join tbattendanceuser u on a.userId = u.userId
+        left join hrm_employee e on u.empId = e.employee_id
+        left join hrm_dept d on e.dept_id = d.dept_id
+        where 1 = 1
+        <if test="data.search != null and data.search != ''">
+            and (
+                e.employee_name like concat('%', #{data.search}, '%')
+                or e.job_number like concat('%', #{data.search}, '%')
+                or u.userName like concat('%', #{data.search}, '%')
+            )
+        </if>
+        <if test="data.employeeId != null">
+            and e.employee_id = #{data.employeeId}
+        </if>
+        <if test="data.deptIds != null and data.deptIds.size > 0">
+            and e.dept_id in
+            <foreach collection="data.deptIds" item="deptId" open="(" close=")" separator=",">
+                #{deptId}
+            </foreach>
+        </if>
+        <if test="data.bizTypes != null and data.bizTypes.size > 0">
+            and a.bizType in
+            <foreach collection="data.bizTypes" item="bizType" open="(" close=")" separator=",">
+                #{bizType}
+            </foreach>
+        </if>
+        <if test="data.tagNames != null and data.tagNames.size > 0">
+            and (
+            <foreach collection="data.tagNames" item="tagName" separator=" or ">
+                a.tagName like concat('%', #{tagName}, '%')
+            </foreach>
+            )
+        </if>
+        <if test="data.subTypes != null and data.subTypes.size > 0">
+            and (
+            <foreach collection="data.subTypes" item="subType" separator=" or ">
+                a.subType like concat('%', #{subType}, '%')
+            </foreach>
+            )
+        </if>
+        <if test="data.times != null and data.times.size > 1">
+            and date_format(a.beginTime, '%Y-%m-%d') between date_format(#{data.times[0]}, '%Y-%m-%d')
+            and date_format(#{data.times[1]}, '%Y-%m-%d')
+        </if>
+        order by a.beginTime desc, a.createTime desc
+    </select>
+</mapper>

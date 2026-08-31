@@ -12,7 +12,6 @@ import java.util.List;
  * @CreateTime: 2024年06月15日 16:01
  **/
 public interface ILeaveRecordDtaService {
-    void setUsers(List<tbattendanceuser> users);
 
-    void Sync(String EmpIDS, Date Begin, Date End) throws Exception;
+    void Sync(String EmpIDS, Date Begin, Date End, List<tbattendanceuser> users) throws Exception;
 }

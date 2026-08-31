@@ -17,6 +17,8 @@ public class ShiftItem {
 
     String begin2;
     String end2;
+    String begin3;
+    String end3;
 
 
     public String getShiftId() {
@@ -81,5 +83,21 @@ public class ShiftItem {
 
     public void setEnd2(String end2) {
         this.end2 = end2;
+    }
+
+    public String getBegin3() {
+        return begin3;
+    }
+
+    public void setBegin3(String begin3) {
+        this.begin3 = begin3;
+    }
+
+    public String getEnd3() {
+        return end3;
+    }
+
+    public void setEnd3(String end3) {
+        this.end3 = end3;
     }
 }

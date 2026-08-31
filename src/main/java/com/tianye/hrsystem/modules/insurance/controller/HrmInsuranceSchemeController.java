@@ -15,7 +15,6 @@ import javax.servlet.http.HttpServletRequest;
 
 @RestController
 @RequestMapping("/hrmInsuranceScheme")
-@CrossOrigin
 public class HrmInsuranceSchemeController {
 
     @Autowired
@@ -41,4 +40,3 @@ public class HrmInsuranceSchemeController {
         return Result.ok();
     }
 }
-

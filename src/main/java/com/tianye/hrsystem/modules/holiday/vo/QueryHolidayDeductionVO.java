@@ -1,8 +1,6 @@
 package com.tianye.hrsystem.modules.holiday.vo;
 
 import com.baomidou.mybatisplus.annotation.TableId;
-import com.fasterxml.jackson.databind.annotation.JsonSerialize;
-import com.fasterxml.jackson.databind.ser.std.ToStringSerializer;
 import io.swagger.annotations.ApiModelProperty;
 import lombok.Getter;
 import lombok.Setter;
@@ -15,7 +13,7 @@ public class QueryHolidayDeductionVO {
 
     @ApiModelProperty(value = "主键ID")
     @TableId(value = "deduction_id")
-    private Long deductionId;
+    private String deductionId;
 
     @ApiModelProperty(value = "员工ID")
     private Long employeeId;

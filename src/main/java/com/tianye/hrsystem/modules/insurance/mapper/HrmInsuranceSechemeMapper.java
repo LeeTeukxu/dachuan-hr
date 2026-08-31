@@ -8,12 +8,16 @@ import com.tianye.hrsystem.modules.insurance.entity.HrmInsuranceScheme;
 import com.tianye.hrsystem.modules.insurance.vo.InsuranceSchemeListVO;
 import com.tianye.hrsystem.modules.salary.vo.QuerySalaryBasicVO;
 import org.apache.ibatis.annotations.Delete;
+import com.baomidou.mybatisplus.annotation.InterceptorIgnore;
 import org.apache.ibatis.annotations.Param;
 
 import java.util.Map;
 
 public interface HrmInsuranceSechemeMapper extends BaseMapper<HrmInsuranceScheme> {
     BasePage<InsuranceSchemeListVO> index(BasePage<InsuranceSchemeListVO> parse);
+
+    @InterceptorIgnore(tenantLine = "true")
+    void setGroupConcatMaxLen();
 
     @Delete("DELETE FROM hrm_insurance_scheme WHERE scheme_id = #{schemeId}")
     int deleteBySchemeId(@Param("schemeId") Long schemeId);

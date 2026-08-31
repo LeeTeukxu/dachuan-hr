@@ -52,8 +52,11 @@ public class MyDateUtils {
         }
     }
 
-    SimpleDateFormat simple=new SimpleDateFormat("yyyy-MM-dd HH:mm:ss");
-    SimpleDateFormat ssss=new SimpleDateFormat("yyyy-MM-dd");
+    // SimpleDateFormat 非线程安全：定时任务与 HTTP 线程共用本单例，必须用 ThreadLocal 隔离
+    private static final ThreadLocal<SimpleDateFormat> SIMPLE =
+            ThreadLocal.withInitial(() -> new SimpleDateFormat("yyyy-MM-dd HH:mm:ss"));
+    private static final ThreadLocal<SimpleDateFormat> SSSS =
+            ThreadLocal.withInitial(() -> new SimpleDateFormat("yyyy-MM-dd"));
     /**
      * create by: mmzs
      * description: TODO
@@ -79,14 +82,14 @@ public class MyDateUtils {
         return res;
     }
     public boolean isEndOfMonth(Date date) throws Exception{
-        String X=ssss.format(date);
-        String Y=ssss.format(getEndDayOfMonth(date));
+        String X=SSSS.get().format(date);
+        String Y=SSSS.get().format(getEndDayOfMonth(date));
         return X.equals(Y);
     }
     public boolean isBeginOfMonth(Date date) throws Exception{
         Date begin=getBeginDayOfMonth(date);
-        String s1=simple.format(begin);
-        String s2=simple.format(date);
+        String s1=SIMPLE.get().format(begin);
+        String s2=SIMPLE.get().format(date);
         return s1.equals(s2);
     }
     public Date getEndDayOfMonth(Date date) throws Exception{
@@ -94,7 +97,7 @@ public class MyDateUtils {
         String  Year=Integer.toString(YearNum);
         Integer MonthNum=date.getMonth()+2;
         String  Month= StringUtils.leftPad(Integer.toString(MonthNum),2,'0');
-        Date willDate=simple.parse(Year+"-"+Month+"-01 23:59:59");
+        Date willDate=SIMPLE.get().parse(Year+"-"+Month+"-01 23:59:59");
         Date x= DateUtils.addDays(willDate,-1);
         x.setHours(23);
         x.setMinutes(59);
@@ -106,7 +109,7 @@ public class MyDateUtils {
         String  Year=Integer.toString(YearNum);
         Integer MonthNum=date.getMonth()+1;
         String  Month= StringUtils.leftPad(Integer.toString(MonthNum),2,'0');
-        Date willDate=simple.parse(Year+"-"+Month+"-01 00:00:00");
+        Date willDate=SIMPLE.get().parse(Year+"-"+Month+"-01 00:00:00");
         return willDate;
     }
     public Date getMiddleDayOfMonth(Date date) throws Exception{
@@ -122,7 +125,7 @@ public class MyDateUtils {
         Integer MonthNum=date.getMonth()+1;
         String  Month= StringUtils.leftPad(Integer.toString(MonthNum),2,'0');
         String DayNum=StringUtils.leftPad(Integer.toString(X),2,'0');
-        Date willDate=simple.parse(Year+"-"+Month+"-"+DayNum+ " 23:59:59");
+        Date willDate=SIMPLE.get().parse(Year+"-"+Month+"-"+DayNum+ " 23:59:59");
         return willDate;
     }
     public List<Date[]> getDateRangeByLimit(Date date,int limit) throws Exception{

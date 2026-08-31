@@ -64,6 +64,10 @@ public class HrmInsuranceMonthEmpRecord implements Serializable {
     @ApiModelProperty(value = "公司社保金额")
     private BigDecimal corporateProvidentFundAmount;
 
+    @ApiModelProperty("是否累计基本工资金额设置中的长期护理/大额医疗保险金额：0 否 1 是")
+    @TableField("include_salary_basic_insurance_amount")
+    private Integer includeSalaryBasicInsuranceAmount;
+
     @ApiModelProperty("0 停保 1 正常")
     private Integer status;
 

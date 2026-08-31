@@ -43,7 +43,6 @@ public class AttendancePlanRecordTask extends AbstractDingTalkTask {
 
         // 设置用户列表
         List<tbattendanceuser> users = attendanceUserRep.findAll();
-        planRecord.setUsers(users);
 
         // 按日期逐天同步
         Date workDate = beginDate;
@@ -54,7 +53,7 @@ public class AttendancePlanRecordTask extends AbstractDingTalkTask {
             if (!checkpoint.isDone(companyId, getClass(), workDate)) {
                 try {
                     rateLimiter.acquire(companyId);
-                    planRecord.GetAndSave(workDate);
+                    planRecord.GetAndSave(workDate, users);
                     checkpoint.markDone(companyId, getClass(), workDate);
                     processedDays++;
                     logger.info("[AttendancePlanRecordTask][{}] 已同步{}的排班数据",

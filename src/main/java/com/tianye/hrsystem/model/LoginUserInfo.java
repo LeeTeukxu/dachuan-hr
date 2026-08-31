@@ -25,6 +25,7 @@ public class LoginUserInfo implements Serializable {
     private String token;
     private String suffix;
     private List<String> rolemenu;
+    private List<tbmenu> menuTree;
 
     public String getAccount() {
         return account;
@@ -36,6 +37,18 @@ public class LoginUserInfo implements Serializable {
 
     private String roleId;
     private boolean canLogin;
+    /** 首次登录是否需强制改密（由后端根据 pwd_change_required 回填） */
+    private boolean mustChangePassword;
+    /** 小程序端使用：员工ID（hrm_employee.employee_id），Web端可为空 */
+    private Long employeeId;
+
+    public Long getEmployeeId() {
+        return employeeId;
+    }
+
+    public void setEmployeeId(Long employeeId) {
+        this.employeeId = employeeId;
+    }
 
     public List<Integer> getMyManager() {
         return myManager;
@@ -138,6 +151,14 @@ public class LoginUserInfo implements Serializable {
         this.canLogin = canLogin;
     }
 
+    public boolean getMustChangePassword() {
+        return mustChangePassword;
+    }
+
+    public void setMustChangePassword(boolean mustChangePassword) {
+        this.mustChangePassword = mustChangePassword;
+    }
+
     public String getToken() {
         return token;
     }
@@ -160,5 +181,24 @@ public class LoginUserInfo implements Serializable {
 
     public void setRolemenu(List<String> rolemenu) {
         this.rolemenu = rolemenu;
+    }
+
+    public List<tbmenu> getMenuTree() {
+        return menuTree;
+    }
+
+    public void setMenuTree(List<tbmenu> menuTree) {
+        this.menuTree = menuTree;
+    }
+
+    /** 会话种子：令牌签发时写入，凭证变更后自增；与 Redis 中当前种子不一致即强制下线 */
+    private Long sessionSeed;
+
+    public Long getSessionSeed() {
+        return sessionSeed;
+    }
+
+    public void setSessionSeed(Long sessionSeed) {
+        this.sessionSeed = sessionSeed;
     }
 }

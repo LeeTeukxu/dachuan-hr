@@ -17,7 +17,9 @@ import com.tianye.hrsystem.enums.IsEnum;
 import com.tianye.hrsystem.model.LoginUserInfo;
 import com.tianye.hrsystem.modules.additional.mapper.HrmAdditionalMapper;
 import com.tianye.hrsystem.modules.bonus.entity.HrmBonus;
+import com.tianye.hrsystem.modules.bonus.entity.HrmBonusTaxOnly;
 import com.tianye.hrsystem.modules.bonus.mapper.HrmBonusMapper;
+import com.tianye.hrsystem.modules.bonus.mapper.HrmBonusTaxOnlyMapper;
 import com.tianye.hrsystem.modules.deduction.entity.HrmPersonalIncomeTax;
 import com.tianye.hrsystem.modules.deduction.mapper.HrmPersonalIncomeTaxMapper;
 import com.tianye.hrsystem.modules.salary.dto.ComputeSalaryDto;
@@ -76,12 +78,17 @@ public class SalaryComputeServiceNew
     HrmBonusMapper hrmBonusMapper;
 
     @Autowired
+    HrmBonusTaxOnlyMapper hrmBonusTaxOnlyMapper;
+
+    @Autowired
     private IHrmEmployeeService employeeService;
 
     @Autowired
     HrmSalaryMonthOptionValueMapper hrmSalaryMonthOptionValueMapper;
 
     private static final DateTimeFormatter MONTH_FORMATTER = DateTimeFormatter.ofPattern("yyyy-MM");
+    private static final BigDecimal MONTHLY_TAX_FREE_DEDUCTION = new BigDecimal("5000");
+    private static final BigDecimal ANNUAL_REMARK_TAX_FREE_DEDUCTION = new BigDecimal("60000");
 
     public SalaryBaseTotal baseComputeSalary(HrmSalaryMonthEmpRecord salaryMonthEmpRecord)
     {
@@ -215,8 +222,8 @@ public class SalaryComputeServiceNew
             //(没有个税累计数据，查询员工上个月薪资数据)，本月个税累计对应上月个税累计code
             Optional<HrmSalaryMonthEmpRecord> lastSalaryMonthEmpRecordOpt = salaryMonthEmpRecordService.lambdaQuery().eq(HrmSalaryMonthEmpRecord::getYear, yearMonthFormatter[0])
                     .eq(HrmSalaryMonthEmpRecord::getMonth, yearMonthFormatter[1]).eq(HrmSalaryMonthEmpRecord::getEmployeeId, salaryMonthEmpRecord.getEmployeeId()).oneOpt();
-            //算出 上月个税累计信息 12月份开始重新累计
-            if (lastSalaryMonthEmpRecordOpt.isPresent() && salaryMonthEmpRecord.getMonth() != 12) {
+            // 算出上月个税累计信息；1月份重新开始本年度累计
+            if (lastSalaryMonthEmpRecordOpt.isPresent() && salaryMonthEmpRecord.getMonth() != 1) {
                 HrmSalaryMonthEmpRecord lastSalaryMonthEmpRecord = lastSalaryMonthEmpRecordOpt.get();
                 lastTaxOptionValueList1 = salaryMonthOptionValueService.lambdaQuery().eq(HrmSalaryMonthOptionValue::getSEmpRecordId, lastSalaryMonthEmpRecord.getSEmpRecordId())
                         .in(HrmSalaryMonthOptionValue::getCode, lastTaxOptionCodeMap.keySet()).list();
@@ -242,9 +249,9 @@ public class SalaryComputeServiceNew
             }
             lastTaxOptionValueMap = lastTaxOptionValueList1.stream().peek(option -> option.setCode(lastTaxOptionCodeMap.get(option.getCode())))
                     .collect(Collectors.toMap(HrmSalaryMonthOptionValue::getCode, HrmSalaryMonthOptionValue::getValue));
-            //12月份不需要从上个月开始累计，重新开始累计
-            if (salaryMonthEmpRecord.getMonth() == 12) {
-                // 12月重置所有累计个税数据
+            // 1月份不需要从上一年12月开始累计，重新开始本年度累计
+            if (salaryMonthEmpRecord.getMonth() == 1) {
+                // 1月重置所有累计个税数据
                 lastTaxOptionValueMap.put(250101, "0"); // 累计收入
                 lastTaxOptionValueMap.put(250102, "0"); // 累计减除费用
                 lastTaxOptionValueMap.put(250103, "0"); // 累计专项扣除
@@ -254,39 +261,24 @@ public class SalaryComputeServiceNew
                 cumulativeTaxOfLastMonthData.forEach(lastTaxOptionValueMap::put);
             }
         }
-        //当员工为残疾人时(状态为1),不计算工会费
-        BigDecimal labourunionPay = new BigDecimal(0);
-        if (isDisabled.equals("2")) {
-            // 计算工会费
-            labourunionPay = calculateUnionFee(hrmEmployeeVO, salaryMonthEmpRecord, salaryBaseTotal);
-        }
+        // 工会费不再按残疾状态豁免，具体收取条件由工会费规则统一判断。
+        BigDecimal labourunionPay = calculateUnionFee(hrmEmployeeVO, salaryMonthEmpRecord, salaryBaseTotal);
         // 计算当月奖金
         BigDecimal bonusSalary = getBonusSalary(hrmEmployeeVO.getEmployeeId(), salaryMonthEmpRecord);
+        BigDecimal taxOnlyBonusSalary = getTaxOnlyBonusSalary(hrmEmployeeVO.getEmployeeId(), salaryMonthEmpRecord);
+        HrmEmployee employee = employeeService.getById(hrmEmployeeVO.getEmployeeId());
+        boolean hasAnnualDeductionRemark = hasAnnualDeductionRemark(employee == null ? null : employee.getIsRemark());
         // 计算个税累计信息
         TaxAccumulation taxAccumulation = calculateTaxAccumulation(
-            salaryBaseTotal, lastTaxOptionValueMap, bonusSalary, salaryMonthEmpRecord, Info,
-            welfareTaxableIncome == null ? BigDecimal.ZERO : welfareTaxableIncome
+            salaryBaseTotal, lastTaxOptionValueMap, bonusSalary, taxOnlyBonusSalary, salaryMonthEmpRecord, Info,
+            welfareTaxableIncome == null ? BigDecimal.ZERO : welfareTaxableIncome,
+            hasAnnualDeductionRemark
         );
-        
-        // 当 hrm_employee.is_remark=2 且 上年度累计收入+本年度累计收入<6万 则不计算个税
-        boolean skipTaxForRemark = false;
-        HrmEmployee employee = employeeService.getById(hrmEmployeeVO.getEmployeeId());
-        if (employee != null && employee.getIsRemark() != null && employee.getIsRemark() == 2) {
-            BigDecimal lastYearAccumulated = incomeTaxMapper.getAccumulatedIncomeByEmployeeAndYear(
-                hrmEmployeeVO.getEmployeeId(), salaryMonthEmpRecord.getYear() - 1);
-            if (lastYearAccumulated == null) {
-                lastYearAccumulated = BigDecimal.ZERO;
-            }
-            BigDecimal totalAccumulated = lastYearAccumulated.add(taxAccumulation.cumulativeIncome);
-            if (totalAccumulated.compareTo(new BigDecimal("60000")) < 0) {
-                skipTaxForRemark = true;
-            }
-        }
-        
+
         // 计算当月个税
-        //当员工为残疾人时(状态为1),不计算个税；当 is_remark=2 且累计收入<6万时也不计算个税
+        // 当员工为残疾人时(状态为1)，不计算个税
         BigDecimal payTaxSalary = new BigDecimal(0);
-        if (isDisabled.equals("2") && !skipTaxForRemark) {
+        if (isDisabled.equals("2")) {
             payTaxSalary = calculateMonthTax(taxAccumulation, lastTaxOptionValueMap);
         }
         // 计算实发工资
@@ -295,7 +287,7 @@ public class SalaryComputeServiceNew
         );
         // 构建工资项数据
         Map<Integer, String> codeValueMap = buildSalaryCodeValueMap(
-            salaryBaseTotal, shouldTaxSalary, payTaxSalary, realPaySalary, 
+            salaryBaseTotal, shouldTaxSalary, payTaxSalary, realPaySalary,
             labourunionPay, bonusSalary, lastTaxOptionValueMap, taxAccumulation
         );
 
@@ -411,25 +403,25 @@ public class SalaryComputeServiceNew
      * 计算工会费
      * 规则：正式员工按应发工资的0.5%收取，实习生、离职员工、半路转正员工不收取
      */
-    private BigDecimal calculateUnionFee(HrmEmployeeVO hrmEmployeeVO, HrmSalaryMonthEmpRecord salaryMonthEmpRecord, 
+    private BigDecimal calculateUnionFee(HrmEmployeeVO hrmEmployeeVO, HrmSalaryMonthEmpRecord salaryMonthEmpRecord,
                                          SalaryBaseTotal salaryBaseTotal) {
         LoginUserInfo info = CompanyContext.get();
         // 成都、0005攀枝花公司不收工会费
         if (info.getCompanyId().equals("0002") || info.getCompanyId().equals("0005")) {
             return BigDecimal.ZERO;
         }
-        
+
         // 应发工资小于等于0不收工会费
         if (salaryBaseTotal.getShouldPaySalary().compareTo(BigDecimal.ZERO) <= 0) {
             return BigDecimal.ZERO;
         }
-        
+
         HrmEmployee employee = employeeService.getById(hrmEmployeeVO.getEmployeeId());
         // 实习生、离职员工不收工会费
         if (employee.getStatus() == 3 || employee.getEntryStatus() == 4) {
             return BigDecimal.ZERO;
         }
-        
+
         // 半路转正员工不收工会费（转正日期在月份中间）
         if (employee.getBecomeTime() != null) {
             YearMonth becomeMonth = YearMonth.from(employee.getBecomeTime());
@@ -439,7 +431,7 @@ public class SalaryComputeServiceNew
                 return BigDecimal.ZERO;
             }
         }
-        
+
         // 判断是否已转正
         boolean isOfficialEmployee = isOfficialEmployee(employee, salaryMonthEmpRecord);
         if (isOfficialEmployee) {
@@ -447,10 +439,10 @@ public class SalaryComputeServiceNew
                 .multiply(new BigDecimal("0.005"))
                 .setScale(2, RoundingMode.HALF_UP);
         }
-        
+
         return BigDecimal.ZERO;
     }
-    
+
     /**
      * 判断是否为正式员工
      */
@@ -459,13 +451,13 @@ public class SalaryComputeServiceNew
         if (employee.getBecomeTime() == null) {
             return employee.getStatus() != null && employee.getStatus() == 1;
         }
-        
+
         // 有转正日期，判断转正月份是否小于等于计薪月份
         YearMonth becomeMonth = YearMonth.from(employee.getBecomeTime());
         YearMonth salaryMonth = YearMonth.of(salaryMonthEmpRecord.getYear(), salaryMonthEmpRecord.getMonth());
         return becomeMonth.equals(salaryMonth) || becomeMonth.isBefore(salaryMonth);
     }
-    
+
     /**
      * 获取当月奖金
      */
@@ -478,38 +470,96 @@ public class SalaryComputeServiceNew
         }
         return BigDecimal.ZERO;
     }
-    
+
+    /**
+     * 获取当月只计税奖金
+     */
+    private BigDecimal getTaxOnlyBonusSalary(Long employeeId, HrmSalaryMonthEmpRecord salaryMonthEmpRecord) {
+        HrmBonusTaxOnly bonus = hrmBonusTaxOnlyMapper.getEmpTaxOnlyBonus(
+            employeeId, salaryMonthEmpRecord.getYear(), salaryMonthEmpRecord.getMonth()
+        );
+        if (bonus != null && bonus.getBonus() != null && bonus.getBonus().compareTo(BigDecimal.ZERO) > 0) {
+            return bonus.getBonus();
+        }
+        return BigDecimal.ZERO;
+    }
+
+    public static BigDecimal calculateCumulativeIncome(BigDecimal lastIncome,
+                                                       BigDecimal shouldPaySalary,
+                                                       BigDecimal bonusSalary,
+                                                       BigDecimal taxOnlyBonusSalary,
+                                                       BigDecimal welfareTaxableIncome,
+                                                       String companyId) {
+        BigDecimal cumulativeIncome = safeDecimal(lastIncome).add(safeDecimal(shouldPaySalary));
+        if (!"0002".equals(companyId)) {
+            cumulativeIncome = cumulativeIncome.add(safeDecimal(bonusSalary));
+        }
+        return cumulativeIncome
+                .add(safeDecimal(taxOnlyBonusSalary))
+                .add(safeDecimal(welfareTaxableIncome));
+    }
+
+    public static boolean hasAnnualDeductionRemark(Integer isRemark) {
+        return Integer.valueOf(2).equals(isRemark);
+    }
+
+    public static BigDecimal resolveCumulativeDeductions(Map<Integer, String> lastTaxOptionValueMap,
+                                                         int month,
+                                                         boolean hasAnnualDeductionRemark) {
+        int effectiveMonth = Math.max(1, Math.min(12, month));
+        if (effectiveMonth > 1 && lastTaxOptionValueMap != null) {
+            BigDecimal importedPriorDeduction = safeParseDecimal(lastTaxOptionValueMap.get(250102));
+            if (importedPriorDeduction.compareTo(BigDecimal.ZERO) > 0) {
+                return importedPriorDeduction
+                        .add(MONTHLY_TAX_FREE_DEDUCTION)
+                        .min(ANNUAL_REMARK_TAX_FREE_DEDUCTION);
+            }
+        }
+        if (hasAnnualDeductionRemark) {
+            return ANNUAL_REMARK_TAX_FREE_DEDUCTION;
+        }
+        return MONTHLY_TAX_FREE_DEDUCTION.multiply(new BigDecimal(effectiveMonth));
+    }
+
+    private static BigDecimal safeDecimal(BigDecimal value) {
+        return value == null ? BigDecimal.ZERO : value;
+    }
+
     /**
      * 计算个税累计信息
      */
     private TaxAccumulation calculateTaxAccumulation(SalaryBaseTotal salaryBaseTotal,
                                                      Map<Integer, String> lastTaxOptionValueMap,
                                                      BigDecimal bonusSalary,
+                                                     BigDecimal taxOnlyBonusSalary,
                                                      HrmSalaryMonthEmpRecord salaryMonthEmpRecord,
                                                      LoginUserInfo info,
-                                                     BigDecimal welfareTaxableIncome) {
+                                                     BigDecimal welfareTaxableIncome,
+                                                     boolean hasAnnualDeductionRemark) {
         TaxAccumulation accumulation = new TaxAccumulation();
         BigDecimal safeWelfareTaxableIncome = welfareTaxableIncome == null ? BigDecimal.ZERO : welfareTaxableIncome;
-        
-        // 累计收入额 = 上月累计 + 本月应发工资 + 奖金(成都公司除外)
+
+        // 累计收入额 = 上月累计 + 本月应发工资 + 奖金(成都公司除外) + 只计税奖金
         BigDecimal lastIncome = new BigDecimal(lastTaxOptionValueMap.get(250101));
-        accumulation.cumulativeIncome = lastIncome.add(salaryBaseTotal.getShouldPaySalary());
-        if (!info.getCompanyId().equals("0002")) {
-            accumulation.cumulativeIncome = accumulation.cumulativeIncome.add(bonusSalary);
-        }
-        accumulation.cumulativeIncome = accumulation.cumulativeIncome.add(safeWelfareTaxableIncome);
-        
-        // 累计减除费用 = 上月累计 + 5000
-        accumulation.cumulativeDeductions = new BigDecimal(lastTaxOptionValueMap.get(250102))
-            .add(new BigDecimal(5000));
-        
+        accumulation.cumulativeIncome = calculateCumulativeIncome(
+                lastIncome,
+                salaryBaseTotal.getShouldPaySalary(),
+                bonusSalary,
+                taxOnlyBonusSalary,
+                safeWelfareTaxableIncome,
+                info == null ? null : info.getCompanyId());
+
+        // 累计减除费用：无备注按月份累计，有税务局备注按全年60000
+        accumulation.cumulativeDeductions = resolveCumulativeDeductions(
+                lastTaxOptionValueMap, salaryMonthEmpRecord.getMonth(), hasAnnualDeductionRemark);
+
         // 累计专项扣除(社保公积金) = 上月累计 + 本月代扣代缴
         accumulation.cumulativeSpecialDeduction = new BigDecimal(lastTaxOptionValueMap.get(250103))
             .add(salaryBaseTotal.getProxyPaySalary());
-        
+
         // 累计专项附加扣除
         accumulation.cumulativeSpecialAdditionalDeduction = salaryBaseTotal.getTaxSpecialGrandTotal();
-        
+
         // 累计应纳税所得额
         accumulation.cumulativeTaxableIncome = TaxCalculator.calculateTaxableIncome(
             accumulation.cumulativeIncome,
@@ -519,10 +569,10 @@ public class SalaryComputeServiceNew
 
         // 累计应纳税额
         accumulation.cumulativeTaxPayable = TaxCalculator.calculateCumulativeTax(accumulation.cumulativeTaxableIncome);
-        
+
         return accumulation;
     }
-    
+
     /**
      * 计算当月个税
      */
@@ -533,17 +583,17 @@ public class SalaryComputeServiceNew
         // 个税不能为负数
         return monthTax.max(BigDecimal.ZERO);
     }
-    
+
     /**
      * 计算实发工资
      */
-    private BigDecimal calculateRealPaySalary(SalaryBaseTotal salaryBaseTotal, 
-                                              BigDecimal payTaxSalary, 
+    private BigDecimal calculateRealPaySalary(SalaryBaseTotal salaryBaseTotal,
+                                              BigDecimal payTaxSalary,
                                               BigDecimal labourunionPay) {
         if (salaryBaseTotal.getShouldPaySalary().compareTo(BigDecimal.ZERO) <= 0) {
             return BigDecimal.ZERO;
         }
-        
+
         // 实发工资 = 应发工资 - 代扣代缴 - 个税 + 税后补发 - 工会费 - 其他扣款 - 借款
         return salaryBaseTotal.getShouldPaySalary()
             .subtract(salaryBaseTotal.getProxyPaySalary())
@@ -553,7 +603,7 @@ public class SalaryComputeServiceNew
             .subtract(salaryBaseTotal.getOtherNoTaxDeductions())
             .subtract(salaryBaseTotal.getTotalloanMoney());
     }
-    
+
     /**
      * 构建工资项数据集合
      */
@@ -566,7 +616,7 @@ public class SalaryComputeServiceNew
                                                          Map<Integer, String> lastTaxOptionValueMap,
                                                          TaxAccumulation taxAccumulation) {
         Map<Integer, String> codeValueMap = new HashMap<>();
-        
+
         // 基础工资项
         codeValueMap.put(210101, salaryBaseTotal.getShouldPaySalary().toString()); // 应发工资
         codeValueMap.put(220101, shouldTaxSalary.toString()); // 应税工资
@@ -574,10 +624,10 @@ public class SalaryComputeServiceNew
         codeValueMap.put(240101, realPaySalary.toString()); // 实发工资
         codeValueMap.put(160102, labourunionPay.toString()); // 工会费
         codeValueMap.put(41001, bonusSalary.toString()); // 本月奖金
-        
+
         // 上月个税累计信息
         lastTaxOptionValueMap.forEach(codeValueMap::put);
-        
+
         // 本月个税累计信息
         codeValueMap.put(270101, taxAccumulation.cumulativeIncome.toString());
         codeValueMap.put(270102, taxAccumulation.cumulativeDeductions.toString());
@@ -585,7 +635,7 @@ public class SalaryComputeServiceNew
         codeValueMap.put(270104, taxAccumulation.cumulativeSpecialAdditionalDeduction.toString());
         codeValueMap.put(270105, taxAccumulation.cumulativeTaxableIncome.toString());
         codeValueMap.put(270106, taxAccumulation.cumulativeTaxPayable.toString());
-        
+
         // 代扣小计 = 公积金 + 社保 + 工会费 + 借款 + 其他 + 个税
         BigDecimal totalDeduction = salaryBaseTotal.getProxyPaySalary()
             .add(labourunionPay)
@@ -593,10 +643,10 @@ public class SalaryComputeServiceNew
             .add(salaryBaseTotal.getOtherNoTaxDeductions())
             .add(payTaxSalary);
         codeValueMap.put(1001, totalDeduction.toString());
-        
+
         return codeValueMap;
     }
-    
+
     /**
      * 保存个税累计数据
      */
@@ -609,10 +659,10 @@ public class SalaryComputeServiceNew
         params.put("employeeId", hrmEmployeeVO.getEmployeeId());
         params.put("year", salaryMonthEmpRecord.getYear());
         params.put("month", salaryMonthEmpRecord.getMonth());
-        
+
         // 删除旧数据
         incomeTaxMapper.deleteByParams(params);
-        
+
         // 保存新数据
         HrmPersonalIncomeTax incomeTax = new HrmPersonalIncomeTax();
         incomeTax.setEmployeeId(hrmEmployeeVO.getEmployeeId());
@@ -626,7 +676,7 @@ public class SalaryComputeServiceNew
         incomeTax.setYear(salaryMonthEmpRecord.getYear());
         incomeTaxMapper.insert(incomeTax);
     }
-    
+
     /**
      * 个税累计信息实体
      */

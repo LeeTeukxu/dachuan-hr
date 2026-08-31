@@ -50,19 +50,15 @@ public class AttendancePlanRecord {
     @Autowired
     TransactionTemplate transactionTemplate;
     Logger logger= LoggerFactory.getLogger(AttendancePlanRecord.class);
-    SimpleDateFormat shortFormat=new SimpleDateFormat("yyyy-MM-dd");
+    private static final ThreadLocal<SimpleDateFormat> SHORT_FORMAT =
+            ThreadLocal.withInitial(() -> new SimpleDateFormat("yyyy-MM-dd"));
     @Autowired
     DDTalkResposeLogger ddLogger;
     @Autowired
     MyDateUtils dateUtils;
-    List<tbattendanceuser> users = null;
-    
     // 使用共享的全局锁，确保所有考勤数据库写操作串行化
-    
-    public void setUsers(List<tbattendanceuser> users) {
-        this.users = users;
-    }
-    public void GetAndSave(Date WorkDate) throws ApiException {
+
+    public void GetAndSave(Date WorkDate, List<tbattendanceuser> users) throws ApiException {
         String password = token.Refresh();
         Long offset = 0L;
         DingTalkClient client = new DefaultDingTalkClient("https://oapi.dingtalk.com/topapi/attendance/listschedule");
@@ -105,6 +101,12 @@ public class AttendancePlanRecord {
                 }
                 if (vo.getHasMore()) {
                     offset += 200L;
+                    // 钉钉应用维度限流 20 QPS:分页间无节流时单公司自己就可能贴边,统一补 100ms
+                    try {
+                        Thread.sleep(100L);
+                    } catch (InterruptedException interruptedException) {
+                        Thread.currentThread().interrupt();
+                    }
                 } else break;
             } else break;
         }
@@ -114,7 +116,7 @@ public class AttendancePlanRecord {
      * 策略：API调用并行 + 数据库写操作串行化
      * 这样既利用了并发获取数据的优势，又避免了MySQL锁冲突
      */
-    public void GetAndSave(String  EmpIDS,Date WorkDate) throws ApiException {
+    public void GetAndSave(String  EmpIDS,Date WorkDate, List<tbattendanceuser> users) throws ApiException {
         String password = token.Refresh();
         Long offset = 0L;
         DingTalkClient client = new DefaultDingTalkClient("https://oapi.dingtalk.com/topapi/attendance/listschedule");
@@ -159,13 +161,21 @@ public class AttendancePlanRecord {
                 }
                 if (vo.getHasMore()) {
                     offset += 200L;
+                    // 钉钉应用维度限流 20 QPS:分页间无节流时单公司自己就可能贴边,统一补 100ms
+                    try {
+                        Thread.sleep(100L);
+                    } catch (InterruptedException interruptedException) {
+                        Thread.currentThread().interrupt();
+                    }
                 } else break;
             } else break;
         }
         
-        // 数据库写操作串行化（使用全局锁），避免InnoDB索引锁冲突
+        // 数据库写操作按公司串行化（公司级锁），避免InnoDB索引锁冲突；不同租户互不阻塞
         // 这部分执行很快（毫秒级），不影响整体性能
-        synchronized (com.tianye.hrsystem.common.AttendanceDbLock.LOCK) {
+        com.tianye.hrsystem.model.LoginUserInfo lockOwner = com.tianye.hrsystem.config.CompanyContext.get();
+        String lockCompanyId = lockOwner != null ? lockOwner.getCompanyId() : null;
+        synchronized (com.tianye.hrsystem.common.AttendanceDbLock.lockFor(lockCompanyId)) {
             transactionTemplate.execute(status -> {
                 // 先删除
                 planRep.deleteAllByEmpIdInAndWorkDate(EmpIDD, WorkDate);
@@ -183,7 +193,7 @@ public class AttendancePlanRecord {
      * 获取并保存考勤计划数据（不执行删除，由外部统一删除）
      * 用于多线程环境，避免重复删除导致锁冲突
      */
-    public void GetAndSaveWithoutDelete(String  EmpIDS,Date WorkDate) throws ApiException {
+    public void GetAndSaveWithoutDelete(String  EmpIDS,Date WorkDate, List<tbattendanceuser> users) throws ApiException {
         String password = token.Refresh();
         Long offset = 0L;
         DingTalkClient client = new DefaultDingTalkClient("https://oapi.dingtalk.com/topapi/attendance/listschedule");
@@ -240,6 +250,12 @@ public class AttendancePlanRecord {
                 }
                 if (vo.getHasMore()) {
                     offset += 200L;
+                    // 钉钉应用维度限流 20 QPS:分页间无节流时单公司自己就可能贴边,统一补 100ms
+                    try {
+                        Thread.sleep(100L);
+                    } catch (InterruptedException interruptedException) {
+                        Thread.currentThread().interrupt();
+                    }
                 } else break;
             } else break;
         }
@@ -266,7 +282,7 @@ public class AttendancePlanRecord {
 
     public void DeleteRepeatUser(Date Begin,Date End){
         List<String> RepeatUsers=deptMapper.getRepeatUser();
-        List<String> EmptyUsers=deptMapper.getEmptyPlanUser(shortFormat.format(Begin), shortFormat.format(End));
+        List<String> EmptyUsers=deptMapper.getEmptyPlanUser(SHORT_FORMAT.get().format(Begin), SHORT_FORMAT.get().format(End));
         
         // 收集要删除的用户ID
         List<Integer> userIdsToDelete = new ArrayList<>();

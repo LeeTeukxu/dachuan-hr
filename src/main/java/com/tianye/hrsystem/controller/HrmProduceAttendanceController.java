@@ -5,6 +5,8 @@ import com.tianye.hrsystem.base.PageEntity;
 import com.tianye.hrsystem.common.BasePage;
 import com.tianye.hrsystem.common.Result;
 import com.tianye.hrsystem.entity.bo.QueryMonthAttendanceBO;
+import com.tianye.hrsystem.entity.bo.SyncProduceAttendanceBO;
+import com.tianye.hrsystem.entity.bo.UpdateProduceAttendanceCellBO;
 import com.tianye.hrsystem.entity.vo.QueryMonthAttendanceVO;
 import com.tianye.hrsystem.service.IHrmProduceAttendanceService;
 import io.swagger.annotations.Api;
@@ -14,7 +16,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.multipart.MultipartFile;
 
-import java.util.Map;
+import javax.servlet.http.HttpServletResponse;
 
 @RestController
 @RequestMapping("/hrmProduceAttendance")
@@ -50,6 +52,36 @@ public class HrmProduceAttendanceController {
         }catch (Exception ax) {
             ax.printStackTrace();
             return com.tianye.hrsystem.common.Result.Error(ax);
+        }
+    }
+
+    @PostMapping("/downloadAdministrativeAttendance")
+    @ApiOperation("下载行政体系考勤")
+    public void downloadAdministrativeAttendance(@RequestBody QueryMonthAttendanceBO queryMonthAttendanceBO,
+                                                 HttpServletResponse response) throws Exception {
+        iHrmProduceAttendanceService.downloadAdministrativeAttendance(queryMonthAttendanceBO, response);
+    }
+
+    @PostMapping("/syncFromOvertimeNightStatistics")
+    @ApiOperation("从加班/夜班统计同步上传考勤")
+    public Result<Integer> syncFromOvertimeNightStatistics(@RequestBody SyncProduceAttendanceBO syncProduceAttendanceBO) {
+        try {
+            return Result.OK(iHrmProduceAttendanceService.syncFromOvertimeNightStatistics(syncProduceAttendanceBO));
+        } catch (Exception ax) {
+            ax.printStackTrace();
+            return Result.Error(ax);
+        }
+    }
+
+    @PostMapping("/updateCell")
+    @ApiOperation("保存上传考勤单元格")
+    public Result updateCell(@RequestBody UpdateProduceAttendanceCellBO updateProduceAttendanceCellBO) {
+        try {
+            iHrmProduceAttendanceService.updateProduceAttendanceCell(updateProduceAttendanceCellBO);
+            return Result.OK();
+        } catch (Exception ax) {
+            ax.printStackTrace();
+            return Result.Error(ax);
         }
     }
 }

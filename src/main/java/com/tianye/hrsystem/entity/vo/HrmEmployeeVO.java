@@ -139,6 +139,9 @@ public class HrmEmployeeVO implements Serializable {
     @ApiModelProperty("入职状态 1 在职 2 待入职 3 待离职 4 离职")
     private Integer empStatus;
 
+    @ApiModelProperty("是否连班 1、是 2、否")
+    private Integer isContinuousShift;
+
     @ApiModelProperty(value = "0 未删除 1 删除")
     private Integer isDel;
 

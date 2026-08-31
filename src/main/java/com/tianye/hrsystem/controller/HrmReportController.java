@@ -39,23 +39,24 @@ public class HrmReportController {
     List<HrmEmployee> Emps = new ArrayList<>();
     List<HrmAttendanceReportField> fields = new ArrayList<>();
 
-    SimpleDateFormat simple = new SimpleDateFormat("yyyy-MM-dd");
+    private static final ThreadLocal<SimpleDateFormat> SIMPLE =
+            ThreadLocal.withInitial(() -> new SimpleDateFormat("yyyy-MM-dd"));
 
     @RequestMapping("/getData")
     @ResponseBody
     public PageObject GetReportData(String Begin, String End) {
         PageObject res = new PageObject();
         try {
-            Date begin = simple.parse(Begin);
+            Date begin = SIMPLE.get().parse(Begin);
             Emps = empRep.findAll();
-            Date end = simple.parse(End);
+            Date end = SIMPLE.get().parse(End);
             List<Map<String, Object>> Res = new ArrayList<>();
             fields = fieldRep.findAll().stream().filter(f -> f.getFieldId() != null).collect(Collectors.toList());
             List<HrmAttendanceReportData> Datas = dataRep.findAllByWorkDateBetweenOrderByWorkDate(begin, end);
             for (Date D = begin; D.before(end); DateUtils.addDays(D, 1)) {
-                String DText=simple.format(D);
+                String DText=SIMPLE.get().format(D);
                 List<HrmAttendanceReportData> Ds =
-                        Datas.stream().filter(f ->  simple.format(f.getWorkDate()).equals(DText)).collect(Collectors.toList());
+                        Datas.stream().filter(f ->  SIMPLE.get().format(f.getWorkDate()).equals(DText)).collect(Collectors.toList());
                 List<Map<String, Object>> KK = getSingleDay(D, Ds);
                 Res.addAll(KK);
             }
@@ -78,7 +79,7 @@ public class HrmReportController {
                 Map<String, Object> Res = new HashMap<>();
                 HrmEmployee employee = findEmps.get();
                 Res.put("empName", employee.getEmployeeName());
-                Res.put("workDate", simple.format(workDate));
+                Res.put("workDate", SIMPLE.get().format(workDate));
                 List<HrmAttendanceReportData> DD =
                         Datas.stream().filter(f -> f.getEmpId().equals(empId)).collect(Collectors.toList());
                 for (int n = 0; n < fields.size(); n++) {

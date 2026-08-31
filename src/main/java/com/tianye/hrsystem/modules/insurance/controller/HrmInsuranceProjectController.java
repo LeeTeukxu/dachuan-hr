@@ -10,7 +10,6 @@ import org.springframework.web.bind.annotation.*;
 
 @RestController
 @RequestMapping("/hrmInsuranceProject")
-@CrossOrigin
 public class HrmInsuranceProjectController {
     @Autowired
     private HrmInsuranceSchemeService hrmInsuranceSchemeService;

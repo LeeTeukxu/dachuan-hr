@@ -55,51 +55,72 @@
     </select>
 
     <select id="queryPageList" resultType="java.util.Map">
-        SELECT a.employee_id,
-        a.employee_name,
+        <!-- SaaS 安全改造 P0-4：排序字段白名单校验 -->
+        <bind name="safeSortField" value="@com.tianye.hrsystem.util.SqlSafeUtil@safeIdentifierOrEmpty(data.sortField)" />
+
+        SELECT a.employee_id as employeeId,
+        a.employee_name as employeeName,
         a.mobile,
-        a.id_type,
-        a.id_number,
+        a.id_type as idType,
+        a.id_number as idNumber,
         a.sex,
-        date_format(a.date_of_birth, '%Y-%m-%d') as date_of_birth,
+        date_format(a.date_of_birth, '%Y-%m-%d') as dateOfBirth,
         a.birthday,
         a.email,
         a.age,
         a.country,
         a.nation,
-        a.native_place,
+        a.native_place as nativePlace,
         a.address,
-        a.highest_education,
-        date_format(a.entry_time, '%Y-%m-%d') as entry_time,
+        coalesce(a.highest_education,
+        (select ee.education from hrm_employee_education_experience ee where ee.employee_id = a.employee_id and ee.education is not null order by coalesce(ee.sort, 999999), ee.education_id limit 1)) as highestEducation,
+        date_format(a.entry_time, '%Y-%m-%d') as entryTime,
         a.probation,
-        a.entry_status,
-        date_format(a.become_time, '%Y-%m-%d') as become_time,
-        a.job_number,
-        d.dept_id,
-        d.name as dept_name,
-        c.employee_name as parent_name,
-        a.parent_id,
+        a.entry_status as entryStatus,
+        a.affiliation_system as affiliationSystem,
+        a.rest_type as restType,
+        a.is_continuous_shift as isContinuousShift,
+        a.ordinary_full_attendance_amount as ordinaryFullAttendanceAmount,
+        a.leader_full_attendance_amount as leaderFullAttendanceAmount,
+        date_format(a.become_time, '%Y-%m-%d') as becomeTime,
+        a.job_number as jobNumber,
+        d.dept_id as deptId,
+        d.name as deptName,
+        c.employee_name as parentName,
+        a.parent_id as parentId,
         a.post,
-        a.post_level,
-        a.work_address,
-        a.work_detail_address,
-        a.work_city,
-        a.employment_forms,
+        a.post_level as postLevel,
+        a.work_address as workAddress,
+        a.work_detail_address as workDetailAddress,
+        a.work_city as workCity,
+        a.employment_forms as employmentForms,
         a.status,
-        date_format(a.company_age_start_time, '%Y-%m-%d') as company_age_start_time,
-        a.company_age,
-        e.salary_card_num,
-        e.account_opening_city,
-        e.bank_name,
-        e.opening_bank,
-        g.accumulation_fund_num,
-        g.social_security_num,
-        g.scheme_id,
+        date_format(a.company_age_start_time, '%Y-%m-%d') as companyAgeStartTime,
+        a.company_age as companyAge,
+        e.salary_card_num as salaryCardNum,
+        e.account_opening_city as accountOpeningCity,
+        e.bank_name as bankName,
+        e.opening_bank as openingBank,
+        g.accumulation_fund_num as accumulationFundNum,
+        g.social_security_num as socialSecurityNum,
+        g.scheme_id as schemeId,
         h.value as channelName,
-        f.contract_type,
-        f.contract_num,
-        f.start_time,
-        f.end_time,
+        f.contract_type as contractType,
+        f.contract_num as contractNum,
+        (select count(1) from hrm_employee_contract fc where fc.employee_id = a.employee_id) as contractSignCount,
+        (select date_format(fc.start_time, '%Y-%m-%d') from hrm_employee_contract fc where fc.employee_id = a.employee_id and fc.start_time is not null order by fc.start_time asc, fc.contract_id asc limit 1) as firstContractStartTime,
+        (select date_format(fc.start_time, '%Y-%m-%d') from hrm_employee_contract fc where fc.employee_id = a.employee_id and fc.start_time is not null order by fc.start_time desc, fc.contract_id desc limit 1) as latestContractStartTime,
+        (select date_format(fc.end_time, '%Y-%m-%d') from hrm_employee_contract fc where fc.employee_id = a.employee_id and fc.start_time is not null order by fc.start_time desc, fc.contract_id desc limit 1) as latestContractEndTime,
+        (select fc.contract_type from hrm_employee_contract fc where fc.employee_id = a.employee_id and fc.start_time is not null order by fc.start_time desc, fc.contract_id desc limit 1) as latestContractType,
+        (select date_format(fc.end_time, '%Y-%m-%d') from hrm_employee_contract fc where fc.employee_id = a.employee_id and fc.start_time is not null order by fc.start_time desc, fc.contract_id desc limit 1) as lastContractEndTime,
+        (select fc.contract_type from hrm_employee_contract fc where fc.employee_id = a.employee_id and fc.start_time is not null order by fc.start_time desc, fc.contract_id desc limit 1) as lastContractType,
+        date_format(q.plan_quit_time, '%Y-%m-%d') as quitTime,
+        q.quit_reason as quitReason,
+        (select ec.contacts_name from hrm_employee_contacts ec where ec.employee_id = a.employee_id order by coalesce(ec.sort, 999999), ec.contacts_id limit 1) as emergencyContact,
+        (select ec.relation from hrm_employee_contacts ec where ec.employee_id = a.employee_id order by coalesce(ec.sort, 999999), ec.contacts_id limit 1) as emergencyRelation,
+        (select ec.contacts_phone from hrm_employee_contacts ec where ec.employee_id = a.employee_id order by coalesce(ec.sort, 999999), ec.contacts_id limit 1) as emergencyPhone,
+        f.start_time as startTime,
+        f.end_time as endTime,
         f.term
         FROM `hrm_employee` `a`
         left join `hrm_employee` c on a.parent_id = c.employee_id
@@ -111,6 +132,7 @@
         left join hrm_recruit_channel h on a.channel_id = h.channel_id
         left join `hrm_employee_contract` f on a.employee_id = f.employee_id and
         f.status = 1
+        left join `hrm_employee_quit_info` q on a.employee_id = q.employee_id and q.is_archived = 0
         where a.is_del = 0
         and 1=1
         <include refid="employeeListCondition"/>
@@ -128,7 +150,7 @@
         group by a.employee_id
         <choose>
             <when test="data.sortField != null and data.sortField != ''">
-                ORDER BY a.${data.sortField}
+                ORDER BY a.${safeSortField}
                 <if test="data.order == 1">
                     desc
                 </if>
@@ -155,6 +177,34 @@
             </otherwise>
         </choose>
     </select>
+    <select id="queryDepartmentDetailExportList" resultType="java.util.Map">
+        select a.employee_id as employeeId,
+               a.employee_name as employeeName,
+               a.sex,
+               a.age,
+               coalesce(a.highest_education,
+               (select ee.education from hrm_employee_education_experience ee where ee.employee_id = a.employee_id and ee.education is not null order by coalesce(ee.sort, 999999), ee.education_id limit 1)) as highestEducation,
+               (select ee.major from hrm_employee_education_experience ee where ee.employee_id = a.employee_id and ee.major is not null and ee.major != '' order by coalesce(ee.sort, 999999), ee.education_id limit 1) as major,
+               date_format(a.entry_time, '%Y-%m-%d') as entryTime,
+               date_format(a.company_age_start_time, '%Y-%m-%d') as companyAgeStartTime,
+               a.company_age as companyAge,
+               date_format(a.become_time, '%Y-%m-%d') as becomeTime,
+               a.probation,
+               a.status,
+               a.full_attendance as fullAttendance,
+               d.dept_id as deptId,
+               d.name as deptName,
+               a.post,
+               a.post_level as postLevel,
+               (select date_format(fc.end_time, '%Y-%m-%d') from hrm_employee_contract fc where fc.employee_id = a.employee_id order by coalesce(fc.sort, -1) desc, fc.start_time desc, fc.contract_id desc limit 1) as lastContractEndTime,
+               (select fc.contract_type from hrm_employee_contract fc where fc.employee_id = a.employee_id order by coalesce(fc.sort, -1) desc, fc.start_time desc, fc.contract_id desc limit 1) as lastContractType
+        from hrm_employee a
+        left join hrm_dept d on a.dept_id = d.dept_id
+        where a.is_del = 0
+        and a.entry_status in (1,3)
+        group by a.employee_id
+        order by d.code asc, d.dept_id asc, a.entry_time asc, a.employee_id asc
+    </select>
     <sql id="employeeListCondition">
         <if test="data.employeeName != null and data.employeeName != ''">
             and a.employee_name like concat('%',#{data.employeeName},'%')
@@ -165,9 +215,64 @@
         <if test="data.sex != null and data.sex != ''">
             and a.sex = #{data.sex}
         </if>
-        <if test="data.entryTime != null">
-            and date_format(a.entry_time,'%y-%m-%d') between date_format(#{data.entryTime[0]},'%y-%m-%d') and
-            date_format(#{data.entryTime[1]},'%y-%m-%d')
+        <if test="data.ageMin != null and data.ageMin != ''">
+            and coalesce(a.age,
+            if(a.date_of_birth is not null, timestampdiff(year, a.date_of_birth, curdate()), null),
+            if(a.id_type = 1 and a.id_number regexp '^[0-9]{17}[0-9Xx]$', timestampdiff(year, str_to_date(substring(a.id_number, 7, 8), '%Y%m%d'), curdate()), null))
+            &gt;= #{data.ageMin}
+        </if>
+        <if test="data.ageMax != null and data.ageMax != ''">
+            and coalesce(a.age,
+            if(a.date_of_birth is not null, timestampdiff(year, a.date_of_birth, curdate()), null),
+            if(a.id_type = 1 and a.id_number regexp '^[0-9]{17}[0-9Xx]$', timestampdiff(year, str_to_date(substring(a.id_number, 7, 8), '%Y%m%d'), curdate()), null))
+            &lt;= #{data.ageMax}
+        </if>
+        <if test="data.birthMonth != null and data.birthMonth != ''">
+            and (
+            month(a.date_of_birth) = #{data.birthMonth}
+            or (a.birthday is not null and a.birthday != '' and cast(substring(replace(a.birthday, '-', ''), 1, 2) as unsigned) = #{data.birthMonth})
+            or (a.id_type = 1 and a.id_number regexp '^[0-9]{17}[0-9Xx]$' and cast(substring(a.id_number, 11, 2) as unsigned) = #{data.birthMonth})
+            )
+        </if>
+        <if test="data.entryTime != null and data.entryTime.size == 2">
+            and a.entry_time between #{data.entryTime[0]} and #{data.entryTime[1]}
+        </if>
+        <if test="data.companyAgeMin != null and data.companyAgeMin != ''">
+            and greatest(timestampdiff(year, coalesce(a.company_age_start_time, a.entry_time), curdate()), 0) &gt;= #{data.companyAgeMin}
+        </if>
+        <if test="data.companyAgeMax != null and data.companyAgeMax != ''">
+            and greatest(timestampdiff(year, coalesce(a.company_age_start_time, a.entry_time), curdate()), 0) &lt;= #{data.companyAgeMax}
+        </if>
+        <if test="data.contractEndTime != null and data.contractEndTime.size == 2">
+            and f.end_time between #{data.contractEndTime[0]} and #{data.contractEndTime[1]}
+        </if>
+        <if test="data.quitTime != null and data.quitTime.size == 2">
+            and q.plan_quit_time between #{data.quitTime[0]} and #{data.quitTime[1]}
+        </if>
+        <if test="data.contractSignCount != null and data.contractSignCount != ''">
+            and (select count(1) from hrm_employee_contract fc where fc.employee_id = a.employee_id) = #{data.contractSignCount}
+        </if>
+        <!-- 用工性质的真实数据源是花名册动态字段(与导出口径一致),原 status/合同类型推算口径与数据不符导致筛选必空 -->
+        <if test="data.employmentNature != null and data.employmentNature != ''">
+            <bind name="employmentNatureText" value="data.employmentNature == 1 ? '劳动用工' : '劳务用工'"/>
+            and exists (
+            select 1 from hrm_employee_data ped
+            left join hrm_employee_field pef on ped.field_id = pef.field_id
+            where ped.employee_id = a.employee_id
+            and (pef.field_name = 'roster_d580da9d' or pef.name = '用工性质')
+            and (ped.field_value like concat('%', #{employmentNatureText}, '%')
+            or ped.field_value_desc like concat('%', #{employmentNatureText}, '%'))
+            )
+        </if>
+        <if test="data.politicalStatus != null and data.politicalStatus != ''">
+            and exists (
+            select 1 from hrm_employee_data ped
+            left join hrm_employee_field pef on ped.field_id = pef.field_id
+            where ped.employee_id = a.employee_id
+            and (pef.field_name = 'politicsStatus' or pef.name = '政治面貌' or pef.field_id = 1481534121625661441)
+            and (ped.field_value like concat('%',#{data.politicalStatus},'%')
+            or ped.field_value_desc like concat('%',#{data.politicalStatus},'%'))
+            )
         </if>
         <if test="data.jobNumber != null and data.jobNumber != ''">
             and a.job_number like concat('%',#{data.jobNumber},'%')
@@ -178,7 +283,7 @@
         <if test="data.post != null and data.post != ''">
             and a.post like concat('%',#{data.post},'%')
         </if>
-        <if test="data.becomeTime != null">
+        <if test="data.becomeTime != null and data.becomeTime.size == 2">
             and date_format(a.become_time,'%y-%m-%d') between date_format(#{data.becomeTime[0]},'%y-%m-%d') and
             date_format(#{data.becomeTime[1]},'%y-%m-%d')
         </if>
@@ -187,6 +292,10 @@
         </if>
         <if test="data.employmentForms != null and data.employmentForms != ''">
             and a.employment_forms = #{data.employmentForms}
+        </if>
+        <if test="data.education != null and data.education != ''">
+            and coalesce(a.highest_education,
+            (select ee.education from hrm_employee_education_experience ee where ee.employee_id = a.employee_id and ee.education is not null order by coalesce(ee.sort, 999999), ee.education_id limit 1)) = #{data.education}
         </if>
         <if test="data.status != null and data.status != '' and data.status != 11 and data.status != 12 and data.status != 13 and data.status != 14 and data.status != 15">
             and a.status = #{data.status} and a.entry_status in (1,3)
@@ -288,9 +397,49 @@
 
     <select id="queryHasOverTimePayEmpList" resultType="com.tianye.hrsystem.entity.vo.HrmEmployeeVO">
         select * FROM hrm_employee WHERE entry_status='1' and is_del='0'
-        and dept_id in (select dept_id FROM hrm_dept WHERE name in ('质量部','仓库','质检部','设备技术部','生产部','仓储部','研发部','工程部'))
-        and (post not in ('仓库副经理','质检经理','生产部经理','副经理') or post like '%经理%')
+        and affiliation_system = 2
+        and rest_type = 2
     </select>
 
 
+    <!-- 生日员工数量:阳历按出生日期 MMDD,农历/文本按 birthday 字段,group by 防止同一员工重复统计 -->
+    <select id="queryBirthdayEmp" resultType="java.lang.Long">
+        select a.employee_id
+        from hrm_employee a
+        where a.is_del = 0
+        and (
+        <foreach collection="solarList" item="solar" open="(" separator=" or " close=")">
+            date_format(a.date_of_birth, '%m%d') = #{solar}
+        </foreach>
+        <if test="lunarList != null and lunarList.size() > 0">
+            or
+            <foreach collection="lunarList" item="lunar" open="(" separator=" or " close=")">
+                a.birthday = #{lunar}
+            </foreach>
+        </if>
+        )
+        group by a.employee_id
+    </select>
+
+    <!-- 指定日期的生日员工明细 -->
+    <select id="queryBirthdayListByTime" resultType="com.tianye.hrsystem.entity.po.HrmEmployee">
+        select a.employee_id as employeeId,
+               a.employee_name as employeeName,
+               a.dept_id as deptId,
+               a.post,
+               a.status,
+               a.entry_time as entryTime,
+               a.become_time as becomeTime,
+               a.date_of_birth as dateOfBirth,
+               a.birthday,
+               a.id_type as idType,
+               a.id_number as idNumber,
+               a.highest_education as highestEducation,
+               a.is_del as isDel
+        from hrm_employee a
+        where a.is_del = 0
+        and a.employee_id in
+        <foreach collection="employeeIds" item="empId" open="(" separator="," close=")">#{empId}</foreach>
+        and (date_format(a.date_of_birth, '%m%d') = #{solarBirthday} or a.birthday = #{lunarBirthday})
+    </select>
 </mapper>

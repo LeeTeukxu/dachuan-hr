@@ -10,6 +10,7 @@ public class UserObject {
     private String  id;
     private String name;
     private String  groupId;
+    private Long employeeId;
 
     public String getName() {
         return name;
@@ -21,6 +22,14 @@ public class UserObject {
 
     public String getGroupId() {
         return groupId;
+    }
+
+    public Long getEmployeeId() {
+        return employeeId;
+    }
+
+    public void setEmployeeId(Long employeeId) {
+        this.employeeId = employeeId;
     }
 
     public void setGroupId(String groupId) {

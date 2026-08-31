@@ -15,6 +15,8 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.multipart.MultipartFile;
 
+import javax.servlet.http.HttpServletResponse;
+import java.io.IOException;
 import java.util.List;
 
 @RestController
@@ -33,10 +35,13 @@ public class HrmPersonalIncomeTaxController {
     @ApiOperation(value = "导入个税累计报表数据")
     public Result importPersonalIncomeTax(@ApiParam("累计个税") @RequestParam(name = "personalIncomeTaxFile", required = false) MultipartFile personalIncomeTaxFile,
                                           @RequestParam(name = "dates") String dates) {
+        if (isBlank(dates)) {
+            return Result.Error(new IllegalArgumentException("请先选择月份"));
+        }
         try {
             hrmPersonalIncomeTaxService.resolvePersonalIncomeTaxData(personalIncomeTaxFile, dates);
         }catch (Exception ax) {
-            ax.printStackTrace();
+            return Result.Error(ax);
         }
         return Result.OK();
     }
@@ -65,5 +70,15 @@ public class HrmPersonalIncomeTaxController {
     public Result deletePersonalIncomeTax(@PathVariable("personalIncomeTaxId") Long personalIncomeTaxId) {
         OperationResult operationResult = hrmPersonalIncomeTaxService.deletePersonalIncomeTax(personalIncomeTaxId);
         return Result.OK();
+    }
+
+    @GetMapping("/downloadPersonalIncomeTaxTemplate")
+    @ApiOperation("下载个税累计数据模版")
+    public void downloadPersonalIncomeTaxTemplate(HttpServletResponse response) throws IOException {
+        ExcelTemplateDownloadUtils.downloadClasspathTemplate("export/个税累计.xls", "个税累计.xls", response);
+    }
+
+    private static boolean isBlank(String value) {
+        return value == null || value.trim().isEmpty();
     }
 }

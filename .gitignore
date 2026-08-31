@@ -31,3 +31,8 @@ build/
 
 ### VS Code ###
 .vscode/
+
+# SaaS 改造：本地环境配置含真实密钥，禁止入库
+src/main/resources/application-local.properties
+logs/
+*.log

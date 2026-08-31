@@ -12,6 +12,5 @@ import java.util.List;
  * @CreateTime: 2024年06月15日 15:58
  **/
 public interface IAttendancePlanService {
-    void setUsers(List<tbattendanceuser> users);
-    void Sync(String EmpIDS, Date Begin, Date End) throws Exception;
+    void Sync(String EmpIDS, Date Begin, Date End, List<tbattendanceuser> users) throws Exception;
 }

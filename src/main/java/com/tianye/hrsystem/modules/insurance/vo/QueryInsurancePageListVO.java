@@ -57,6 +57,9 @@ public class QueryInsurancePageListVO {
     @ApiModelProperty(value = "公司社保金额")
     private BigDecimal corporateProvidentFundAmount;
 
+    @ApiModelProperty("是否累计基本工资金额设置中的长期护理/大额医疗保险金额：0 否 1 是")
+    private Integer includeSalaryBasicInsuranceAmount;
+
     private Integer isDel;
 
     @Override
@@ -77,6 +80,7 @@ public class QueryInsurancePageListVO {
                 ", personalProvidentFundAmount=" + personalProvidentFundAmount +
                 ", corporateInsuranceAmount=" + corporateInsuranceAmount +
                 ", corporateProvidentFundAmount=" + corporateProvidentFundAmount +
+                ", includeSalaryBasicInsuranceAmount=" + includeSalaryBasicInsuranceAmount +
                 ", isDel=" + isDel +
                 '}';
     }

@@ -1,6 +1,10 @@
 package com.tianye.hrsystem.config;
 
+import org.apache.commons.lang.StringUtils;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.core.Ordered;
+import org.springframework.core.annotation.Order;
+import org.springframework.stereotype.Component;
 
 import javax.servlet.*;
 import javax.servlet.http.HttpServletRequest;
@@ -10,8 +14,13 @@ import java.io.IOException;
 /**
  * 配置跨域过滤器
  */
+@Component
+@Order(Ordered.HIGHEST_PRECEDENCE)
 @Slf4j
 public class CrossDomainFilter implements Filter {
+    private static final String DEFAULT_ALLOWED_METHODS = "GET,POST,PUT,DELETE,PATCH,OPTIONS";
+    private static final String DEFAULT_ALLOWED_HEADERS = "Origin,Content-Type,Accept,token,Authorization,X-Requested-With";
+
     @Override
     public void init(FilterConfig filterConfig) throws ServletException {
     }
@@ -19,18 +28,25 @@ public class CrossDomainFilter implements Filter {
     @Override
     public void doFilter(ServletRequest req, ServletResponse res, FilterChain chain) throws IOException, ServletException {
         log.debug("======【过滤器】: 进入到跨域过滤器 ======");
+        HttpServletRequest httpRequest = (HttpServletRequest) req;
         HttpServletResponse httpResponse = (HttpServletResponse) res;
-        httpResponse.setHeader("Access-Control-Allow-Origin", "*");  // 允许跨域的地址为所有
-        //httpResponse.addHeader("Access-Control-Allow-Headers", "Content-Type,X-Requested-With,accept,Origin,Access-Control-Request-Method,Access-Control-Request-Headers,token");
-        httpResponse.addHeader("Access-Control-Allow-Headers", "*");
-        httpResponse.addHeader("Access-Control-Max-Age", "3600");  // 非简单请求，只要第一次通过OPTIONS检查 在1小时之内不会在调用OPTIONS进行检测
-        httpResponse.setHeader("Access-Control-Allow-Credentials", "true");  // 带有Cookie的跨域请求，此值必须设置为true。
-        //httpResponse.setHeader("Access-Control-Allow-Headers", "Content-Type,token");
-        if (((HttpServletRequest) req).getMethod().equals("OPTIONS")) {
+        String origin = httpRequest.getHeader("Origin");
+        if (StringUtils.isNotBlank(origin)) {
+            httpResponse.setHeader("Access-Control-Allow-Origin", origin);
+            httpResponse.setHeader("Vary", "Origin");
+            httpResponse.setHeader("Access-Control-Allow-Credentials", "true");
+            httpResponse.setHeader("Access-Control-Allow-Methods", DEFAULT_ALLOWED_METHODS);
+            String requestedHeaders = httpRequest.getHeader("Access-Control-Request-Headers");
+            httpResponse.setHeader("Access-Control-Allow-Headers",
+                    StringUtils.isNotBlank(requestedHeaders) ? requestedHeaders : DEFAULT_ALLOWED_HEADERS);
+            httpResponse.setHeader("Access-Control-Expose-Headers", "Content-Disposition, X-Archive-Password");
+            httpResponse.setHeader("Access-Control-Max-Age", "3600");
+        }
+        if ("OPTIONS".equalsIgnoreCase(httpRequest.getMethod()) && StringUtils.isNotBlank(origin)) {
             httpResponse.setStatus(200);
             return;
         }
-        chain.doFilter(req, httpResponse);
+        chain.doFilter(req, res);
     }
 
     @Override

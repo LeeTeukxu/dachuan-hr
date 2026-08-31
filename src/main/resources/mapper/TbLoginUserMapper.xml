@@ -5,15 +5,24 @@
     <select id="queryLoginUserList" resultType="com.tianye.hrsystem.modules.loginuser.vo.QueryLoginUserVO">
         select * from view_role_loginuser as a
         WHERE 1=1
-        <if test="data.depId != null">
-            AND a.depId=#{data.depId}
+        <if test="data.depid != null">
+            AND a.depId=#{data.depid}
         </if>
-        <if test="data.roleId != null">
-            AND a.roleId=#{data.roleId}
+        <if test="data.roleid != null">
+            AND a.roleId=#{data.roleid}
         </if>
     </select>
 
-    <insert id="Add" parameterType="com.tianye.hrsystem.modules.loginuser.bo.QueryLoginUserBO">
-        INSERT INTO hrsystem.tballuserlist (companyId,account,createTime) VALUES (#{companyId},#{account},#{createtime})
+    <select id="findSystemCompanyIdsByAccount" resultType="java.lang.String">
+        SELECT DISTINCT CompanyID FROM ${systemDatabase}.tbAllUserList WHERE account=#{account}
+    </select>
+
+    <insert id="saveSystemLoginAccount">
+        INSERT INTO ${systemDatabase}.tbAllUserList (CompanyID,account,createTime) VALUES (#{data.companyId},#{data.account},#{data.createtime})
+        ON DUPLICATE KEY UPDATE CompanyID=VALUES(CompanyID)
     </insert>
+
+    <delete id="deleteSystemLoginAccount">
+        DELETE FROM ${systemDatabase}.tbAllUserList WHERE CompanyID=#{companyId} AND account=#{account}
+    </delete>
 </mapper>

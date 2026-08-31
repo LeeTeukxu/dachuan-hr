@@ -1,0 +1,537 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.tianye.hrsystem.modules.dashboard.mapper.DashboardAggMapper">
+
+    <sql id="activeCond">
+        e.is_del = 0 AND e.entry_status IN (1, 3) AND e.entry_time &lt;= #{end}
+    </sql>
+
+    <sql id="ageCond">
+        (CASE
+            WHEN TIMESTAMPDIFF(YEAR, e.date_of_birth, #{end}) &lt; 25 THEN '&lt;25'
+            WHEN TIMESTAMPDIFF(YEAR, e.date_of_birth, #{end}) BETWEEN 25 AND 35 THEN '26-35'
+            WHEN TIMESTAMPDIFF(YEAR, e.date_of_birth, #{end}) BETWEEN 36 AND 45 THEN '36-45'
+            ELSE '46+' END = #{ageBand})
+    </sql>
+
+    <sql id="tenureCond">
+        (CASE
+            WHEN TIMESTAMPDIFF(YEAR, e.entry_time, #{end}) &lt; 1 THEN '&lt;1年'
+            WHEN TIMESTAMPDIFF(YEAR, e.entry_time, #{end}) &lt; 3 THEN '1-3年'
+            WHEN TIMESTAMPDIFF(YEAR, e.entry_time, #{end}) &lt; 5 THEN '3-5年'
+            WHEN TIMESTAMPDIFF(YEAR, e.entry_time, #{end}) &lt; 10 THEN '5-10年'
+            ELSE '10年以上' END = #{tenureBand})
+    </sql>
+
+    <sql id="eduExpr">
+        CAST(COALESCE(e.highest_education,
+            (SELECT CASE
+                WHEN ee.education IN ('1','小学') THEN 1
+                WHEN ee.education IN ('2','初中') THEN 2
+                WHEN ee.education IN ('3','中专') THEN 3
+                WHEN ee.education IN ('4','中职') THEN 4
+                WHEN ee.education IN ('5','中技') THEN 5
+                WHEN ee.education IN ('6','高中') THEN 6
+                WHEN ee.education IN ('7','大专') THEN 7
+                WHEN ee.education IN ('8','本科') THEN 8
+                WHEN ee.education IN ('9','硕士') THEN 9
+                WHEN ee.education IN ('10','博士') THEN 10
+                WHEN ee.education IN ('11','博士后') THEN 11
+                WHEN ee.education IS NOT NULL THEN 12
+                ELSE NULL END
+             FROM hrm_employee_education_experience ee
+             WHERE ee.employee_id = e.employee_id AND ee.education IS NOT NULL
+             ORDER BY COALESCE(ee.sort, 999999), ee.education_id LIMIT 1))
+        AS UNSIGNED)
+    </sql>
+
+    <select id="personnelOverview" resultType="java.util.Map">
+        SELECT
+            (SELECT COUNT(*) FROM hrm_employee e WHERE <include refid="activeCond"/>
+              <if test="deptId != null">AND e.dept_id = #{deptId}</if>) AS activeCount,
+            (SELECT COUNT(*) FROM hrm_employee e
+             WHERE e.is_del = 0 AND e.entry_time BETWEEN #{start} AND #{end}
+              <if test="deptId != null">AND e.dept_id = #{deptId}</if>) AS hiredCount,
+            (SELECT COUNT(*) FROM hrm_employee_quit_info q
+              JOIN hrm_employee e ON e.employee_id = q.employee_id AND e.is_del = 0
+              <if test="deptId != null">AND e.dept_id = #{deptId}</if>
+             WHERE COALESCE(q.salary_settlement_time, q.plan_quit_time, q.apply_quit_time) BETWEEN #{start} AND #{end}) AS quitCount,
+            (SELECT COUNT(*) FROM hrm_employee e WHERE e.is_del = 0 AND e.entry_status IN (1, 3) AND e.entry_time &lt;= #{prevEnd}
+              <if test="deptId != null">AND e.dept_id = #{deptId}</if>) AS prevActiveCount,
+            (SELECT ROUND(AVG(TIMESTAMPDIFF(YEAR, e.date_of_birth, #{end})), 1) FROM hrm_employee e
+              WHERE <include refid="activeCond"/> AND e.date_of_birth IS NOT NULL
+              <if test="deptId != null">AND e.dept_id = #{deptId}</if>) AS avgAge,
+            (SELECT ROUND(AVG(TIMESTAMPDIFF(YEAR, e.entry_time, #{end})), 1) FROM hrm_employee e
+              WHERE <include refid="activeCond"/>
+              <if test="deptId != null">AND e.dept_id = #{deptId}</if>) AS avgTenure
+        FROM DUAL
+    </select>
+
+    <select id="structure" resultType="java.util.Map">
+        SELECT
+        <choose>
+            <when test="dim == 'sex'">
+                CASE e.sex WHEN 1 THEN '男' WHEN 2 THEN '女' ELSE '未知' END AS name,
+            </when>
+            <when test="dim == 'edu'">
+                <include refid="eduExpr"/> AS name,
+            </when>
+            <when test="dim == 'age'">
+                CASE
+                    WHEN TIMESTAMPDIFF(YEAR, e.date_of_birth, #{end}) &lt; 25 THEN '&lt;25'
+                    WHEN TIMESTAMPDIFF(YEAR, e.date_of_birth, #{end}) BETWEEN 25 AND 35 THEN '26-35'
+                    WHEN TIMESTAMPDIFF(YEAR, e.date_of_birth, #{end}) BETWEEN 36 AND 45 THEN '36-45'
+                    ELSE '46+'
+                END AS name,
+            </when>
+            <when test="dim == 'tenure'">
+                CASE
+                    WHEN TIMESTAMPDIFF(YEAR, e.entry_time, #{end}) &lt; 1 THEN '&lt;1年'
+                    WHEN TIMESTAMPDIFF(YEAR, e.entry_time, #{end}) &lt; 3 THEN '1-3年'
+                    WHEN TIMESTAMPDIFF(YEAR, e.entry_time, #{end}) &lt; 5 THEN '3-5年'
+                    WHEN TIMESTAMPDIFF(YEAR, e.entry_time, #{end}) &lt; 10 THEN '5-10年'
+                    ELSE '10年以上'
+                END AS name,
+            </when>
+            <when test="dim == 'employment'">
+                CASE e.employment_forms WHEN 1 THEN '正式' WHEN 2 THEN '非正式' ELSE '其他' END AS name,
+            </when>
+            <otherwise>
+                IFNULL(d.name, '未分配部门') AS name,
+            </otherwise>
+        </choose>
+        COUNT(*) AS value
+        FROM hrm_employee e
+        LEFT JOIN hrm_dept d ON d.dept_id = e.dept_id
+        WHERE <include refid="activeCond"/>
+        <if test="deptId != null">AND e.dept_id = #{deptId}</if>
+        <choose>
+            <when test="dim == 'sex'">GROUP BY e.sex</when>
+            <when test="dim == 'edu'">GROUP BY name</when>
+            <when test="dim == 'age'">GROUP BY name</when>
+            <when test="dim == 'tenure'">GROUP BY name</when>
+            <when test="dim == 'employment'">GROUP BY e.employment_forms</when>
+            <otherwise>GROUP BY d.dept_id</otherwise>
+        </choose>
+    </select>
+
+    <select id="deptStructure" resultType="java.util.Map">
+        SELECT name, value FROM (
+            SELECT d.name AS name,
+                   COUNT(CASE WHEN e.is_del = 0
+                        <if test="entryStatus != null">AND e.entry_status = #{entryStatus}</if>
+                        <if test="entryStatus == null">AND e.entry_status IN (1, 3)</if>
+                        AND e.entry_time &lt;= #{end}
+                        <if test="sex != null">AND e.sex = #{sex}</if>
+                        <if test="edu != null">AND e.highest_education = #{edu}</if>
+                        <if test="ageBand != null">AND <include refid="ageCond"/></if>
+                        <if test="tenureBand != null">AND <include refid="tenureCond"/></if>
+                   THEN 1 END) AS value
+            FROM hrm_dept d
+            LEFT JOIN hrm_employee e ON e.dept_id = d.dept_id
+            <if test="deptId != null">WHERE d.dept_id = #{deptId}</if>
+            GROUP BY d.dept_id, d.name
+            <if test="deptId == null">
+            UNION ALL
+            SELECT '未分配部门' AS name, COUNT(*) AS value
+            FROM hrm_employee e
+            WHERE e.is_del = 0
+              <if test="entryStatus != null">AND e.entry_status = #{entryStatus}</if>
+              <if test="entryStatus == null">AND e.entry_status IN (1, 3)</if>
+              AND e.entry_time &lt;= #{end}
+              <if test="sex != null">AND e.sex = #{sex}</if>
+              <if test="edu != null">AND e.highest_education = #{edu}</if>
+              <if test="ageBand != null">AND <include refid="ageCond"/></if>
+              <if test="tenureBand != null">AND <include refid="tenureCond"/></if>
+              AND (e.dept_id IS NULL OR NOT EXISTS (SELECT 1 FROM hrm_dept d WHERE d.dept_id = e.dept_id))
+            </if>
+        ) t
+        ORDER BY value DESC, name
+    </select>
+
+    <select id="hireTrend" resultType="java.util.Map">
+        SELECT DATE_FORMAT(e.entry_time, '${granule}') AS period, COUNT(*) AS cnt
+        FROM hrm_employee e
+        WHERE e.is_del = 0 AND e.entry_time BETWEEN #{start} AND #{end}
+        <if test="deptId != null">AND e.dept_id = #{deptId}</if>
+        GROUP BY period
+        ORDER BY period
+    </select>
+
+    <select id="quitTrend" resultType="java.util.Map">
+        SELECT DATE_FORMAT(COALESCE(q.salary_settlement_time, q.plan_quit_time, q.apply_quit_time), '${granule}') AS period,
+               COUNT(*) AS cnt
+        FROM hrm_employee_quit_info q
+        JOIN hrm_employee e ON e.employee_id = q.employee_id AND e.is_del = 0
+        <if test="deptId != null">AND e.dept_id = #{deptId}</if>
+        WHERE COALESCE(q.salary_settlement_time, q.plan_quit_time, q.apply_quit_time) BETWEEN #{start} AND #{end}
+        <if test="quitType != null">AND q.quit_type = #{quitType}</if>
+        GROUP BY period
+        ORDER BY period
+    </select>
+
+    <select id="keyQuitTrendByDept" resultType="java.util.Map">
+        SELECT DATE_FORMAT(COALESCE(q.salary_settlement_time, q.plan_quit_time, q.apply_quit_time), '${granule}') AS period,
+               IFNULL(d.name, '未分配部门') AS deptName,
+               COUNT(*) AS cnt
+        FROM hrm_employee_quit_info q
+        JOIN hrm_employee e ON e.employee_id = q.employee_id AND e.is_del = 0
+        LEFT JOIN hrm_dept d ON d.dept_id = e.dept_id
+        JOIN hrm_key_post_config k ON k.post_name = e.post
+        WHERE COALESCE(q.salary_settlement_time, q.plan_quit_time, q.apply_quit_time) BETWEEN #{start} AND #{end}
+        <if test="deptId != null">AND e.dept_id = #{deptId}</if>
+        <if test="quitType != null">AND q.quit_type = #{quitType}</if>
+        GROUP BY period, d.dept_id
+        ORDER BY period
+    </select>
+
+    <select id="keyQuitCount" resultType="java.lang.Long">
+        SELECT COUNT(*)
+        FROM hrm_employee_quit_info q
+        JOIN hrm_employee e ON e.employee_id = q.employee_id AND e.is_del = 0
+        LEFT JOIN hrm_dept d ON d.dept_id = e.dept_id
+        JOIN hrm_key_post_config k ON k.post_name = e.post
+        WHERE COALESCE(q.salary_settlement_time, q.plan_quit_time, q.apply_quit_time) BETWEEN #{start} AND #{end}
+        <if test="deptId != null">AND e.dept_id = #{deptId}</if>
+        <if test="quitType != null">AND q.quit_type = #{quitType}</if>
+    </select>
+
+    <select id="crossMatrix" resultType="java.util.Map">
+        SELECT
+        <include refid="crossDimExpr"><property name="p" value="xDim"/></include>
+        AS kx,
+        <include refid="crossDimExpr"><property name="p" value="sDim"/></include>
+        AS ks,
+        COUNT(*) AS cnt
+        FROM hrm_employee e
+        LEFT JOIN hrm_dept d ON d.dept_id = e.dept_id
+        WHERE <include refid="activeCond"/>
+        <if test="deptId != null">AND e.dept_id = #{deptId}</if>
+        GROUP BY kx, ks
+    </select>
+
+    <sql id="crossDimExpr">
+        <choose>
+            <when test="${p} == 'sex'">
+                CASE e.sex WHEN 1 THEN '男' WHEN 2 THEN '女' ELSE '未知' END
+            </when>
+            <when test="${p} == 'edu'">
+                <include refid="eduExpr"/>
+            </when>
+            <when test="${p} == 'age'">
+                CASE
+                    WHEN TIMESTAMPDIFF(YEAR, e.date_of_birth, #{end}) &lt; 25 THEN '&lt;25'
+                    WHEN TIMESTAMPDIFF(YEAR, e.date_of_birth, #{end}) BETWEEN 25 AND 35 THEN '26-35'
+                    WHEN TIMESTAMPDIFF(YEAR, e.date_of_birth, #{end}) BETWEEN 36 AND 45 THEN '36-45'
+                    ELSE '46+'
+                END
+            </when>
+            <when test="${p} == 'tenure'">
+                CASE
+                    WHEN TIMESTAMPDIFF(YEAR, e.entry_time, #{end}) &lt; 1 THEN '&lt;1年'
+                    WHEN TIMESTAMPDIFF(YEAR, e.entry_time, #{end}) &lt; 3 THEN '1-3年'
+                    WHEN TIMESTAMPDIFF(YEAR, e.entry_time, #{end}) &lt; 5 THEN '3-5年'
+                    WHEN TIMESTAMPDIFF(YEAR, e.entry_time, #{end}) &lt; 10 THEN '5-10年'
+                    ELSE '10年以上'
+                END
+            </when>
+            <otherwise>
+                IFNULL(d.name, '未分配部门')
+            </otherwise>
+        </choose>
+    </sql>
+
+    <select id="flowDeptCompare" resultType="java.util.Map">
+        SELECT
+            d.dept_id AS deptId,
+            IFNULL(d.name, '未分配部门') AS deptName,
+            (SELECT COUNT(*) FROM hrm_employee he
+              WHERE he.is_del = 0 AND he.dept_id = d.dept_id
+                AND he.entry_time BETWEEN #{start} AND #{end}) AS hired,
+            (SELECT COUNT(*) FROM hrm_employee_quit_info q
+              JOIN hrm_employee qe ON qe.employee_id = q.employee_id AND qe.is_del = 0 AND qe.dept_id = d.dept_id
+              WHERE COALESCE(q.salary_settlement_time, q.plan_quit_time, q.apply_quit_time) BETWEEN #{start} AND #{end}
+              <if test="quitType != null">AND q.quit_type = #{quitType}</if>) AS quitCnt
+        FROM hrm_dept d
+        WHERE EXISTS (SELECT 1 FROM hrm_employee ae WHERE ae.dept_id = d.dept_id AND ae.is_del = 0)
+        ORDER BY deptName
+    </select>
+
+    <select id="quitDist" resultType="java.util.Map">
+        SELECT
+        <choose>
+            <when test="dim == 'type'">
+                CASE q.quit_type WHEN 1 THEN '主动离职' WHEN 2 THEN '被动离职' ELSE '退休' END AS name,
+            </when>
+            <when test="dim == 'reason'">
+                q.quit_reason AS name,
+            </when>
+            <when test="dim == 'tenure'">
+                CASE
+                    WHEN TIMESTAMPDIFF(YEAR, e.entry_time, COALESCE(q.salary_settlement_time, q.plan_quit_time, q.apply_quit_time)) &lt; 1 THEN '&lt;1年'
+                    WHEN TIMESTAMPDIFF(YEAR, e.entry_time, COALESCE(q.salary_settlement_time, q.plan_quit_time, q.apply_quit_time)) &lt; 3 THEN '1-3年'
+                    WHEN TIMESTAMPDIFF(YEAR, e.entry_time, COALESCE(q.salary_settlement_time, q.plan_quit_time, q.apply_quit_time)) &lt; 5 THEN '3-5年'
+                    WHEN TIMESTAMPDIFF(YEAR, e.entry_time, COALESCE(q.salary_settlement_time, q.plan_quit_time, q.apply_quit_time)) &lt; 10 THEN '5-10年'
+                    ELSE '10年以上'
+                END AS name,
+            </when>
+            <when test="dim == 'age'">
+                CASE
+                    WHEN TIMESTAMPDIFF(YEAR, e.date_of_birth, COALESCE(q.salary_settlement_time, q.plan_quit_time, q.apply_quit_time)) &lt; 25 THEN '&lt;25'
+                    WHEN TIMESTAMPDIFF(YEAR, e.date_of_birth, COALESCE(q.salary_settlement_time, q.plan_quit_time, q.apply_quit_time)) BETWEEN 25 AND 35 THEN '26-35'
+                    WHEN TIMESTAMPDIFF(YEAR, e.date_of_birth, COALESCE(q.salary_settlement_time, q.plan_quit_time, q.apply_quit_time)) BETWEEN 36 AND 45 THEN '36-45'
+                    ELSE '46+'
+                END AS name,
+            </when>
+            <when test="dim == 'edu'">
+                <include refid="eduExpr"/> AS name,
+            </when>
+            <otherwise>
+                IFNULL(d.name, '未分配部门') AS name,
+            </otherwise>
+        </choose>
+        COUNT(*) AS value
+        FROM hrm_employee_quit_info q
+        JOIN hrm_employee e ON e.employee_id = q.employee_id AND e.is_del = 0
+        LEFT JOIN hrm_dept d ON d.dept_id = e.dept_id
+        WHERE COALESCE(q.salary_settlement_time, q.plan_quit_time, q.apply_quit_time) BETWEEN #{start} AND #{end}
+        <if test="deptId != null">AND e.dept_id = #{deptId}</if>
+        <if test="quitType != null">AND q.quit_type = #{quitType}</if>
+        <choose>
+            <when test="dim == 'type'">GROUP BY q.quit_type</when>
+            <when test="dim == 'reason'">GROUP BY q.quit_reason</when>
+            <when test="dim == 'tenure'">GROUP BY name</when>
+            <when test="dim == 'age'">GROUP BY name</when>
+            <when test="dim == 'edu'">GROUP BY name</when>
+            <otherwise>GROUP BY d.dept_id</otherwise>
+        </choose>
+        ORDER BY value DESC
+    </select>
+
+    <select id="personnelPageList" resultType="java.util.Map">
+        SELECT * FROM (
+            SELECT
+                e.employee_id AS employeeId,
+                e.employee_name AS employeeName,
+                CASE e.sex WHEN 1 THEN '男' WHEN 2 THEN '女' ELSE '未知' END AS sex,
+                CASE WHEN e.date_of_birth IS NOT NULL
+                     THEN TIMESTAMPDIFF(YEAR, e.date_of_birth, NOW())
+                     ELSE e.age END AS age,
+                <include refid="eduExpr"/> AS highestEducation,
+                IFNULL(d.name, '') AS deptName,
+                IFNULL(e.post, '') AS post,
+                DATE_FORMAT(e.entry_time, '%Y-%m-%d') AS entryTime,
+                TIMESTAMPDIFF(YEAR, e.entry_time, NOW()) AS tenureYears,
+                CASE e.entry_status WHEN 1 THEN '在职' WHEN 2 THEN '待入职' WHEN 3 THEN '待离职' ELSE '离职' END AS entryStatus,
+                CASE e.employment_forms WHEN 1 THEN '正式' WHEN 2 THEN '非正式' ELSE '其他' END AS employmentForms
+            FROM hrm_employee e
+            LEFT JOIN hrm_dept d ON d.dept_id = e.dept_id
+            WHERE e.is_del = 0
+            <if test="entryStatus != null">AND e.entry_status = #{entryStatus}</if>
+            <if test="deptId != null">AND e.dept_id = #{deptId}</if>
+            <if test="sex != null">AND e.sex = #{sex}</if>
+            <if test="edu != null">AND (<include refid="eduExpr"/>) = #{edu}</if>
+        ) t
+        <where>
+            <if test='ageBand == "&lt;25"'>AND t.age &lt; 25</if>
+            <if test="ageBand == '26-35'">AND t.age BETWEEN 25 AND 35</if>
+            <if test="ageBand == '36-45'">AND t.age BETWEEN 36 AND 45</if>
+            <if test="ageBand == '46+'">AND t.age &gt;= 46</if>
+            <if test='tenureBand == "&lt;1年"'>AND t.tenureYears &lt; 1</if>
+            <if test="tenureBand == '1-3年'">AND t.tenureYears BETWEEN 1 AND 2</if>
+            <if test="tenureBand == '3-5年'">AND t.tenureYears BETWEEN 3 AND 4</if>
+            <if test="tenureBand == '5-10年'">AND t.tenureYears BETWEEN 5 AND 9</if>
+            <if test="tenureBand == '10年以上'">AND t.tenureYears &gt;= 10</if>
+        </where>
+        ORDER BY t.entryTime DESC
+    </select>
+
+    <select id="flowPageList" resultType="java.util.Map">
+        SELECT * FROM (
+            SELECT
+                'in' AS recType,
+                e.employee_id AS employeeId,
+                e.employee_name AS employeeName,
+                CASE e.sex WHEN 1 THEN '男' WHEN 2 THEN '女' ELSE '未知' END AS sex,
+                IFNULL(d.name, '未分配部门') AS deptName,
+                IFNULL(e.post, '') AS post,
+                CASE WHEN e.date_of_birth IS NOT NULL
+                     THEN TIMESTAMPDIFF(YEAR, e.date_of_birth, e.entry_time) END AS age,
+                <include refid="eduExpr"/> AS highestEducation,
+                NULL AS tenureYears,
+                DATE_FORMAT(e.entry_time, '%Y-%m-%d') AS happenDate,
+                CAST(NULL AS CHAR) AS quitTypeName,
+                CAST(NULL AS CHAR) AS quitReasonName
+            FROM hrm_employee e
+            LEFT JOIN hrm_dept d ON d.dept_id = e.dept_id
+            WHERE e.is_del = 0 AND e.entry_time BETWEEN #{start} AND #{end}
+            <if test="deptId != null">AND e.dept_id = #{deptId}</if>
+            UNION ALL
+            SELECT
+                'quit' AS recType,
+                e.employee_id AS employeeId,
+                e.employee_name AS employeeName,
+                CASE e.sex WHEN 1 THEN '男' WHEN 2 THEN '女' ELSE '未知' END AS sex,
+                IFNULL(d.name, '未分配部门') AS deptName,
+                IFNULL(e.post, '') AS post,
+                CASE WHEN e.date_of_birth IS NOT NULL THEN
+                     TIMESTAMPDIFF(YEAR, e.date_of_birth, COALESCE(q.salary_settlement_time, q.plan_quit_time, q.apply_quit_time)) END AS age,
+                <include refid="eduExpr"/> AS highestEducation,
+                TIMESTAMPDIFF(YEAR, e.entry_time, COALESCE(q.salary_settlement_time, q.plan_quit_time, q.apply_quit_time)) AS tenureYears,
+                DATE_FORMAT(COALESCE(q.salary_settlement_time, q.plan_quit_time, q.apply_quit_time), '%Y-%m-%d') AS happenDate,
+                CASE q.quit_type WHEN 1 THEN '主动离职' WHEN 2 THEN '被动离职' ELSE '退休' END AS quitTypeName,
+                CAST(q.quit_reason AS CHAR) AS quitReasonName
+            FROM hrm_employee_quit_info q
+            JOIN hrm_employee e ON e.employee_id = q.employee_id AND e.is_del = 0
+            LEFT JOIN hrm_dept d ON d.dept_id = e.dept_id
+            WHERE COALESCE(q.salary_settlement_time, q.plan_quit_time, q.apply_quit_time) BETWEEN #{start} AND #{end}
+            <if test="deptId != null">AND e.dept_id = #{deptId}</if>
+            <if test="quitType != null">AND q.quit_type = #{quitType}</if>
+        ) t
+        ORDER BY t.happenDate DESC, t.recType
+    </select>
+
+    <select id="salaryOverview" resultType="java.util.Map">
+        SELECT
+            IFNULL(SUM(r.expected_pay_salary), 0) AS expectedPay,
+            IFNULL(SUM(r.real_pay_salary), 0) AS realPay,
+            IFNULL(SUM(r.corporate_insurance_amount + r.corporate_provident_fund_amount), 0) AS corpSocialFund,
+            IFNULL(SUM(r.corporate_insurance_amount), 0) AS corpInsurance,
+            IFNULL(SUM(r.corporate_provident_fund_amount), 0) AS corpFund,
+            IFNULL(SUM(r.personal_tax), 0) AS personalTax,
+            IFNULL(AVG(r.num), 0) AS avgHeadcount,
+            COUNT(*) AS monthCount
+        FROM hrm_salary_month_record r
+        WHERE (r.year > #{startYear} OR (r.year = #{startYear} AND r.month >= #{startMonth}))
+          AND (r.year &lt; #{endYear} OR (r.year = #{endYear} AND r.month &lt;= #{endMonth}))
+          AND (r.check_status IS NULL OR r.check_status NOT IN (2, 4, 5, 8))
+    </select>
+
+    <select id="bonusOverview" resultType="java.util.Map">
+        SELECT IFNULL(SUM(b.bonus), 0) AS bonus
+        FROM hrm_bonus b
+        WHERE (b.year > #{startYear} OR (b.year = #{startYear} AND b.month >= #{startMonth}))
+          AND (b.year &lt; #{endYear} OR (b.year = #{endYear} AND b.month &lt;= #{endMonth}))
+    </select>
+
+    <select id="salaryTrend" resultType="java.util.Map">
+        SELECT
+        <choose>
+            <when test="granule == 'year'">CONCAT(r.year, '年') AS period</when>
+            <otherwise>CONCAT(r.year, '-', LPAD(r.month, 2, '0')) AS period</otherwise>
+        </choose>
+            , SUM(r.expected_pay_salary) AS expectedPay
+            , SUM(r.real_pay_salary) AS realPay
+            , SUM(r.corporate_insurance_amount + r.corporate_provident_fund_amount) AS corpSocialFund
+            , SUM(r.personal_tax) AS personalTax
+            , AVG(r.num) AS avgHeadcount
+        FROM hrm_salary_month_record r
+        WHERE (r.year > #{startYear} OR (r.year = #{startYear} AND r.month >= #{startMonth}))
+          AND (r.year &lt; #{endYear} OR (r.year = #{endYear} AND r.month &lt;= #{endMonth}))
+          AND (r.check_status IS NULL OR r.check_status NOT IN (2, 4, 5, 8))
+        GROUP BY
+        <choose>
+            <when test="granule == 'year'">r.year</when>
+            <otherwise>r.year, r.month</otherwise>
+        </choose>
+        ORDER BY period
+    </select>
+
+    <select id="salaryInsuranceTrend" resultType="java.util.Map">
+        SELECT
+        <choose>
+            <when test="granule == 'year'">CONCAT(r.year, '年') AS period</when>
+            <otherwise>CONCAT(r.year, '-', LPAD(r.month, 2, '0')) AS period</otherwise>
+        </choose>
+            , SUM(r.corporate_insurance_amount) AS corpInsurance
+            , SUM(r.corporate_provident_fund_amount) AS corpFund
+            , SUM(r.personal_insurance_amount) AS personalInsurance
+            , SUM(r.personal_provident_fund_amount) AS personalFund
+        FROM hrm_salary_month_record r
+        WHERE (r.year > #{startYear} OR (r.year = #{startYear} AND r.month >= #{startMonth}))
+          AND (r.year &lt; #{endYear} OR (r.year = #{endYear} AND r.month &lt;= #{endMonth}))
+          AND (r.check_status IS NULL OR r.check_status NOT IN (2, 4, 5, 8))
+        GROUP BY
+        <choose>
+            <when test="granule == 'year'">r.year</when>
+            <otherwise>r.year, r.month</otherwise>
+        </choose>
+        ORDER BY period
+    </select>
+
+    <select id="salaryDeptCompare" resultType="java.util.Map">
+        SELECT
+            IFNULL(d.name, '未分配部门') AS deptName,
+            SUM(CASE WHEN ov.code = 210101 THEN CAST(NULLIF(ov.value, '') AS DECIMAL(18, 2)) ELSE 0 END) AS expectedPay,
+            SUM(CASE WHEN ov.code = 240101 THEN CAST(NULLIF(ov.value, '') AS DECIMAL(18, 2)) ELSE 0 END) AS realPay,
+            SUM(CASE WHEN ov.code = 41001 THEN CAST(NULLIF(ov.value, '') AS DECIMAL(18, 2)) ELSE 0 END) AS bonus
+        FROM hrm_salary_month_emp_record er
+        JOIN hrm_salary_month_option_value ov ON ov.s_emp_record_id = er.s_emp_record_id
+        JOIN hrm_employee e ON e.employee_id = er.employee_id AND e.is_del = 0
+        LEFT JOIN hrm_dept d ON d.dept_id = e.dept_id
+        WHERE (er.year > #{startYear} OR (er.year = #{startYear} AND er.month >= #{startMonth}))
+          AND (er.year &lt; #{endYear} OR (er.year = #{endYear} AND er.month &lt;= #{endMonth}))
+        GROUP BY d.dept_id
+        HAVING SUM(CASE WHEN ov.code IN (210101, 240101, 41001) THEN 1 ELSE 0 END) > 0
+        ORDER BY deptName
+    </select>
+
+    <select id="salaryEmpDetail" resultType="java.util.Map">
+        SELECT * FROM (
+            SELECT
+                e.employee_id AS employeeId,
+                e.employee_name AS employeeName,
+                IFNULL(d.name, '未分配部门') AS deptName,
+                IFNULL(e.post, '') AS post,
+                MAX(er.actual_work_day) AS actualWorkDay,
+                MAX(CASE WHEN ov.code = 210101 THEN CAST(NULLIF(ov.value, '') AS DECIMAL(18, 2)) END) AS expectedPay,
+                MAX(CASE WHEN ov.code = 240101 THEN CAST(NULLIF(ov.value, '') AS DECIMAL(18, 2)) END) AS realPay,
+                MAX(CASE WHEN ov.code = 230101 THEN CAST(NULLIF(ov.value, '') AS DECIMAL(18, 2)) END) AS personalTax,
+                MAX(CASE WHEN ov.code = 41001 THEN CAST(NULLIF(ov.value, '') AS DECIMAL(18, 2)) END) AS bonus
+            FROM hrm_salary_month_emp_record er
+            JOIN hrm_salary_month_option_value ov ON ov.s_emp_record_id = er.s_emp_record_id
+            JOIN hrm_employee e ON e.employee_id = er.employee_id AND e.is_del = 0
+            LEFT JOIN hrm_dept d ON d.dept_id = e.dept_id
+            WHERE er.year = #{year} AND er.month = #{month}
+            <if test="deptId != null">AND e.dept_id = #{deptId}</if>
+            GROUP BY er.s_emp_record_id, e.employee_id, e.employee_name, d.name, e.post
+        ) t
+        ORDER BY t.expectedPay DESC
+    </select>
+
+    <select id="perfTrend" resultType="java.util.Map">
+        SELECT
+        <choose>
+            <when test="granule == 'year'">CONCAT(i.stat_year, '年') AS period</when>
+            <otherwise>CONCAT(i.stat_year, '-', LPAD(i.stat_month, 2, '0')) AS period</otherwise>
+        </choose>
+            , SUM(IFNULL(i.target_value, 0)) AS targetValue
+            , SUM(IFNULL(i.actual_value, 0)) AS actualValue
+        FROM hrm_performance_indicator i
+        WHERE i.indicator_type = #{indicatorType}
+          AND (i.stat_year > #{startYear} OR (i.stat_year = #{startYear} AND i.stat_month >= #{startMonth}))
+          AND (i.stat_year &lt; #{endYear} OR (i.stat_year = #{endYear} AND i.stat_month &lt;= #{endMonth}))
+        <if test="deptId != null">AND i.dept_id = #{deptId}</if>
+        GROUP BY
+        <choose>
+            <when test="granule == 'year'">i.stat_year</when>
+            <otherwise>i.stat_year, i.stat_month</otherwise>
+        </choose>
+        ORDER BY period
+    </select>
+
+    <select id="perfCompletion" resultType="java.util.Map">
+        SELECT
+            i.indicator_type AS indicatorType,
+            SUM(IFNULL(i.target_value, 0)) AS targetValue,
+            SUM(IFNULL(i.actual_value, 0)) AS actualValue,
+            COUNT(*) AS recordCount
+        FROM hrm_performance_indicator i
+        WHERE (i.stat_year > #{startYear} OR (i.stat_year = #{startYear} AND i.stat_month >= #{startMonth}))
+          AND (i.stat_year &lt; #{endYear} OR (i.stat_year = #{endYear} AND i.stat_month &lt;= #{endMonth}))
+        <if test="deptId != null">AND i.dept_id = #{deptId}</if>
+        GROUP BY i.indicator_type
+        ORDER BY i.indicator_type
+    </select>
+
+</mapper>

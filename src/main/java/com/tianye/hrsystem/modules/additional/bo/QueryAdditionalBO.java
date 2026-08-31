@@ -11,4 +11,10 @@ public class QueryAdditionalBO extends MyPageEntity {
 
     @ApiModelProperty(value = "员工名称")
     private String employeeName;
+
+    @ApiModelProperty(value = "年份")
+    private Integer year;
+
+    @ApiModelProperty(value = "月份")
+    private Integer month;
 }

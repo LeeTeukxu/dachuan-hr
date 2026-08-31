@@ -23,10 +23,9 @@ public class SalaryComputeContext {
     private Map<String, Map<Integer, String>> attendanceDataMap;
     private List<HrmSalaryOption> noFixedSalaryOptionList;
     private Map<Long, HrmProduceAttendance> produceAttendanceMap;
-    private Map<Integer, Double> normalDaysByDeptType;
+    private Map<Long, BigDecimal> expectedAttendanceDaysByEmployee;
     private Map<Integer, Integer> optionParentCodeMap;
     private Map<Long, Map<Integer, String>> lastMonthTaxDataMap;
-    private Map<Long, BigDecimal> lastYearAccumulatedIncomeMap;
     private Map<Long, HrmInsuranceMonthEmpRecord> socialSecurityEmpRecordMap;
     private Map<Long, HrmAdditional> additionalDeductionMap;
     private Map<Long, List<HrmSalaryArchivesOption>> midMonthArchivesOptionMap;
@@ -43,10 +42,9 @@ public class SalaryComputeContext {
     public Map<String, Map<Integer, String>> getAttendanceDataMap() { return attendanceDataMap; }
     public List<HrmSalaryOption> getNoFixedSalaryOptionList() { return noFixedSalaryOptionList; }
     public Map<Long, HrmProduceAttendance> getProduceAttendanceMap() { return produceAttendanceMap; }
-    public Map<Integer, Double> getNormalDaysByDeptType() { return normalDaysByDeptType; }
+    public Map<Long, BigDecimal> getExpectedAttendanceDaysByEmployee() { return expectedAttendanceDaysByEmployee; }
     public Map<Integer, Integer> getOptionParentCodeMap() { return optionParentCodeMap; }
     public Map<Long, Map<Integer, String>> getLastMonthTaxDataMap() { return lastMonthTaxDataMap; }
-    public Map<Long, BigDecimal> getLastYearAccumulatedIncomeMap() { return lastYearAccumulatedIncomeMap; }
     public Map<Long, HrmInsuranceMonthEmpRecord> getSocialSecurityEmpRecordMap() { return socialSecurityEmpRecordMap; }
     public Map<Long, HrmAdditional> getAdditionalDeductionMap() { return additionalDeductionMap; }
     public Map<Long, List<HrmSalaryArchivesOption>> getMidMonthArchivesOptionMap() { return midMonthArchivesOptionMap; }
@@ -64,10 +62,9 @@ public class SalaryComputeContext {
         private Map<String, Map<Integer, String>> attendanceDataMap;
         private List<HrmSalaryOption> noFixedSalaryOptionList;
         private Map<Long, HrmProduceAttendance> produceAttendanceMap;
-        private Map<Integer, Double> normalDaysByDeptType;
+        private Map<Long, BigDecimal> expectedAttendanceDaysByEmployee;
         private Map<Integer, Integer> optionParentCodeMap;
         private Map<Long, Map<Integer, String>> lastMonthTaxDataMap;
-        private Map<Long, BigDecimal> lastYearAccumulatedIncomeMap;
         private Map<Long, HrmInsuranceMonthEmpRecord> socialSecurityEmpRecordMap;
         private Map<Long, HrmAdditional> additionalDeductionMap;
         private Map<Long, List<HrmSalaryArchivesOption>> midMonthArchivesOptionMap;
@@ -82,10 +79,9 @@ public class SalaryComputeContext {
         public Builder attendanceDataMap(Map<String, Map<Integer, String>> v) { this.attendanceDataMap = v; return this; }
         public Builder noFixedSalaryOptionList(List<HrmSalaryOption> v) { this.noFixedSalaryOptionList = v; return this; }
         public Builder produceAttendanceMap(Map<Long, HrmProduceAttendance> v) { this.produceAttendanceMap = v; return this; }
-        public Builder normalDaysByDeptType(Map<Integer, Double> v) { this.normalDaysByDeptType = v; return this; }
+        public Builder expectedAttendanceDaysByEmployee(Map<Long, BigDecimal> v) { this.expectedAttendanceDaysByEmployee = v; return this; }
         public Builder optionParentCodeMap(Map<Integer, Integer> v) { this.optionParentCodeMap = v; return this; }
         public Builder lastMonthTaxDataMap(Map<Long, Map<Integer, String>> v) { this.lastMonthTaxDataMap = v; return this; }
-        public Builder lastYearAccumulatedIncomeMap(Map<Long, BigDecimal> v) { this.lastYearAccumulatedIncomeMap = v; return this; }
         public Builder socialSecurityEmpRecordMap(Map<Long, HrmInsuranceMonthEmpRecord> v) { this.socialSecurityEmpRecordMap = v; return this; }
         public Builder additionalDeductionMap(Map<Long, HrmAdditional> v) { this.additionalDeductionMap = v; return this; }
         public Builder midMonthArchivesOptionMap(Map<Long, List<HrmSalaryArchivesOption>> v) { this.midMonthArchivesOptionMap = v; return this; }
@@ -102,10 +98,9 @@ public class SalaryComputeContext {
             ctx.attendanceDataMap = this.attendanceDataMap != null ? this.attendanceDataMap : Collections.emptyMap();
             ctx.noFixedSalaryOptionList = this.noFixedSalaryOptionList != null ? this.noFixedSalaryOptionList : Collections.emptyList();
             ctx.produceAttendanceMap = this.produceAttendanceMap != null ? this.produceAttendanceMap : Collections.emptyMap();
-            ctx.normalDaysByDeptType = this.normalDaysByDeptType != null ? this.normalDaysByDeptType : Collections.emptyMap();
+            ctx.expectedAttendanceDaysByEmployee = this.expectedAttendanceDaysByEmployee != null ? this.expectedAttendanceDaysByEmployee : Collections.emptyMap();
             ctx.optionParentCodeMap = this.optionParentCodeMap != null ? this.optionParentCodeMap : Collections.emptyMap();
             ctx.lastMonthTaxDataMap = this.lastMonthTaxDataMap != null ? this.lastMonthTaxDataMap : Collections.emptyMap();
-            ctx.lastYearAccumulatedIncomeMap = this.lastYearAccumulatedIncomeMap != null ? this.lastYearAccumulatedIncomeMap : Collections.emptyMap();
             ctx.socialSecurityEmpRecordMap = this.socialSecurityEmpRecordMap != null ? this.socialSecurityEmpRecordMap : Collections.emptyMap();
             ctx.additionalDeductionMap = this.additionalDeductionMap != null ? this.additionalDeductionMap : Collections.emptyMap();
             ctx.midMonthArchivesOptionMap = this.midMonthArchivesOptionMap != null ? this.midMonthArchivesOptionMap : Collections.emptyMap();

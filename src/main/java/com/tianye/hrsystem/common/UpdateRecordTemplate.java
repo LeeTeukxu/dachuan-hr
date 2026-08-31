@@ -16,7 +16,8 @@ import java.util.Date;
  **/
 @Component
 public class UpdateRecordTemplate {
-    SimpleDateFormat format=new SimpleDateFormat("yyyy-MM-dd HH:mm:ss");
+    private static final ThreadLocal<SimpleDateFormat> FORMAT =
+            ThreadLocal.withInitial(() -> new SimpleDateFormat("yyyy-MM-dd HH:mm:ss"));
     @Autowired
     updateRecordRepository updateRep;
     public boolean hasKey(String mainKey,String subKey){

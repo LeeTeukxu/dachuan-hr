@@ -2,6 +2,7 @@ package com.tianye.hrsystem.model;
 
 import net.sf.cglib.core.Local;
 
+import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.Date;
@@ -195,8 +196,34 @@ public class HrmEmployee implements Serializable {
      */
     @Column(name = "expand_production")
     private Integer expandProduction;
-	/**
-	 * 创建人id
+
+    /**
+     * 所属体系 1 行政 2 生产
+     */
+    @Column(name = "affiliation_system")
+    private Integer affiliationSystem;
+    /**
+     * 休息制度 1 行政单双休 2 固定月休4天
+     */
+    @Column(name = "rest_type")
+    private Integer restType;
+    /**
+     * 是否连班 1 是 2 否
+     */
+    @Column(name = "is_continuous_shift")
+    private Integer isContinuousShift;
+    /**
+     * 员工级普通员工全勤金额
+     */
+    @Column(name = "ordinary_full_attendance_amount")
+    private BigDecimal ordinaryFullAttendanceAmount;
+    /**
+     * 员工级领导全勤金额
+     */
+    @Column(name = "leader_full_attendance_amount")
+    private BigDecimal leaderFullAttendanceAmount;
+		/**
+		 * 创建人id
 	 */
   @Column(name = "create_user_id")
   private Long createUserId;
@@ -215,6 +242,8 @@ public class HrmEmployee implements Serializable {
 	 */
   @Column(name = "update_time")
   private Date updateTime;
+  @Column(name = "dingtalk_user_id")
+  private String dingtalkUserId;
 
   public Long getEmployeeId() {
     return employeeId;
@@ -527,6 +556,14 @@ public class HrmEmployee implements Serializable {
     this.updateTime = updateTime;
   }
 
+  public String getDingtalkUserId() {
+    return dingtalkUserId;
+  }
+
+  public void setDingtalkUserId(String dingtalkUserId) {
+    this.dingtalkUserId = dingtalkUserId;
+  }
+
     public Integer getFullAttendance() {
         return fullAttendance;
     }
@@ -541,5 +578,45 @@ public class HrmEmployee implements Serializable {
 
     public void setExpandProduction(Integer expandProduction) {
         this.expandProduction = expandProduction;
+    }
+
+    public Integer getAffiliationSystem() {
+        return affiliationSystem;
+    }
+
+    public void setAffiliationSystem(Integer affiliationSystem) {
+        this.affiliationSystem = affiliationSystem;
+    }
+
+    public Integer getRestType() {
+        return restType;
+    }
+
+    public void setRestType(Integer restType) {
+        this.restType = restType;
+    }
+
+    public Integer getIsContinuousShift() {
+        return isContinuousShift;
+    }
+
+    public void setIsContinuousShift(Integer isContinuousShift) {
+        this.isContinuousShift = isContinuousShift;
+    }
+
+    public BigDecimal getOrdinaryFullAttendanceAmount() {
+        return ordinaryFullAttendanceAmount;
+    }
+
+    public void setOrdinaryFullAttendanceAmount(BigDecimal ordinaryFullAttendanceAmount) {
+        this.ordinaryFullAttendanceAmount = ordinaryFullAttendanceAmount;
+    }
+
+    public BigDecimal getLeaderFullAttendanceAmount() {
+        return leaderFullAttendanceAmount;
+    }
+
+    public void setLeaderFullAttendanceAmount(BigDecimal leaderFullAttendanceAmount) {
+        this.leaderFullAttendanceAmount = leaderFullAttendanceAmount;
     }
 }

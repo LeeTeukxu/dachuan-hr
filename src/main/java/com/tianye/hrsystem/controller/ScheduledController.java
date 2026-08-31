@@ -21,6 +21,7 @@ import java.text.SimpleDateFormat;
 import java.util.Date;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ScheduledFuture;
 
 /**
@@ -56,11 +57,16 @@ public class ScheduledController {
     private static RestTemplate restTemplate = new RestTemplate(requestFactory);
 
 
-    Map<String, ScheduledFuture> map = new HashMap<>();
+    // HTTP 线程并发 start/stop 会同时读写，必须用并发安全 Map
+    Map<String, ScheduledFuture> map = new ConcurrentHashMap<>();
 
     @Bean
     public ThreadPoolTaskScheduler threadPoolTaskScheduler() {
-        return new ThreadPoolTaskScheduler();
+        ThreadPoolTaskScheduler scheduler = new ThreadPoolTaskScheduler();
+        // 不设置 poolSize 时默认 1 个线程，所有动态 cron 串行执行，慢回调会阻塞全部任务
+        scheduler.setPoolSize(4);
+        scheduler.setThreadNamePrefix("dynamic-cron-");
+        return scheduler;
     }
 
     /**
@@ -84,14 +90,20 @@ public class ScheduledController {
                 return result;
             }
             HrmScheduledVo vo = scheduledDao.selectScheDuleByCode(code);
-            log.info("【定时调度】启动 参数-》 vo={}", vo.toString());
-            if (StringUtils.isEmpty(vo.getCorn()) || StringUtils.isEmpty(vo.getCode()) || StringUtils.isEmpty(vo.getCornName()) || StringUtils.isEmpty(vo.getCornLink()) || StringUtils.isEmpty(vo.getMethod()))
+            log.info("【定时调度】启动 参数-》 vo={}", vo);
+            if (vo == null || StringUtils.isEmpty(vo.getCorn()) || StringUtils.isEmpty(vo.getCode()) || StringUtils.isEmpty(vo.getCornName()) || StringUtils.isEmpty(vo.getCornLink()) || StringUtils.isEmpty(vo.getMethod()))
             {
                 result.put("code", "1");
                 result.put("msg", "参数错误");
                 return result;
             }
 
+            // 同编号重复启动时先取消旧任务，否则旧 cron 仍按旧表达式继续触发（任务双份并行）
+            ScheduledFuture oldFuture = map.remove(vo.getCode());
+            if (oldFuture != null) {
+                oldFuture.cancel(false);
+                log.info("【定时调度】已取消同编号旧定时器 code={}", vo.getCode());
+            }
             ScheduledFuture future = threadPoolTaskScheduler.schedule(new taskRunnable(vo), new CronTrigger(vo.getCorn()));
             map.put(vo.getCode(), future);
             log.info("【定时调度】启动 定时器编号={},名称={}", vo.getCode(), vo.getCornName());
@@ -133,8 +145,8 @@ public class ScheduledController {
                 return result;
             }
             HrmScheduledVo vo = scheduledDao.selectScheDuleByCode(code);
-            log.info("【定时调度】停止 参数-》 vo={}", vo.toString());
-            if (StringUtils.isEmpty(vo.getCorn()) || StringUtils.isEmpty(vo.getCode()) || StringUtils.isEmpty(vo.getCornName()) || StringUtils.isEmpty(vo.getCornLink()) || StringUtils.isEmpty(vo.getMethod())) {
+            log.info("【定时调度】停止 参数-》 vo={}", vo);
+            if (vo == null || StringUtils.isEmpty(vo.getCorn()) || StringUtils.isEmpty(vo.getCode()) || StringUtils.isEmpty(vo.getCornName()) || StringUtils.isEmpty(vo.getCornLink()) || StringUtils.isEmpty(vo.getMethod())) {
                 result.put("code", "1");
                 result.put("msg", "参数错误");
                 return result;

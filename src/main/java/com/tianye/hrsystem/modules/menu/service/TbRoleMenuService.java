@@ -2,13 +2,11 @@ package com.tianye.hrsystem.modules.menu.service;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.tianye.hrsystem.base.BaseServiceImpl;
-import com.tianye.hrsystem.config.CompanyContext;
-import com.tianye.hrsystem.entity.po.HrmEmployee;
-import com.tianye.hrsystem.model.LoginUserInfo;
 import com.tianye.hrsystem.modules.menu.bo.QueryRoleMenuBO;
 import com.tianye.hrsystem.modules.menu.entity.TbMenu;
 import com.tianye.hrsystem.modules.menu.entity.TbRoleMenu;
 import com.tianye.hrsystem.modules.menu.mapper.TbRoleMenuMapper;
+import com.tianye.hrsystem.model.tbmenu;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -17,7 +15,6 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.stream.Collectors;
 
 @Service
 public class TbRoleMenuService extends BaseServiceImpl<TbRoleMenuMapper, TbRoleMenu> {
@@ -25,6 +22,8 @@ public class TbRoleMenuService extends BaseServiceImpl<TbRoleMenuMapper, TbRoleM
     TbRoleMenuMapper tbRoleMenuMapper;
     @Autowired
     TbMenuService tbMenuService;
+    @Autowired
+    MenuPermissionSupport menuPermissionSupport;
 
     @Transactional(rollbackFor = Exception.class)
     public Integer saveRoleMenuList(QueryRoleMenuBO queryRoleMenuBO)
@@ -33,7 +32,8 @@ public class TbRoleMenuService extends BaseServiceImpl<TbRoleMenuMapper, TbRoleM
         wrappers.eq(TbRoleMenu::getRoleId, queryRoleMenuBO.getRoleId());
         tbRoleMenuMapper.delete(wrappers);
 
-        List<TbRoleMenu> listRoleMenu = queryRoleMenuBO.getListRoleMenu();
+        List<tbmenu> allMenus = tbMenuService.queryAllMenus();
+        List<TbRoleMenu> listRoleMenu = menuPermissionSupport.normalizeRoleMenus(queryRoleMenuBO.getRoleId(), queryRoleMenuBO.getListRoleMenu(), allMenus);
         saveBatch(listRoleMenu);
         return 0;
     }

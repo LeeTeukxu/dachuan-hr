@@ -1,5 +1,7 @@
 package com.tianye.hrsystem.config;
 
+import lombok.extern.slf4j.Slf4j;
+
 
 import com.alibaba.fastjson.JSON;
 import com.auth0.jwt.exceptions.AlgorithmMismatchException;
@@ -9,9 +11,11 @@ import com.tianye.hrsystem.common.JWTTokenUtils;
 import com.tianye.hrsystem.entity.vo.EmployeeInfo;
 import com.tianye.hrsystem.model.LoginUserInfo;
 import com.tianye.hrsystem.model.successResult;
+import com.tianye.hrsystem.modules.menu.service.ApiPermissionPathSupport;
 import org.apache.commons.lang.StringUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 import org.springframework.web.servlet.ModelAndView;
@@ -23,11 +27,22 @@ import java.util.Arrays;
 import java.util.List;
 
 @Component
+@Slf4j
 public class CompanyInterceptor extends HandlerInterceptorAdapter {
-    List<String> skipUrls = Arrays.asList("/hrsystem/login");
+    List<String> skipUrls = Arrays.asList(
+            "/hrsystem/login",
+            "/hrsystem/captcha/generate",
+            "/hrsystem/mp/login",
+            "/hrsystem/mp/login/bindCompany",
+            "/hrsystem/confirmCompany",
+            "/hrsystem/logout");
     @Value("${hrm.system.databasesuffix}")
     String databasesuffix;
-    Logger logger= LoggerFactory.getLogger(CompanyInterceptor.class);
+@Autowired
+ApiPermissionPathSupport apiPermissionPathSupport;
+@Autowired
+com.tianye.hrsystem.common.TokenRevocationService tokenRevocationService;
+Logger logger= LoggerFactory.getLogger(CompanyInterceptor.class);
     @Override
     public void postHandle(HttpServletRequest request, HttpServletResponse response, Object handler, ModelAndView
             modelAndView) throws Exception {
@@ -47,6 +62,9 @@ public class CompanyInterceptor extends HandlerInterceptorAdapter {
     public boolean preHandle(HttpServletRequest request, HttpServletResponse response, Object handler) throws Exception {
         String urlPath = request.getRequestURI();
         boolean hasLogin = false;
+        if ("OPTIONS".equalsIgnoreCase(request.getMethod())) {
+            return true;
+        }
         if (skipUrls.contains(urlPath)) return true;
         String token = request.getParameter("token");
         if(org.apache.commons.lang.StringUtils.isEmpty(token))
@@ -59,34 +77,114 @@ public class CompanyInterceptor extends HandlerInterceptorAdapter {
             try {
                 LoginUserInfo Info = JWTTokenUtils.GetByToken(token);
 
+                // 令牌吊销校验：退出登录(jti 黑名单) / 账号被禁用或强制下线(账号封禁)
+                String jti = JWTTokenUtils.getJti(token);
+                if (tokenRevocationService.isTokenRevoked(jti)) {
+                    result.setMessage("登录已失效，请重新登录");
+                    result.setTimeOut(true);
+                    hasLogin = false;
+                    log.info("令牌已被吊销(jti={})，拒绝访问", jti);
+                    writeReject(response, result);
+                    return false;
+                } else if (tokenRevocationService.isAccountBanned(Info.getAccount())) {
+                    result.setMessage("账号已被禁用或强制下线，请重新登录");
+                    result.setTimeOut(true);
+                    hasLogin = false;
+                    log.info("账号已被封禁(account={})，拒绝访问", Info.getAccount());
+                    writeReject(response, result);
+                    return false;
+                } else if (tokenRevocationService.getSessionSeed(Info.getAccount()) !=
+                        (Info.getSessionSeed() == null ? 0 : Info.getSessionSeed())) {
+                    // 凭证（密码/角色/企业等）变更导致的强制下线：旧令牌种子与最新种子不一致即作废，
+                    // 但允许凭新密码重新登录（区别于 isAccountBanned 的账号锁定）
+                    result.setMessage("账号凭证已变更，请重新登录");
+                    result.setTimeOut(true);
+                    hasLogin = false;
+                    log.info("会话种子已失效(account={})，强制重新登录", Info.getAccount());
+                    writeReject(response, result);
+                    return false;
+                }
+
                 EmployeeInfo Emp=new EmployeeInfo();
                 Emp.setDeptId(Info.getDepIdValue());
                 Emp.setDeptName(Info.getDepName());
                 Emp.setEmployeeName(Info.getUserName());
                 CompanyContext.set(Info);
+                List<String> requiredMenuPaths = apiPermissionPathSupport.resolveRequiredMenuPaths(urlPath, request.getContextPath());
+                String miniappPrefix = request.getContextPath() + "/mp";
+                boolean isMiniappPath = urlPath.equals(miniappPrefix) || urlPath.startsWith(miniappPrefix + "/");
+                boolean allowed;
+                if (!requiredMenuPaths.isEmpty()) {
+                    // 命中菜单权限映射：按菜单权限校验（PC 管理端路径）
+                    allowed = hasMenuPermission(Info, requiredMenuPaths);
+                    if (!allowed) result.raiseException(new Exception("当前账号没有访问该功能的权限"));
+                } else if (isMiniappPath) {
+                    // 小程序端：员工身份无菜单树，仅校验 token；数据权限（本人数据/直属上级）在各接口内校验
+                    allowed = true;
+                } else {
+                    // 默认拒绝：不在权限映射表内的管理端路径仅限操作员 token（PC 登录 token 均含 account），
+                    // 防止员工 token 访问 /backup、/companyPermission 等映射表外的敏感端点
+                    allowed = StringUtils.isNotEmpty(Info.getAccount());
+                    if (!allowed) result.raiseException(new Exception("当前账号没有访问该功能的权限"));
+                }
+                if (allowed) {
                 hasLogin = true;
                 logger.info("Hr_"+Info.getCompanyId()+databasesuffix+"的用户:"+Info.getUserName()+"登录成功！");
+                }
             } catch (SignatureVerificationException e) {
-                e.printStackTrace();
+                log.error("CompanyInterceptor.java 异常", e);
                 result.raiseException(new Exception("无效签名！"));
             } catch (TokenExpiredException e) {
-                e.printStackTrace();
                 result.setMessage("token过期");
+                // SaaS 改造：标记会话超时，前端据此清除本地凭证并跳转登录页
+                result.setTimeOut(true);
             } catch (AlgorithmMismatchException e) {
-                e.printStackTrace();
+                log.error("CompanyInterceptor.java 异常", e);
                 result.raiseException(new Exception("算法不一致"));
             } catch (Exception e) {
-                e.printStackTrace();
-                result.raiseException(new Exception("token无效！"));
+                // SaaS 改造：无效 token（含跨环境残留的旧凭证）统一标记为会话失效
+                logger.warn("token校验失败: {}", e.getMessage());
+                result.setMessage("token无效，请重新登录");
+                result.setTimeOut(true);
             }
-        } else result.raiseException(new Exception("请输入token"));
+        } else {
+            result.setMessage("请输入token");
+            result.setTimeOut(true);
+        }
         if (hasLogin == false) {
             String V=JSON.toJSONString(result);
-            System.out.println(V);
-            System.out.println(response.getCharacterEncoding());
+            log.info(V);
+            log.info(response.getCharacterEncoding());
             response.getWriter().print(V);
             return false;
         } else return true;
 //        return true;
+    }
+
+    /** 拒绝访问：写出 JSON 结果（避免 getWriter 抛 IOException 影响主流程） */
+    private void writeReject(HttpServletResponse response, successResult result) {
+        try {
+            String V = JSON.toJSONString(result);
+            response.getWriter().print(V);
+        } catch (java.io.IOException ex) {
+            logger.warn("写出拒绝响应失败: {}", ex.getMessage());
+        }
+    }
+
+    private boolean hasMenuPermission(LoginUserInfo info, List<String> requiredMenuPaths) {
+        if (requiredMenuPaths == null || requiredMenuPaths.isEmpty()) {
+            return true;
+        }
+        if (info == null || info.getMenuTree() == null || info.getMenuTree().isEmpty()) {
+            return false;
+        }
+        return requiredMenuPaths.stream().anyMatch(requiredMenuPath -> info.getMenuTree().stream().anyMatch(module -> {
+                    if (requiredMenuPath.equals(module.getPath())) {
+                        return true;
+                    }
+                    return module.getChildren() != null && module.getChildren().stream()
+                            .anyMatch(menu -> requiredMenuPath.equals(menu.getPath()));
+                })
+        );
     }
 }

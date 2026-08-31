@@ -45,6 +45,7 @@ public class tbDictDataServiceImpl implements IDictDataService {
             TreeNode node=new TreeNode();
             node.setId(f.getId());
             node.setPid(f.getPid());
+            node.setType(f.getSn());
             node.setText(f.getName());
             return node;
         }).collect(Collectors.toList());
@@ -62,6 +63,7 @@ public class tbDictDataServiceImpl implements IDictDataService {
             TreeNode node=new TreeNode();
             node.setId(f.getId());
             node.setPid(f.getPid());
+            node.setType(f.getSn());
             node.setText(f.getName());
             return node;
         }).collect(Collectors.toList());
@@ -85,18 +87,50 @@ public class tbDictDataServiceImpl implements IDictDataService {
             if (tbdictdata.getId() != null) {
                 Optional<tbdictdata> findOne = dictRep.findById(tbdictdata.getId());
                 if (findOne.isPresent()) {
-                    tbdictdata dictdata = new tbdictdata();
-                    BeanUtils.copyProperties(findOne.get(), dictdata);
+                    tbdictdata dictdata = findOne.get();
+                    if (tbdictdata.getDtid() == null) {
+                        tbdictdata.setDtid(dictdata.getDtid());
+                    }
+                    if (tbdictdata.getPid() == null) {
+                        tbdictdata.setPid(dictdata.getPid());
+                    }
+                    if (tbdictdata.getCanUse() == null) {
+                        tbdictdata.setCanUse(dictdata.getCanUse());
+                    }
+                    if (tbdictdata.getCreateMan() == null) {
+                        tbdictdata.setCreateMan(dictdata.getCreateMan());
+                    }
+                    if (tbdictdata.getCreateTime() == null) {
+                        tbdictdata.setCreateTime(dictdata.getCreateTime());
+                    }
+                    if (tbdictdata.getSn() == null) {
+                        tbdictdata.setSn(dictdata.getSn());
+                    }
+                    if (tbdictdata.getName() == null) {
+                        tbdictdata.setName(dictdata.getName());
+                    }
+                } else if (tbdictdata.getDtid() == null) {
+                    tbdictdata.setDtid(15);
                 }
             } else {
-                tbdictdata.setCanUse(1);
-                tbdictdata.setPid(0);
-                tbdictdata.setCreateMan(Info.getUserIdValue());
-                tbdictdata.setCreateTime(DateTime.now());
-                if (AddType.equals("gongduan")) {
-                    tbdictdata.setDtid(15);
-                }else if (AddType.equals("chejian")) {
-                    tbdictdata.setDtid(16);
+                if (tbdictdata.getPid() == null) {
+                    tbdictdata.setPid(0);
+                }
+                if (tbdictdata.getCanUse() == null) {
+                    tbdictdata.setCanUse(1);
+                }
+                if (Info != null && tbdictdata.getCreateMan() == null) {
+                    tbdictdata.setCreateMan(Info.getUserIdValue());
+                }
+                if (tbdictdata.getCreateTime() == null) {
+                    tbdictdata.setCreateTime(DateTime.now());
+                }
+                if (tbdictdata.getDtid() == null) {
+                    if ("chejian".equals(AddType)) {
+                        tbdictdata.setDtid(16);
+                    } else {
+                        tbdictdata.setDtid(15);
+                    }
                 }
             }
             dictRep.save(tbdictdata);

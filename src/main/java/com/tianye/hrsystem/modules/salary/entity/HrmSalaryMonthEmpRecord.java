@@ -43,7 +43,7 @@ public class HrmSalaryMonthEmpRecord implements Serializable {
     @JsonSerialize(using = ToStringSerializer.class)
     private Long employeeId;
 
-    @ApiModelProperty(value = "实际计薪时长/实际出勤天数")
+    @ApiModelProperty(value = "实际计薪时长/应计出勤天数")
     private BigDecimal actualWorkDay;
 
     @ApiModelProperty(value = "月计薪时长/应出勤天数")

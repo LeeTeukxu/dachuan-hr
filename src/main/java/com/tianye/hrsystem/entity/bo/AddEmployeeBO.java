@@ -5,6 +5,7 @@ import io.swagger.annotations.ApiModelProperty;
 import lombok.Data;
 
 import javax.validation.constraints.NotBlank;
+import java.math.BigDecimal;
 import java.io.Serializable;
 import java.time.LocalDate;
 
@@ -45,6 +46,9 @@ public class AddEmployeeBO implements Serializable {
     @ApiModelProperty(value = "入职时间")
     private LocalDate entryTime;
 
+    @ApiModelProperty(value = "司龄开始日期")
+    private LocalDate companyAgeStartTime;
+
     @ApiModelProperty(value = "试用期 0 无试用期")
     private Integer probation;
 
@@ -83,4 +87,25 @@ public class AddEmployeeBO implements Serializable {
 
     @ApiModelProperty("是否加入钉钉 0、未加入 1、已加入")
     private Integer expandProduction;
+
+    @ApiModelProperty("所属体系 1、行政体系 2、生产体系")
+    private Integer affiliationSystem;
+
+    @ApiModelProperty("休息制度 1、行政单双休 2、固定月休4天")
+    private Integer restType;
+
+    @ApiModelProperty("是否连班 1、是 2、否")
+    private Integer isContinuousShift;
+
+    @ApiModelProperty("薪资等级")
+    private String salaryLevel;
+
+    @ApiModelProperty("固定绩效")
+    private BigDecimal fixedPerformance;
+
+    @ApiModelProperty("职务补助")
+    private BigDecimal dutySubsidy;
+
+    @ApiModelProperty("其他补助")
+    private BigDecimal otherSubsidy;
 }

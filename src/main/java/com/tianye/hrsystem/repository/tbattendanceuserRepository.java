@@ -9,7 +9,11 @@ import java.util.Optional;
 
 @Repository
 public interface tbattendanceuserRepository  extends JpaRepository<tbattendanceuser,Integer>  {
+    Optional<tbattendanceuser> findFirstByEmpId(Long empId);
     Optional<tbattendanceuser> findFirstByUserId(String  UserID);
+    List<tbattendanceuser> findAllByUserIdIn(List<String> userIds);
     List<tbattendanceuser> findAllByEmpIdIn(List<Long> IDS);
+    List<tbattendanceuser> findAllByEmpId(Long empId);
     List<tbattendanceuser> findAllByUserName(String UserName);
+    void deleteAllByIdIn(List<Integer> ids);
 }

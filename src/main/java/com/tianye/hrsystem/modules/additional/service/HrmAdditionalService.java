@@ -16,6 +16,7 @@ import com.tianye.hrsystem.modules.additional.bo.UpdateAdditionalBO;
 import com.tianye.hrsystem.modules.additional.entity.HrmAdditional;
 import com.tianye.hrsystem.modules.additional.mapper.HrmAdditionalMapper;
 import com.tianye.hrsystem.modules.additional.vo.QueryAdditionalVO;
+import com.tianye.hrsystem.modules.salary.support.TaxImportEmployeeMatcher;
 import com.tianye.hrsystem.repository.hrmEmployeeRepository;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
@@ -26,7 +27,9 @@ import org.springframework.web.multipart.MultipartFile;
 import java.io.File;
 import java.math.BigDecimal;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 
 @Service
 public class HrmAdditionalService extends BaseServiceImpl<HrmAdditionalMapper, HrmAdditional> {
@@ -46,40 +49,57 @@ public class HrmAdditionalService extends BaseServiceImpl<HrmAdditionalMapper, H
             List<HrmAdditional> list = new ArrayList<>();
             List<List<Object>> read = reader.read();
             List<com.tianye.hrsystem.model.HrmEmployee> listHrmEmployees = employeeRepository.findAll();
+            Integer importYear = Integer.parseInt(year);
+            Integer importMonth = Integer.parseInt(month);
+            String period = String.format("%04d-%02d", importYear, importMonth);
+            Set<String> importedKeys = new HashSet<>();
             for (int i = TWO; i < read.size(); i++) {
-                HrmAdditional hrmAdditional = new HrmAdditional();
                 List<Object> row = read.get(i);
-                String EmployeeName = row.get(0).toString();
-                listHrmEmployees.stream().forEach(f -> {
-                    if (f.getEmployeeName().equals(EmployeeName)) {
-                        hrmAdditional.setEmployeeId(f.getEmployeeId());
-                    }
-                });
+                if (TaxImportEmployeeMatcher.isBlankRow(row)) {
+                    continue;
+                }
 
-                if (!row.get(4).toString().equals("")) {
-                    hrmAdditional.setChildrenEducation(new BigDecimal(row.get(4).toString()));
+                HrmAdditional hrmAdditional = new HrmAdditional();
+                int displayRow = i + 1;
+                String employeeName = TaxImportEmployeeMatcher.readCellText(row, 0);
+                String mobile = TaxImportEmployeeMatcher.readCellText(row, 10);
+                Long employeeId = TaxImportEmployeeMatcher.resolveEmployeeId(listHrmEmployees, employeeName, mobile, displayRow);
+                TaxImportEmployeeMatcher.ensureUniqueEmployeePeriod(importedKeys, employeeId, employeeName, period, displayRow);
+                hrmAdditional.setEmployeeId(employeeId);
+
+                BigDecimal childrenEducation = TaxImportEmployeeMatcher.readBigDecimal(row, 4);
+                if (childrenEducation != null) {
+                    hrmAdditional.setChildrenEducation(childrenEducation);
                 }
-                if (!row.get(5).toString().equals("")) {
-                    hrmAdditional.setHousingRent(new BigDecimal(row.get(5).toString()));
+                BigDecimal housingRent = TaxImportEmployeeMatcher.readBigDecimal(row, 5);
+                if (housingRent != null) {
+                    hrmAdditional.setHousingRent(housingRent);
                 }
-                if (!row.get(6).toString().equals("")) {
-                    hrmAdditional.setHousingLoanInterest(new BigDecimal(row.get(6).toString()));
+                BigDecimal housingLoanInterest = TaxImportEmployeeMatcher.readBigDecimal(row, 6);
+                if (housingLoanInterest != null) {
+                    hrmAdditional.setHousingLoanInterest(housingLoanInterest);
                 }
-                if (!row.get(7).toString().equals("")) {
-                    hrmAdditional.setSupportingTheElderly(new BigDecimal(row.get(7).toString()));
+                BigDecimal supportingTheElderly = TaxImportEmployeeMatcher.readBigDecimal(row, 7);
+                if (supportingTheElderly != null) {
+                    hrmAdditional.setSupportingTheElderly(supportingTheElderly);
                 }
-                if (!row.get(8).toString().equals("")) {
-                    hrmAdditional.setContinuingEducation(new BigDecimal(row.get(8).toString()));
+                BigDecimal continuingEducation = TaxImportEmployeeMatcher.readBigDecimal(row, 8);
+                if (continuingEducation != null) {
+                    hrmAdditional.setContinuingEducation(continuingEducation);
                 }
-                if (!row.get(9).toString().equals("")) {
-                    hrmAdditional.setRaisingGirls(new BigDecimal(row.get(9).toString()));
+                BigDecimal raisingGirls = TaxImportEmployeeMatcher.readBigDecimal(row, 9);
+                if (raisingGirls != null) {
+                    hrmAdditional.setRaisingGirls(raisingGirls);
                 }
-                hrmAdditional.setYear(Integer.parseInt(year));
-                hrmAdditional.setMonth(Integer.parseInt(month));
+                hrmAdditional.setYear(importYear);
+                hrmAdditional.setMonth(importMonth);
                 list.add(hrmAdditional);
             }
+            if (list.isEmpty()) {
+                return;
+            }
             LambdaQueryWrapper<HrmAdditional> wrappers = new LambdaQueryWrapper<>();
-            wrappers.eq(HrmAdditional::getYear, year).eq(HrmAdditional::getMonth, month);
+            wrappers.eq(HrmAdditional::getYear, importYear).eq(HrmAdditional::getMonth, importMonth);
             hrmAdditionalMapper.delete(wrappers);
 
             saveBatch(list);

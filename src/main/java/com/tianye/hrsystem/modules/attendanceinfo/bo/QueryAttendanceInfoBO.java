@@ -20,9 +20,6 @@ public class QueryAttendanceInfoBO extends MyPageEntity {
     @ApiModelProperty(value = "月")
     private Integer month;
 
-    @ApiModelProperty(value = "部门类型 1、行政部 2、生产部")
-    private Integer deptType;
-
     @ApiModelProperty(value = "应出勤天数")
     private String actualWorkDay;
 

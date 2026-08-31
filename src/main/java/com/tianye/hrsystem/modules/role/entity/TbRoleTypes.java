@@ -1,6 +1,7 @@
 package com.tianye.hrsystem.modules.role.entity;
 
 import com.baomidou.mybatisplus.annotation.IdType;
+import com.baomidou.mybatisplus.annotation.TableField;
 import com.baomidou.mybatisplus.annotation.TableId;
 import com.baomidou.mybatisplus.annotation.TableName;
 import io.swagger.annotations.ApiModel;
@@ -38,5 +39,6 @@ public class TbRoleTypes implements Serializable {
     private String name;
 
     @ApiModelProperty(value = "是否启用")
+    @TableField("canUse")
     private Integer canUse;
 }

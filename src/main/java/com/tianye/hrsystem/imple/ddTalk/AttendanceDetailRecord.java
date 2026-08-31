@@ -19,7 +19,6 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
 
 import java.text.SimpleDateFormat;
 import java.util.*;
@@ -40,23 +39,24 @@ public class AttendanceDetailRecord implements IDetailRecord {
     tbattendanceuserRepository userRep;
     @Autowired
     IAccessToken tokenCreator;
-    List<tbattendanceuser> users = null;
-    SimpleDateFormat format = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss");
+    private static final ThreadLocal<SimpleDateFormat> FORMAT =
+            ThreadLocal.withInitial(() -> new SimpleDateFormat("yyyy-MM-dd HH:mm:ss"));
     @Autowired
     hrmAttendanceClockRepository clockRep;
     DingTalkClient client = new DefaultDingTalkClient("https://oapi.dingtalk.com/attendance/listRecord");
     Logger logger = LoggerFactory.getLogger(AttendanceDetailRecord.class);
-    SimpleDateFormat shortFormat=new SimpleDateFormat("yyyy-MM-dd");
+    private static final ThreadLocal<SimpleDateFormat> SHORT_FORMAT =
+            ThreadLocal.withInitial(() -> new SimpleDateFormat("yyyy-MM-dd"));
     @Autowired
     DDTalkResposeLogger ddLogger;
     @Override
-    @Transactional
-    public void GetAndSave(Date Begin, Date End) throws ApiException {
+    public void GetAndSave(Date Begin, Date End, List<tbattendanceuser> users) throws ApiException {
         Long pageIndex = 0L;
 
         List<HrmAttendanceClock> Saveds = clockRep.findAllByClockTimeBetween(Begin, End);
         List<Long> EmpIDS = Saveds.stream().map(f -> f.getClockEmployeeId()).collect(Collectors.toList());
-        List<String> IDS = users.stream()
+        List<tbattendanceuser> safeUsers = users == null ? Collections.emptyList() : users;
+        List<String> IDS = safeUsers.stream()
                 .filter(f -> EmpIDS.contains(f.getEmpId()) == false)
                 .map(f -> f.getUserId()).collect(Collectors.toList());
         Map<String,Integer> Rs=new HashMap<>();
@@ -69,14 +69,23 @@ public class AttendanceDetailRecord implements IDetailRecord {
                 if (ID.size() == 0) break;
                 OapiAttendanceListRecordRequest req = new OapiAttendanceListRecordRequest();
                 req.setUserIds(ID);
-                req.setCheckDateFrom(format.format(Begin));
-                req.setCheckDateTo(format.format(End));
+                req.setCheckDateFrom(FORMAT.get().format(Begin));
+                req.setCheckDateTo(FORMAT.get().format(End));
                 OapiAttendanceListRecordResponse rsp = client.execute(req, password);
                 ddLogger.Info(rsp,((DefaultDingTalkClient)client).getRequestUrl(),Begin,AttendanceDetailRecord.class);
                 if (rsp.isSuccess()) {
                     List<HrmAttendanceClock> cs=new ArrayList<>();
                     List<tbattendancedetail> ds=new ArrayList<>();
                     List<OapiAttendanceListRecordResponse.Recordresult> rs = rsp.getRecordresult();
+                    // 整页批量预查已存在主键，替代循环内每条记录两次 findById（每页 2 条 SQL 代替 2N 条）
+                    Set<Long> pageRecordIds = rs.stream().map(OapiAttendanceListRecordResponse.Recordresult::getId)
+                            .filter(Objects::nonNull).collect(Collectors.toSet());
+                    Set<Long> existingClockIds = pageRecordIds.isEmpty() ? Collections.emptySet()
+                            : clockRep.findAllById(pageRecordIds).stream()
+                                    .map(HrmAttendanceClock::getClockId).collect(Collectors.toSet());
+                    Set<Long> existingDetailIds = pageRecordIds.isEmpty() ? Collections.emptySet()
+                            : detailRep.findAllById(pageRecordIds).stream()
+                                    .map(tbattendancedetail::getId).collect(Collectors.toSet());
                     ServerTotal+=rs.size();
                     for (int i = 0; i < rs.size(); i++) {
                         OapiAttendanceListRecordResponse.Recordresult r = rs.get(i);
@@ -86,7 +95,7 @@ public class AttendanceDetailRecord implements IDetailRecord {
                         String userId = r.getUserId();
                         Long empId = 0L;
                         String empName="";
-                        Optional<tbattendanceuser> findUsers = users.stream().filter(f -> f.getUserId().equals(userId)).findFirst();
+                        Optional<tbattendanceuser> findUsers = safeUsers.stream().filter(f -> f.getUserId().equals(userId)).findFirst();
                         if (findUsers.isPresent()) {
                             empId = findUsers.get().getEmpId();
                             empName=findUsers.get().getUserName();
@@ -98,8 +107,7 @@ public class AttendanceDetailRecord implements IDetailRecord {
                                 Rs.replace(empName,N);
                             }
                         }
-                        Optional<HrmAttendanceClock> findClocks = clockRep.findById(Id);
-                        if (findClocks.isPresent() == false) {
+                        if (!existingClockIds.contains(Id)) {
                             HrmAttendanceClock newOne = new HrmAttendanceClock();
                             newOne.setClockId(Id);
                             newOne.setClockTime(r.getUserCheckTime());
@@ -170,8 +178,7 @@ public class AttendanceDetailRecord implements IDetailRecord {
                             cs.add(newOne);
                         }
 
-                        Optional<tbattendancedetail> findRs = detailRep.findById(Id);
-                        if (findRs.isPresent() == false) {
+                        if (!existingDetailIds.contains(Id)) {
                             tbattendancedetail newR = new tbattendancedetail();
                             newR.setId(Id);
                             if(StringUtil.isEmpty(r.getCheckType())) continue;
@@ -219,7 +226,7 @@ public class AttendanceDetailRecord implements IDetailRecord {
 
     }
 
-    public void GetAndSave(String EmpID,Date Begin, Date End) throws ApiException {
+    public void GetAndSave(String EmpID,Date Begin, Date End, List<tbattendanceuser> users) throws ApiException {
         Long pageIndex = 0L;
         List<Long> EmpIDS = Arrays.stream(EmpID.split(",")).map(f->Long.parseLong(f)).collect(Collectors.toList());
 
@@ -230,7 +237,7 @@ public class AttendanceDetailRecord implements IDetailRecord {
         if (!missingEmpIds.isEmpty()) {
             String sample = missingEmpIds.stream().limit(20).map(String::valueOf).collect(Collectors.joining(","));
             logger.warn("考勤明细同步存在员工未建立钉钉映射，缺失{}人，示例empId={}，时间区间={}~{}",
-                    missingEmpIds.size(), sample, shortFormat.format(Begin), shortFormat.format(End));
+                    missingEmpIds.size(), sample, SHORT_FORMAT.get().format(Begin), SHORT_FORMAT.get().format(End));
         }
 
         List<String> IDS = safeUsers.stream()
@@ -245,14 +252,23 @@ public class AttendanceDetailRecord implements IDetailRecord {
                 if (ID.size() == 0) break;
                 OapiAttendanceListRecordRequest req = new OapiAttendanceListRecordRequest();
                 req.setUserIds(ID);
-                req.setCheckDateFrom(format.format(Begin));
-                req.setCheckDateTo(format.format(End));
+                req.setCheckDateFrom(FORMAT.get().format(Begin));
+                req.setCheckDateTo(FORMAT.get().format(End));
                 OapiAttendanceListRecordResponse rsp = client.execute(req, password);
                 ddLogger.Info(rsp,((DefaultDingTalkClient)client).getRequestUrl(),Begin,AttendanceDetailRecord.class);
                 if (rsp.isSuccess()) {
                     List<HrmAttendanceClock> cs=new ArrayList<>();
                     List<tbattendancedetail> ds=new ArrayList<>();
                     List<OapiAttendanceListRecordResponse.Recordresult> rs = rsp.getRecordresult();
+                    // 整页批量预查已存在主键，替代循环内每条记录两次 findById（每页 2 条 SQL 代替 2N 条）
+                    Set<Long> pageRecordIds = rs.stream().map(OapiAttendanceListRecordResponse.Recordresult::getId)
+                            .filter(Objects::nonNull).collect(Collectors.toSet());
+                    Set<Long> existingClockIds = pageRecordIds.isEmpty() ? Collections.emptySet()
+                            : clockRep.findAllById(pageRecordIds).stream()
+                                    .map(HrmAttendanceClock::getClockId).collect(Collectors.toSet());
+                    Set<Long> existingDetailIds = pageRecordIds.isEmpty() ? Collections.emptySet()
+                            : detailRep.findAllById(pageRecordIds).stream()
+                                    .map(tbattendancedetail::getId).collect(Collectors.toSet());
                     for (int i = 0; i < rs.size(); i++) {
                         OapiAttendanceListRecordResponse.Recordresult r = rs.get(i);
                         Long Id = r.getId();
@@ -261,7 +277,7 @@ public class AttendanceDetailRecord implements IDetailRecord {
                         String userId = r.getUserId();
                         Long empId = 0L;
                         String empName="";
-                        Optional<tbattendanceuser> findUsers = users.stream().filter(f -> f.getUserId().equals(userId)).findFirst();
+                        Optional<tbattendanceuser> findUsers = safeUsers.stream().filter(f -> f.getUserId().equals(userId)).findFirst();
                         if (findUsers.isPresent()) {
                             empId = findUsers.get().getEmpId();
                             empName=findUsers.get().getUserName();
@@ -272,10 +288,9 @@ public class AttendanceDetailRecord implements IDetailRecord {
                                 Integer N=Rs.get(empName)+1;
                                 Rs.replace(empName,N);
                             }
-                            logger.info("加入了"+empName+shortFormat.format(r.getUserCheckTime())+"的打卡记录！");
+                            logger.info("加入了"+empName+SHORT_FORMAT.get().format(r.getUserCheckTime())+"的打卡记录！");
                         }
-                        Optional<HrmAttendanceClock> findClocks = clockRep.findById(Id);
-                        if (findClocks.isPresent() == false) {
+                        if (!existingClockIds.contains(Id)) {
                             HrmAttendanceClock newOne = new HrmAttendanceClock();
                             newOne.setClockId(Id);
                             newOne.setClockTime(r.getUserCheckTime());
@@ -346,8 +361,7 @@ public class AttendanceDetailRecord implements IDetailRecord {
                             cs.add(newOne);
                         }
 
-                        Optional<tbattendancedetail> findRs = detailRep.findById(Id);
-                        if (findRs.isPresent() == false) {
+                        if (!existingDetailIds.contains(Id)) {
                             tbattendancedetail newR = new tbattendancedetail();
                             newR.setId(Id);
                             if(StringUtil.isEmpty(r.getCheckType())) continue;
@@ -390,11 +404,8 @@ public class AttendanceDetailRecord implements IDetailRecord {
             logger.info("考勤明细同步完成，入参员工{}人，可用钉钉用户{}人，成功保存{}条记录", EmpIDS.size(), IDS.size(), Total);
         } else {
             logger.error("未找到可用于拉取考勤明细的钉钉用户。入参员工{}人，缺失映射{}人，时间区间={}~{}",
-                    EmpIDS.size(), missingEmpIds.size(), shortFormat.format(Begin), shortFormat.format(End));
+                    EmpIDS.size(), missingEmpIds.size(), SHORT_FORMAT.get().format(Begin), SHORT_FORMAT.get().format(End));
         }
     }
 
-    public void setUsers(List<tbattendanceuser> users) {
-        this.users = users;
-    }
 }
