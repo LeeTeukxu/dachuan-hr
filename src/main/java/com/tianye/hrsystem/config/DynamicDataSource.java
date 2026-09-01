@@ -1,6 +1,7 @@
 package com.tianye.hrsystem.config;
 
 import com.tianye.hrsystem.model.LoginUserInfo;
+import com.zaxxer.hikari.HikariDataSource;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.jdbc.datasource.lookup.AbstractRoutingDataSource;
 
@@ -27,6 +28,14 @@ public class DynamicDataSource extends AbstractRoutingDataSource {
         String Key = "";
         if (info != null) Key = info.getCompanyId();
         else Key = "Default";
+
+        // 检查已有数据源是否已被 evictor 关闭，如果是则移除并重建
+        Object existing = OX.get(Key);
+        if (existing instanceof HikariDataSource && ((HikariDataSource) existing).isClosed()) {
+            log.info("【数据源路由】租户 {} 的连接池已被驱逐关闭，重新获取", Key);
+            OX.remove(Key);
+        }
+
         if (OX.containsKey(Key) == false) {
             if ("Default".equals(Key)) {
                 log.warn("【数据源路由】Default 数据源缺失");

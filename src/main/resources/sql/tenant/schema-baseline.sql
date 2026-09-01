@@ -777,6 +777,7 @@ CREATE TABLE `hrm_employee_quit_info` (
   `update_user_id` bigint DEFAULT NULL COMMENT '更新人id',
   `update_time` datetime DEFAULT NULL COMMENT '更新时间',
   `create_user_id` bigint DEFAULT NULL COMMENT '创建人id',
+  `is_archived` tinyint DEFAULT 0 COMMENT '是否归档',
   PRIMARY KEY (`quit_info_id`),
   KEY `wk_hrm_employee_quit_info_employee_id_index` (`employee_id`) USING BTREE
 ) ENGINE=InnoDB AUTO_INCREMENT=2091784009086423043 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin ROW_FORMAT=DYNAMIC COMMENT='离职信息';
@@ -1500,7 +1501,7 @@ CREATE TABLE `tbattendanceapprove` (
   `beginTime` datetime DEFAULT NULL COMMENT '开始时间',
   `endTime` datetime DEFAULT NULL COMMENT '结束时间',
   `durationUnit` varchar(20) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci DEFAULT NULL COMMENT '时长单位',
-  `userId` varchar(20) DEFAULT NULL,
+  `userId` varchar(100) DEFAULT NULL,
   `groupId` bigint DEFAULT NULL,
   `createTime` datetime DEFAULT NULL,
   `duration` varchar(20) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci DEFAULT NULL COMMENT '时长',
@@ -1545,7 +1546,7 @@ CREATE TABLE `tbattendancerecord` (
   `locationResult` varchar(50) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci DEFAULT NULL COMMENT '位置结果（Normal：范围内,Outside：范围外,NotSigned：未打卡）',
   `groupId` bigint DEFAULT NULL COMMENT '考勤组',
   `timeResult` varchar(50) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci DEFAULT NULL COMMENT '打卡结果(Normal：正常,Early：早退,Late：迟到,SeriousLate：严重迟到,Absenteeism：旷工迟到,NotSigned：未打卡)',
-  `userId` varchar(20) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci DEFAULT NULL COMMENT '打卡用户ID',
+  `userId` varchar(100) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci DEFAULT NULL COMMENT '打卡用户ID',
   `workDate` datetime DEFAULT NULL ON UPDATE CURRENT_TIMESTAMP COMMENT '工作日',
   `sourceType` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci DEFAULT NULL COMMENT '打卡来源(ATM：考勤机打卡（指纹/人脸打卡）,BEACON：IBeacon,DING_ATM：钉钉考勤机（考勤机蓝牙打卡）,USER：用户打卡,BOSS：老板改签,APPROVE：审批系统,SYSTEM：考勤系统,AUTO_CHECK：自动打卡)',
   `planCheckTime` datetime DEFAULT NULL ON UPDATE CURRENT_TIMESTAMP COMMENT '计划打卡时间',
@@ -1948,3 +1949,58 @@ CREATE TABLE `wk_hrm_config` (
   `update_time` datetime DEFAULT NULL COMMENT '更新时间',
   PRIMARY KEY (`config_id`) USING BTREE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci ROW_FORMAT=DYNAMIC COMMENT='人力资源配置表';
+CREATE TABLE `hrm_dashboard_role_permission` (
+  `id` bigint NOT NULL COMMENT '主键ID',
+  `role_id` varchar(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci DEFAULT NULL COMMENT '角色id（tbroletypes.id）',
+  `config_json` text CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci COMMENT '配置JSON',
+  `update_by` varchar(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci DEFAULT NULL COMMENT '最后修改人',
+  `create_time` datetime DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+  `update_time` datetime DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+  PRIMARY KEY (`id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='看板角色权限配置';
+CREATE TABLE `hrm_employee_employment_record` (
+  `record_id` bigint NOT NULL AUTO_INCREMENT COMMENT '记录id',
+  `employee_id` bigint NOT NULL COMMENT '员工id',
+  `type` int NOT NULL COMMENT '类型1入职 2转正 3离职',
+  `node_time` date DEFAULT NULL COMMENT '节点时间（入职日期/转正日期/离职日期）',
+  `remarks` varchar(255) DEFAULT NULL COMMENT '备注',
+  `create_time` datetime DEFAULT NULL COMMENT '创建时间',
+  `create_user_id` bigint DEFAULT NULL COMMENT '创建人',
+  `update_time` datetime DEFAULT NULL COMMENT '更新时间',
+  `update_user_id` bigint DEFAULT NULL COMMENT '更新人',
+  PRIMARY KEY (`record_id`),
+  KEY `idx_employee_id` (`employee_id`)
+) ENGINE=InnoDB AUTO_INCREMENT=396 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='员工入职转正离职记录';
+CREATE TABLE `hrm_key_post_config` (
+  `id` bigint NOT NULL COMMENT '主键',
+  `post_name` varchar(100) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL COMMENT '关键岗位名称',
+  `create_user_id` bigint DEFAULT NULL COMMENT '创建人id',
+  `create_time` datetime DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_post_name` (`post_name`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='关键岗位配置';
+CREATE TABLE `hrm_performance_indicator` (
+  `id` bigint NOT NULL COMMENT '主键',
+  `dept_id` bigint DEFAULT NULL COMMENT '部门id，NULL表示全公司',
+  `stat_year` int NOT NULL COMMENT '统计年份',
+  `stat_month` int NOT NULL COMMENT '统计月份1-12',
+  `indicator_type` tinyint NOT NULL COMMENT '指标类型 1产量 2质量 3成本 4安全 5效率',
+  `target_value` decimal(18,4) DEFAULT NULL COMMENT '目标值',
+  `actual_value` decimal(18,4) DEFAULT NULL COMMENT '实际值',
+  `remark` varchar(500) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci DEFAULT NULL COMMENT '备注',
+  `create_time` datetime DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+  `update_time` datetime DEFAULT NULL COMMENT '更新时间',
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_dept_year_month_type` (`dept_id`,`stat_year`,`stat_month`,`indicator_type`),
+  KEY `idx_year_month` (`stat_year`,`stat_month`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='绩效指标数据';
+CREATE TABLE `hrm_user_dashboard_config` (
+  `id` bigint NOT NULL COMMENT '主键',
+  `user_id` varchar(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL COMMENT '用户id',
+  `board_key` varchar(32) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL COMMENT '看板标识 personnel/salary/perf/flow',
+  `config_json` text CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci COMMENT '配置JSON，隐藏元素列表等',
+  `create_time` datetime DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+  `update_time` datetime DEFAULT NULL COMMENT '更新时间',
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_user_board` (`user_id`,`board_key`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='用户看板配置';

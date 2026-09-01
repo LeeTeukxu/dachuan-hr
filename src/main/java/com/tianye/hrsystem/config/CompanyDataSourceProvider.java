@@ -12,6 +12,7 @@ import javax.annotation.PreDestroy;
 import javax.sql.DataSource;
 import java.sql.Connection;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
@@ -42,6 +43,8 @@ public class CompanyDataSourceProvider {
     private static final long EVICTOR_PERIOD_MILLIS = 5 * 60 * 1000L;
 
     private static final ConcurrentHashMap<String, CacheEntry> tenantPoolCache = new ConcurrentHashMap<>();
+    /** 正在执行后台任务的租户集合，evictor 跳过这些租户不驱逐 */
+    private static final Set<String> activeTenants = ConcurrentHashMap.newKeySet();
     private static volatile DataSource defaultDataSource;
 
     private static final ScheduledExecutorService evictor =
@@ -190,6 +193,10 @@ public class CompanyDataSourceProvider {
         try {
             long now = System.currentTimeMillis();
             for (Map.Entry<String, CacheEntry> e : tenantPoolCache.entrySet()) {
+                // 跳过正在执行后台任务的活跃租户
+                if (activeTenants.contains(e.getKey())) {
+                    continue;
+                }
                 if (now - e.getValue().lastAccessMillis > IDLE_EVICT_MILLIS) {
                     CacheEntry removed = tenantPoolCache.remove(e.getKey());
                     if (removed != null) {
@@ -228,6 +235,20 @@ public class CompanyDataSourceProvider {
             } catch (Exception ignore) {
                 logger.warn("关闭数据源失败: {}", ignore.getMessage());
             }
+        }
+    }
+
+    /** 标记租户为活跃（后台任务运行期间），evictor 将跳过该租户 */
+    public static void markActive(String companyId) {
+        if (companyId != null) {
+            activeTenants.add(companyId);
+        }
+    }
+
+    /** 取消租户活跃标记（后台任务完成），允许 evictor 正常驱逐 */
+    public static void markInactive(String companyId) {
+        if (companyId != null) {
+            activeTenants.remove(companyId);
         }
     }
 }
