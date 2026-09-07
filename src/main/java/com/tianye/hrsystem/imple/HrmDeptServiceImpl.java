@@ -11,6 +11,7 @@ import com.tianye.hrsystem.entity.bo.AddDeptBO;
 import com.tianye.hrsystem.entity.bo.QueryDeptListBO;
 import com.tianye.hrsystem.entity.bo.QueryEmployeeByDeptIdBO;
 import com.tianye.hrsystem.entity.vo.DeptVO;
+import com.tianye.hrsystem.entity.vo.DeptLeaderVO;
 import com.tianye.hrsystem.entity.vo.QueryEmployeeListByDeptIdVO;
 import com.tianye.hrsystem.entity.vo.SimpleHrmDeptVO;
 import com.tianye.hrsystem.enums.DataAuthEnum;
@@ -50,9 +51,61 @@ public class HrmDeptServiceImpl extends BaseServiceImpl<HrmDeptMapper, HrmDept> 
 
     @Override
     public void addOrUpdate(AddDeptBO AddDeptBo) {
+        // 验证：不能将上级组织设置为自己
+        if (AddDeptBo.getDeptId() != null && AddDeptBo.getDeptId().equals(AddDeptBo.getParentId())) {
+            throw new CrmException(HrmCodeEnum.PARENT_DEPT_CANNOT_BE_SELF);
+        }
+
         HrmDept hrmDept = BeanUtil.copyProperties(AddDeptBo, HrmDept.class);
-        hrmDept.setCode(generateCode(AddDeptBo.getDeptId()));
+        // 只有在新增时才重新生成code，编辑时保持原有code
+        if (AddDeptBo.getDeptId() == null) {
+            hrmDept.setCode(generateCode(null));
+        } else {
+            // 编辑时获取原有的code
+            HrmDept existingDept = getById(AddDeptBo.getDeptId());
+            if (existingDept != null) {
+                hrmDept.setCode(existingDept.getCode());
+            } else {
+                hrmDept.setCode(generateCode(null));
+            }
+        }
         saveOrUpdate(hrmDept);
+        // 保存分管领导后，部门下所有员工的直属上级同步为该分管领导
+        syncDeptLeaderToEmployees(hrmDept.getDeptId(), AddDeptBo.getLeaderEmployeeId());
+    }
+
+    @Override
+    public DeptLeaderVO queryDeptLeader(Long deptId) {
+        DeptLeaderVO leaderVO = new DeptLeaderVO();
+        if (deptId == null) {
+            return leaderVO;
+        }
+        HrmDept dept = getById(deptId);
+        if (dept == null || dept.getLeaderEmployeeId() == null) {
+            return leaderVO;
+        }
+        leaderVO.setLeaderEmployeeId(dept.getLeaderEmployeeId());
+        HrmEmployee leader = employeeService.getById(dept.getLeaderEmployeeId());
+        if (leader != null) {
+            leaderVO.setLeaderName(leader.getEmployeeName());
+        }
+        return leaderVO;
+    }
+
+    /**
+     * 分管领导变更时，把部门下未删除员工的直属上级统一改为该分管领导；分管领导为空不改动。
+     * 分管领导本人也是部门员工时不改他自己的直属上级（自己不能是自己的上级）
+     */
+    private void syncDeptLeaderToEmployees(Long deptId, Long leaderEmployeeId) {
+        if (deptId == null || leaderEmployeeId == null) {
+            return;
+        }
+        employeeService.lambdaUpdate()
+                .eq(HrmEmployee::getDeptId, deptId)
+                .eq(HrmEmployee::getIsDel, 0)
+                .ne(HrmEmployee::getEmployeeId, leaderEmployeeId)
+                .set(HrmEmployee::getParentId, leaderEmployeeId)
+                .update();
     }
 
     @Override

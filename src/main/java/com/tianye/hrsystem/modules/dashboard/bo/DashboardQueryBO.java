@@ -72,6 +72,9 @@ public class DashboardQueryBO extends PageEntity {
     @ApiModelProperty("公司ID，可选，集团模式下传入指定分公司")
     private String companyId;
 
+    @ApiModelProperty("公司名称，用于定位部门树根节点过滤子公司数据")
+    private String companyName;
+
     @ApiModelProperty("看板元素唯一键（board:type:key），用于权限校验申明")
     private String dashEl;
 }

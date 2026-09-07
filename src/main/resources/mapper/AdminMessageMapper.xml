@@ -1,0 +1,60 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.tianye.hrsystem.mapper.AdminMessageMapper">
+
+    <!-- 查询通知列表（系统级+个人） -->
+    <select id="selectList" resultType="com.tianye.hrsystem.entity.po.AdminMessage">
+        SELECT * FROM admin_message 
+        WHERE (recipient_user = 0 OR recipient_user = #{userId})
+        <if test="isRead != null">
+            AND is_read = #{isRead}
+        </if>
+        ORDER BY create_time DESC
+        LIMIT #{limit} OFFSET #{offset}
+    </select>
+
+    <!-- 查询未读数量 -->
+    <select id="countUnread" resultType="int">
+        SELECT COUNT(*) FROM admin_message 
+        WHERE (recipient_user = 0 OR recipient_user = #{userId})
+        AND is_read = 0
+    </select>
+
+    <!-- 查询用户消息总数 -->
+    <select id="countByUser" resultType="int">
+        SELECT COUNT(*) FROM admin_message 
+        WHERE (recipient_user = 0 OR recipient_user = #{userId})
+        <if test="isRead != null">
+            AND is_read = #{isRead}
+        </if>
+    </select>
+
+    <!-- 标记单条已读 -->
+    <update id="markAsRead">
+        UPDATE admin_message SET is_read = 1, read_time = NOW() 
+        WHERE message_id = #{messageId}
+    </update>
+
+    <!-- 标记所有已读 -->
+    <update id="markAllAsRead">
+        UPDATE admin_message SET is_read = 1, read_time = NOW() 
+        WHERE (recipient_user = 0 OR recipient_user = #{userId})
+        AND is_read = 0
+    </update>
+
+    <!-- 删除单条 -->
+    <delete id="deleteById">
+        DELETE FROM admin_message WHERE message_id = #{messageId}
+    </delete>
+
+    <!-- 删除所有 -->
+    <delete id="deleteAll">
+        DELETE FROM admin_message WHERE (recipient_user = 0 OR recipient_user = #{userId})
+    </delete>
+
+    <!-- 按类型删除 -->
+    <delete id="deleteByType">
+        DELETE FROM admin_message WHERE type = #{type} AND (recipient_user = 0 OR recipient_user = #{userId})
+    </delete>
+
+</mapper>

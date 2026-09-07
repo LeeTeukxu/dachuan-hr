@@ -78,6 +78,17 @@ public interface LoginUserMapper {
             "WHERE parent_id=0 ORDER BY dept_id LIMIT 1")
     Long findTopDeptId(@Param("companyId") String companyId, @Param("suffix") String suffix);
 
+    // ========== 排班小程序：租户级菜单开关（员工 token 无菜单树时按"任一角色勾选"判定） ==========
+
+    @Select(value = "<script>" +
+            "SELECT COUNT(*) FROM hr_${companyId}${suffix}.tbrolemenu rm " +
+            "JOIN hr_${companyId}${suffix}.tbmenu m ON rm.menu_id = m.id " +
+            "WHERE m.canuse = 1 AND m.path IN " +
+            "<foreach collection='menuPaths' item='p' open='(' separator=',' close=')'>#{p}</foreach>" +
+            "</script>")
+    int countTenantMenuPermission(@Param("companyId") String companyId, @Param("suffix") String suffix,
+                                  @Param("menuPaths") List<String> menuPaths);
+
     // ========== 企业权限：角色与菜单权限（按当前登录库角色基准，同步到目标企业）==========
 
     @Select(value = "SELECT name FROM hr_${companyId}${suffix}.tbroletypes WHERE id=#{roleId}")
@@ -109,6 +120,12 @@ public interface LoginUserMapper {
     @Update(value = "UPDATE hr_${companyId}${suffix}.tbloginuser SET roleId=#{roleId} WHERE account=#{account}")
     int updateTenantAccountRole(@Param("companyId") String companyId, @Param("suffix") String suffix,
                                 @Param("account") String account, @Param("roleId") Integer roleId);
+
+    // ========== 批量角色同步：查询指定角色的账号 ==========
+
+    @Select(value = "SELECT account FROM hr_${companyId}${suffix}.tbloginuser WHERE roleId=#{roleId} AND canLogin=1")
+    List<String> getAccountsByRoleId(@Param("companyId") String companyId, @Param("suffix") String suffix,
+                                     @Param("roleId") Integer roleId);
 
     // ========== 密码策略（A：首次登录强改 / 锁定；B：超管重置）==========
 

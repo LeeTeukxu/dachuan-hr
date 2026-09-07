@@ -1,5 +1,6 @@
 package com.tianye.hrsystem.modules.workplan.service.impl;
 
+import com.tianye.hrsystem.model.HrmEmployee;
 import com.tianye.hrsystem.model.tbattendanceuser;
 import com.tianye.hrsystem.modules.workplan.bo.SaveWorkPlanPositionBO;
 import com.tianye.hrsystem.modules.workplan.bo.SaveWorkPlanProductBO;
@@ -13,7 +14,7 @@ import com.tianye.hrsystem.modules.workplan.vo.WorkPlanProductTreeVO;
 import com.tianye.hrsystem.repository.HrmWorkPlanPositionEmployeeRepository;
 import com.tianye.hrsystem.repository.HrmWorkPlanProductPositionRepository;
 import com.tianye.hrsystem.repository.HrmWorkPlanProductRepository;
-import com.tianye.hrsystem.repository.tbattendanceuserRepository;
+import com.tianye.hrsystem.repository.hrmEmployeeRepository;
 import org.apache.commons.lang.StringUtils;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
@@ -47,7 +48,7 @@ public class WorkPlanProductServiceImpl implements IWorkPlanProductService {
     private HrmWorkPlanPositionEmployeeRepository positionEmployeeRepository;
 
     @Autowired
-    private tbattendanceuserRepository attendanceUserRepository;
+    private hrmEmployeeRepository employeeRepository;
 
     @Override
     public List<WorkPlanProductTreeVO> queryTree() {
@@ -269,6 +270,10 @@ public class WorkPlanProductServiceImpl implements IWorkPlanProductService {
         positionRepository.deleteById(id);
     }
 
+    /**
+     * 员工身份直接从档案构建（2026-09 决议：不再读写 tbattendanceuser）。
+     * userId 取 dingtalk_user_id，缺失时回退 employeeId 字符串（读侧双键兼容）。
+     */
     private Map<Long, tbattendanceuser> buildAttendanceUserMap(List<HrmWorkPlanPositionEmployee> employees) {
         List<Long> employeeIds = Optional.ofNullable(employees).orElse(Collections.emptyList()).stream()
                 .map(HrmWorkPlanPositionEmployee::getEmployeeId)
@@ -278,11 +283,23 @@ public class WorkPlanProductServiceImpl implements IWorkPlanProductService {
         if (employeeIds.isEmpty()) {
             return Collections.emptyMap();
         }
-        return Optional.ofNullable(attendanceUserRepository.findAllByEmpIdIn(employeeIds))
-                .orElse(Collections.emptyList())
-                .stream()
-                .filter(item -> item.getEmpId() != null)
-                .collect(Collectors.toMap(tbattendanceuser::getEmpId, item -> item, (first, second) -> first));
+        Map<Long, tbattendanceuser> result = new LinkedHashMap<>();
+        for (HrmEmployee employee : employeeRepository.findAllByEmployeeIdIn(employeeIds)) {
+            if (employee == null || employee.getEmployeeId() == null) {
+                continue;
+            }
+            String userId = StringUtils.trimToEmpty(employee.getDingtalkUserId());
+            if (StringUtils.isBlank(userId)) {
+                userId = String.valueOf(employee.getEmployeeId());
+            }
+            tbattendanceuser identity = new tbattendanceuser();
+            identity.setEmpId(employee.getEmployeeId());
+            identity.setUserId(userId);
+            identity.setUserName(employee.getEmployeeName());
+            identity.setDepId(employee.getDeptId());
+            result.put(employee.getEmployeeId(), identity);
+        }
+        return result;
     }
 
     private List<HrmWorkPlanPositionEmployee> buildPositionEmployees(Long positionId,

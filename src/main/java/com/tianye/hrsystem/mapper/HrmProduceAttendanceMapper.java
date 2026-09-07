@@ -5,6 +5,7 @@ import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.tianye.hrsystem.base.BaseMapper;
 import com.tianye.hrsystem.entity.bo.QueryMonthAttendanceBO;
 import com.tianye.hrsystem.entity.po.HrmProduceAttendance;
+import com.tianye.hrsystem.entity.vo.AdministrativeAttendanceReportDetailVO;
 import com.tianye.hrsystem.entity.vo.AdministrativeAttendanceReportMetricVO;
 import com.tianye.hrsystem.entity.vo.QueryMonthAttendanceVO;
 import org.apache.ibatis.annotations.Param;
@@ -26,4 +27,8 @@ public interface HrmProduceAttendanceMapper extends BaseMapper<HrmProduceAttenda
     List<AdministrativeAttendanceReportMetricVO> queryAdministrativeAttendanceReportMetrics(@Param("beginDate") Date beginDate,
                                                                                             @Param("endDate") Date endDate,
                                                                                             @Param("employeeIds") List<Long> employeeIds);
+
+    List<AdministrativeAttendanceReportDetailVO> queryAdministrativeAttendanceReportDetail(@Param("beginDate") Date beginDate,
+                                                                                           @Param("endDate") Date endDate,
+                                                                                           @Param("employeeIds") List<Long> employeeIds);
 }

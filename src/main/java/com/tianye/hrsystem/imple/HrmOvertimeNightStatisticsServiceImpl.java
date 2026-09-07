@@ -107,6 +107,8 @@ public class HrmOvertimeNightStatisticsServiceImpl implements IHrmOvertimeNightS
     private static final int REST_TYPE_FIXED_MONTHLY_REST = 2;
     private static final String WORKWEEK_SOURCE_LEGAL_REST = "legal_rest";
     private static final int ACTUAL_ATTENDANCE_FULL_DAY_MINUTES = 8 * 60;
+    private static final long STANDARD_WORK_MINUTES = 8 * 60L;
+    private static final long LUNCH_BREAK_MINUTES = 2 * 60L;
     private static final BigDecimal APPROVAL_HOURS_PER_DAY = BigDecimal.valueOf(8);
     private static final BigDecimal FRACTIONAL_DAY_RANGE_TOLERANCE_HOURS = BigDecimal.valueOf(0.30);
 
@@ -630,6 +632,7 @@ public class HrmOvertimeNightStatisticsServiceImpl implements IHrmOvertimeNightS
             row.setActualAttendanceRemark(summary.getActualAttendanceRemark());
             row.setOvertimeHours(overtimeHours);
             row.setNightShiftCount(nightShiftCount);
+            row.setCalcProcess(summary.getCalcProcess());
             return row;
         }
         row.setExpectedAttendanceDays(resolveExpectedAttendanceDaysForQuery(
@@ -654,6 +657,7 @@ public class HrmOvertimeNightStatisticsServiceImpl implements IHrmOvertimeNightS
         row.setActualAttendanceRemark(actualAttendance.getRemark());
         row.setOvertimeHours(overtimeHours);
         row.setNightShiftCount(nightShiftCount);
+        row.setCalcProcess(summary.getCalcProcess());
         return row;
     }
 
@@ -713,6 +717,7 @@ public class HrmOvertimeNightStatisticsServiceImpl implements IHrmOvertimeNightS
                 : BigDecimal.ZERO.setScale(2, RoundingMode.HALF_UP);
         row.setOvertimeHours(overtimeHours);
         row.setNightShiftCount(resolveCountableNightShiftCount(employee, detail.getNightShiftCount()));
+        row.setCalcProcess(detail.getCalcProcess());
         int expectedAttendanceDays = manualAttendanceAdjusted
                 ? defaultExpectedAttendanceDays(detail)
                 : resolveExpectedAttendanceDaysForQuery(
@@ -884,6 +889,10 @@ public class HrmOvertimeNightStatisticsServiceImpl implements IHrmOvertimeNightS
                                 resolveAccruedAttendanceOvertimeHours(employee, month, overtimeHours)
                         )
                         : persistedAccruedAttendanceHours;
+        String calcProcess = (details != null ? details : Collections.<HrmOvertimeNightStatisticsDetail>emptyList()).stream()
+                .filter(detail -> detail != null && detail.getCalcProcess() != null && !detail.getCalcProcess().trim().isEmpty())
+                .map(HrmOvertimeNightStatisticsDetail::getCalcProcess)
+                .collect(Collectors.joining("\n"));
         return new OvertimeNightSummary(
                 overtimeHours,
                 nightShiftCount,
@@ -894,7 +903,8 @@ public class HrmOvertimeNightStatisticsServiceImpl implements IHrmOvertimeNightS
                 actualAttendance.getRemark(),
                 accruedAttendanceHours,
                 dailyDetails,
-                manualAttendanceAdjusted
+                manualAttendanceAdjusted,
+                calcProcess
         );
     }
 
@@ -903,6 +913,7 @@ public class HrmOvertimeNightStatisticsServiceImpl implements IHrmOvertimeNightS
         row.setWorkDate(detail.getWorkDate() != null ? DAY_FORMATTER.format(toLocalDateTime(detail.getWorkDate()).toLocalDate()) : null);
         row.setOvertimeHours(defaultOvertime(detail.getOvertimeHours()));
         row.setNightShiftCount(detail.getNightShiftCount() != null ? detail.getNightShiftCount() : 0);
+        row.setCalcProcess(detail.getCalcProcess());
         return row;
     }
 
@@ -922,21 +933,26 @@ public class HrmOvertimeNightStatisticsServiceImpl implements IHrmOvertimeNightS
         Date end = toDate(monthEnd.atTime(LocalTime.MAX));
         Date clockEnd = toDate(monthEnd.plusDays(1).atTime(LocalTime.MAX));
 
-        List<HrmAttendancePlan> plans = planRepository.findAllByEmpIdAndWorkDateBetween(employee.getEmployeeId(), begin, end);
-        Map<String, List<HrmAttendancePlan>> dailyPlanMap = new LinkedHashMap<>();
-        for (HrmAttendancePlan plan : plans != null ? plans : Collections.<HrmAttendancePlan>emptyList()) {
-            if (plan == null || plan.getWorkDate() == null) {
+        String planUserId = resolveStatisticsPlanUserId(employee);
+        List<tbplanlist> localPlans = planUserId == null
+                ? Collections.<tbplanlist>emptyList()
+                : localPlanRepository.findAllByWorkDateBetweenOrderByIdDesc(begin, end);
+        Map<String, List<tbplanlist>> localPlanDayMap = new LinkedHashMap<>();
+        Set<Long> monthlyGroupIds = new LinkedHashSet<>();
+        for (tbplanlist localPlan : localPlans != null ? localPlans : Collections.<tbplanlist>emptyList()) {
+            if (localPlan == null || localPlan.getWorkDate() == null) {
                 continue;
             }
-            String key = resolveDayKey(plan.getWorkDate());
-            dailyPlanMap.computeIfAbsent(key, ignored -> new ArrayList<>()).add(plan);
+            if (!parsePlanUserIds(localPlan.getUserId()).contains(planUserId)) {
+                continue;
+            }
+            String key = resolveDayKey(localPlan.getWorkDate());
+            localPlanDayMap.computeIfAbsent(key, ignored -> new ArrayList<>()).add(localPlan);
+            Long planGroupId = parseLongValue(localPlan.getGroupId());
+            if (planGroupId != null) {
+                monthlyGroupIds.add(planGroupId);
+            }
         }
-        List<Long> monthlyGroupIds = (plans != null ? plans : Collections.<HrmAttendancePlan>emptyList()).stream()
-                .filter(Objects::nonNull)
-                .map(HrmAttendancePlan::getGroupId)
-                .filter(Objects::nonNull)
-                .distinct()
-                .collect(Collectors.toList());
 
         List<HrmAttendanceClock> clockList = clockRepository.findAllByClockEmployeeIdAndClockTimeBetween(employee.getEmployeeId(), begin, clockEnd);
         int expectedAttendanceDays = resolveExpectedAttendanceDays(employee, month, expectedAttendanceDaysCache);
@@ -966,12 +982,7 @@ public class HrmOvertimeNightStatisticsServiceImpl implements IHrmOvertimeNightS
                         LinkedHashMap::new,
                         Collectors.mapping(Map.Entry::getValue, Collectors.toList())
                 ));
-        Map<String, HrmAttendanceShift> localCustomShiftMap = buildLocalCustomShiftMap(
-                employee.getEmployeeId(),
-                begin,
-                end,
-                shiftCache
-        );
+        Map<String, HrmWorkPlanCustomShift> customShiftCache = new LinkedHashMap<>();
         Map<String, OvertimeApprovalAggregate> attendanceApprovalMap = buildAttendanceApprovalMap(
                 employee.getEmployeeId(),
                 begin,
@@ -980,23 +991,22 @@ public class HrmOvertimeNightStatisticsServiceImpl implements IHrmOvertimeNightS
         if (shouldDebugEmployee(employee)) {
             debugTrace(String.format(
                     Locale.ROOT,
-                    "[single-stat-data] employeeId=%s employeeName=%s month=%s planCount=%d planDays=%s clockCount=%d clockDayKeys=%s detailCount=%d detailDayKeys=%s localCustomShiftDays=%s approvalDays=%s",
+                    "[single-stat-data] employeeId=%s employeeName=%s month=%s localPlanCount=%d localPlanDays=%s clockCount=%d clockDayKeys=%s detailCount=%d detailDayKeys=%s approvalDays=%s",
                     employee.getEmployeeId(),
                     employee.getEmployeeName(),
                     month.format(MONTH_FORMATTER),
-                    plans != null ? plans.size() : 0,
-                    dailyPlanMap.keySet(),
+                    localPlans != null ? localPlans.size() : 0,
+                    localPlanDayMap.keySet(),
                     clockList != null ? clockList.size() : 0,
                     clockMap.keySet(),
                     attendanceDetails != null ? attendanceDetails.size() : 0,
                     attendanceDetailMap.keySet(),
-                    localCustomShiftMap.keySet(),
                     attendanceApprovalMap.keySet()
             ));
         }
 
         Set<String> candidateDayKeys = new LinkedHashSet<>();
-        candidateDayKeys.addAll(dailyPlanMap.keySet());
+        candidateDayKeys.addAll(localPlanDayMap.keySet());
         candidateDayKeys.addAll(clockMap.keySet());
         candidateDayKeys.addAll(attendanceDetailMap.keySet());
         candidateDayKeys.addAll(attendanceApprovalMap.keySet());
@@ -1014,9 +1024,12 @@ public class HrmOvertimeNightStatisticsServiceImpl implements IHrmOvertimeNightS
         Map<String, Set<String>> consumedCarryoverPunchKeys = new LinkedHashMap<>();
         for (LocalDate workDate : orderedWorkDates) {
             String dayKey = DAY_FORMATTER.format(workDate);
-            List<HrmAttendancePlan> dayPlans = dailyPlanMap.getOrDefault(dayKey, Collections.emptyList());
-            HrmAttendancePlan plan = selectPrimaryPlan(dayPlans);
-            LocalDateTime planCheckTime = resolvePlanCheckTime(plan);
+            List<tbplanlist> dayPlans = localPlanDayMap.getOrDefault(dayKey, Collections.emptyList());
+            tbplanlist plan = selectPrimaryLocalPlan(dayPlans);
+            boolean restDayPlan = isRestLocalPlan(plan);
+            HrmWorkPlanCustomShift matchedCustomShift = plan != null && plan.getCustomShiftId() != null
+                    ? resolveCustomShiftCached(plan.getCustomShiftId(), customShiftCache)
+                    : null;
             List<HrmAttendanceClock> dayClocks = filterConsumedClockRecords(
                     dayKey,
                     clockMap.getOrDefault(dayKey, Collections.emptyList()),
@@ -1034,45 +1047,38 @@ public class HrmOvertimeNightStatisticsServiceImpl implements IHrmOvertimeNightS
             List<HrmAttendanceClock> offDutyClocks = dayClocks.stream()
                     .filter(clock -> Objects.equals(clock.getClockType(), 2))
                     .collect(Collectors.toList());
-            List<Long> fallbackGroupIds = !dayPlans.isEmpty() ? monthlyGroupIds : Collections.emptyList();
+            List<Long> fallbackGroupIds = !dayPlans.isEmpty() ? new ArrayList<>(monthlyGroupIds) : Collections.<Long>emptyList();
             HrmAttendanceShift resolvedDateShift = resolveDateShift(employee.getEmployeeId(), workDate);
-            HrmAttendanceShift localCustomShift = localCustomShiftMap.get(dayKey);
-            HrmAttendanceShift shift = localCustomShift;
-            if (shift == null) {
-                shift = resolveShiftByGroupAndDate(
-                        shiftCache,
-                        plan != null ? plan.getClassId() : null,
-                        plan != null ? plan.getGroupId() : null,
-                        fallbackGroupIds,
-                        workDate,
-                        groupCache
-                );
+            HrmAttendanceShift shift = null;
+            if (!restDayPlan && plan != null) {
+                if (isCustomLocalPlan(plan)) {
+                    shift = resolveLocalCustomShift(plan, shiftCache);
+                }
+                if (shift == null) {
+                    shift = resolveShiftByGroupAndDate(
+                            shiftCache,
+                            parseLongValue(plan.getClassId()),
+                            parseLongValue(plan.getGroupId()),
+                            fallbackGroupIds,
+                            workDate,
+                            groupCache
+                    );
+                }
                 if (shift == null) {
                     shift = resolvedDateShift;
                 }
             }
             List<PunchRecord> punchRecords = buildPunchRecords(dayClocks, dayDetails);
-            if (shouldDebugEmployee(employee)) {
-                debugTrace(buildShiftResolutionTrace(
-                        workDate,
-                        dayPlans,
-                        plan,
-                        fallbackGroupIds,
-                        shiftCache,
-                        groupCache,
-                        resolvedDateShift
-                ));
-            }
             OvertimeNightClockResolver.ScheduledEndTimeResolution scheduledEndResolution =
                     OvertimeNightClockResolver.resolveScheduledEndTimeResolution(
                     workDate,
                     offDutyClocks,
                     shift,
-                    planCheckTime,
+                    null,
                     java.time.ZoneId.systemDefault()
             );
             LocalDateTime scheduledEndTime = scheduledEndResolution.getTime();
-            ScheduledStartTimeResolution scheduledStartResolution = resolveScheduledStartTimeResolution(workDate, dayPlans, shift);
+            ScheduledStartTimeResolution scheduledStartResolution = resolveScheduledStartTimeResolution(workDate, Collections.<HrmAttendancePlan>emptyList(), shift);
             LocalDateTime scheduledStartTime = scheduledStartResolution.getTime();
             String nextDayKey = resolveDayKey(toDate(workDate.plusDays(1).atStartOfDay()));
             CrossDayPunchMergeResult crossDayPunchMergeResult = mergeCrossDayOffDutyPunchRecords(
@@ -1095,51 +1101,82 @@ public class HrmOvertimeNightStatisticsServiceImpl implements IHrmOvertimeNightS
             LocalDateTime firstOnDutyTime = resolveFirstOnDutyTime(punchRecords);
             LocalDateTime actualOffTime = resolveActualOffTime(punchRecords);
             LocalDateTime effectiveStartTime = resolveEffectiveStartTime(firstOnDutyTime, scheduledStartTime);
-            OvertimeComputation overtimeComputation = buildOvertimeComputation(
-                    firstOnDutyTime,
-                    scheduledStartTime,
-                    effectiveStartTime,
-                    actualOffTime
-            );
-            long actualWorkMinutes = overtimeComputation.getActualWorkMinutes();
-            BigDecimal overtimeHours = overtimeComputation.getOvertimeHours();
+            boolean hasScheduledShift = plan != null && !restDayPlan;
+            boolean continuousShift = resolveContinuousShift(employee, plan, matchedCustomShift);
+            PunchWorkResult punchWork = computePunchWork(punchRecords);
+            long workedMinutes = punchWork.getWorkedMinutes();
+            if (hasScheduledShift && scheduledStartTime != null && firstOnDutyTime != null
+                    && firstOnDutyTime.isBefore(scheduledStartTime)) {
+                workedMinutes -= Duration.between(firstOnDutyTime, scheduledStartTime).toMinutes();
+            }
+            long lunchDeductMinutes = 0L;
+            if (hasScheduledShift && !continuousShift && punchWork.getSegmentCount() <= 1) {
+                lunchDeductMinutes = LUNCH_BREAK_MINUTES;
+                workedMinutes -= LUNCH_BREAK_MINUTES;
+            }
+            workedMinutes = Math.max(workedMinutes, 0L);
+            BigDecimal overtimeHours = hasScheduledShift && workedMinutes > STANDARD_WORK_MINUTES
+                    ? BigDecimal.valueOf(workedMinutes - STANDARD_WORK_MINUTES)
+                            .divide(BigDecimal.valueOf(60), 2, RoundingMode.HALF_UP)
+                    : BigDecimal.ZERO.setScale(2, RoundingMode.HALF_UP);
             if (approvalAggregate != null && approvalAggregate.hasOvertimeHours()) {
                 overtimeHours = approvalAggregate.getOvertimeHours();
             }
-
-            int nightShiftCount = OvertimeNightClockResolver.isNightShift(workDate, scheduledEndTime, actualOffTime) ? 1 : 0;
+            String shiftPeriod = matchedCustomShift != null && matchedCustomShift.getShiftPeriod() != null
+                    ? matchedCustomShift.getShiftPeriod()
+                    : (plan != null ? plan.getCustomShiftPeriod() : null);
+            boolean scheduledNight = hasScheduledShift
+                    && scheduledEndResolution.getSource() == OvertimeNightClockResolver.ScheduledEndTimeSource.SHIFT
+                    && OvertimeNightClockResolver.isScheduledNight(workDate, shiftPeriod, scheduledEndTime);
+            LocalDateTime effectiveOffTime = actualOffTime != null ? actualOffTime : scheduledEndTime;
+            int nightShiftCount = OvertimeNightClockResolver.isNightShift(workDate, scheduledNight, effectiveOffTime) ? 1 : 0;
             if (!canCountOvertimeNight(employee)) {
                 overtimeHours = BigDecimal.ZERO.setScale(2, RoundingMode.HALF_UP);
                 nightShiftCount = 0;
             }
+            String calcProcess = buildDailyCalcProcess(
+                    workDate,
+                    plan,
+                    restDayPlan,
+                    continuousShift,
+                    scheduledStartTime,
+                    scheduledEndTime,
+                    firstOnDutyTime,
+                    actualOffTime,
+                    workedMinutes,
+                    lunchDeductMinutes,
+                    overtimeHours,
+                    nightShiftCount,
+                    approvalAggregate != null && approvalAggregate.hasOvertimeHours(),
+                    !canCountOvertimeNight(employee)
+            );
 
             if (shouldDebugEmployee(employee)) {
                 String debugLine = String.format(
                         Locale.ROOT,
-                        "[daily] workDate=%s classId=%s groupId=%s selectedPlanId=%s selectedCheckType=%s selectedPlanCheckTime=%s scheduledEndSource=%s shift=%s shiftTimes=[%s-%s] scheduledEndTime=%s firstOnDutyTime=%s actualOffTime=%s actualWorkMinutes=%s overtimeHours=%s nightShiftCount=%s offDutyClocksCount=%d",
+                        "[daily] workDate=%s classId=%s groupId=%s selectedPlanId=%s restDay=%s shift=%s shiftTimes=[%s-%s] scheduledStartTime=%s scheduledEndTime=%s scheduledEndSource=%s firstOnDutyTime=%s actualOffTime=%s punchSegments=%d workedMinutes=%s lunchDeductMinutes=%s continuousShift=%s overtimeHours=%s nightShiftCount=%s offDutyClocksCount=%d",
                         workDate,
                         plan != null ? plan.getClassId() : null,
                         plan != null ? plan.getGroupId() : null,
-                        plan != null ? plan.getPlanId() : null,
-                        plan != null ? plan.getCheckType() : null,
-                        planCheckTime,
-                        scheduledEndResolution.getSource(),
+                        plan != null ? plan.getId() : null,
+                        restDayPlan,
                         shift != null ? shift.getShiftId() : "null",
                         shift != null ? firstNotBlank(shift.getStart3(), shift.getStart2(), shift.getStart1()) : "null",
                         shift != null ? firstNotBlank(shift.getEnd3(), shift.getEnd2(), shift.getEnd1()) : "null",
+                        scheduledStartTime,
                         scheduledEndTime,
+                        scheduledEndResolution.getSource(),
                         firstOnDutyTime,
                         actualOffTime,
-                        actualWorkMinutes,
+                        punchWork.getSegmentCount(),
+                        workedMinutes,
+                        lunchDeductMinutes,
+                        continuousShift,
                         overtimeHours,
                         nightShiftCount,
                         offDutyClocks.size()
                 );
                 debugTrace(debugLine);
-            }
-            if (shouldLogFocusConsole(employee, workDate)) {
-                log.info(buildFocusRawConsoleMessage(employee, workDate, plan, shift, scheduledStartResolution, scheduledEndResolution, scheduledStartTime, scheduledEndTime, dayClocks, dayDetails, punchRecords));
-                log.info(buildFocusCalculationConsoleMessage(employee, workDate, firstOnDutyTime, scheduledStartTime, effectiveStartTime, actualOffTime, overtimeComputation));
             }
 
             HrmOvertimeNightStatisticsDetail detail = new HrmOvertimeNightStatisticsDetail();
@@ -1152,12 +1189,13 @@ public class HrmOvertimeNightStatisticsServiceImpl implements IHrmOvertimeNightS
             detail.setDeptId(employee.getDeptId());
             detail.setDeptName(deptName);
             detail.setWorkDate(plan != null && plan.getWorkDate() != null ? plan.getWorkDate() : toDate(workDate.atStartOfDay()));
-            detail.setPlanId(plan != null ? plan.getPlanId() : null);
-            detail.setClassId(plan != null ? plan.getClassId() : null);
+            detail.setPlanId(plan != null && plan.getId() != null ? plan.getId().longValue() : null);
+            detail.setClassId(plan != null ? parseLongValue(plan.getClassId()) : null);
             detail.setScheduledOffTime(scheduledEndTime != null ? toDate(scheduledEndTime) : null);
             detail.setActualOffTime(actualOffTime != null ? toDate(actualOffTime) : null);
             detail.setOvertimeHours(overtimeHours);
             detail.setNightShiftCount(nightShiftCount);
+            detail.setCalcProcess(calcProcess);
             detail.setExpectedAttendanceDays(attendanceDays.getExpectedAttendanceDays());
             detail.setActualAttendanceDays(attendanceDays.getActualAttendanceDays());
             detail.setAccruedAttendanceHours(attendanceDays.getAccruedAttendanceHours());
@@ -1238,8 +1276,8 @@ public class HrmOvertimeNightStatisticsServiceImpl implements IHrmOvertimeNightS
 
     private boolean canCountOvertimeNight(HrmEmployee employee) {
         return employee != null
-                && Objects.equals(employee.getAffiliationSystem(), AFFILIATION_SYSTEM_PRODUCTION)
-                && Objects.equals(employee.getRestType(), REST_TYPE_FIXED_MONTHLY_REST);
+                && (Objects.equals(employee.getAffiliationSystem(), AFFILIATION_SYSTEM_PRODUCTION)
+                || Objects.equals(employee.getRestType(), REST_TYPE_FIXED_MONTHLY_REST));
     }
 
     private BigDecimal resolveCountableOvertimeHours(HrmEmployee employee, BigDecimal overtimeHours) {
@@ -1250,6 +1288,151 @@ public class HrmOvertimeNightStatisticsServiceImpl implements IHrmOvertimeNightS
 
     private int resolveCountableNightShiftCount(HrmEmployee employee, Integer nightShiftCount) {
         return canCountOvertimeNight(employee) && nightShiftCount != null ? nightShiftCount : 0;
+    }
+
+    /** 统计用排班匹配用户ID：优先员工钉钉ID，缺失时回退考勤用户快照 UserID。 */
+    private String resolveStatisticsPlanUserId(HrmEmployee employee) {
+        if (employee == null) {
+            return null;
+        }
+        String dingUserId = employee.getDingtalkUserId();
+        if (dingUserId != null && !dingUserId.trim().isEmpty()) {
+            return dingUserId.trim();
+        }
+        return attendanceUserRepository.findFirstByEmpId(employee.getEmployeeId())
+                .map(tbattendanceuser::getUserId)
+                .map(String::trim)
+                .filter(value -> !value.isEmpty())
+                .orElse(null);
+    }
+
+    /** 同日多条排班（多产品/岗位共享行）择一：非休息优先，其余取最新一条。 */
+    private tbplanlist selectPrimaryLocalPlan(List<tbplanlist> dayPlans) {
+        if (dayPlans == null || dayPlans.isEmpty()) {
+            return null;
+        }
+        return dayPlans.stream()
+                .filter(Objects::nonNull)
+                .filter(plan -> !isRestLocalPlan(plan))
+                .findFirst()
+                .orElse(dayPlans.get(0));
+    }
+
+    private boolean isRestLocalPlan(tbplanlist plan) {
+        if (plan == null) {
+            return false;
+        }
+        if (plan.getRestShiftType() != null && !plan.getRestShiftType().trim().isEmpty()) {
+            return true;
+        }
+        String shiftType = plan.getShiftType();
+        return shiftType != null && "rest".equalsIgnoreCase(shiftType.trim());
+    }
+
+    private HrmWorkPlanCustomShift resolveCustomShiftCached(Long customShiftId, Map<String, HrmWorkPlanCustomShift> cache) {
+        if (customShiftId == null) {
+            return null;
+        }
+        String key = String.valueOf(customShiftId);
+        if (cache.containsKey(key)) {
+            return cache.get(key);
+        }
+        HrmWorkPlanCustomShift customShift = customShiftRepository.findById(customShiftId).orElse(null);
+        cache.put(key, customShift);
+        return customShift;
+    }
+
+    /** 连班判定：自定义班次设置 > 排班行显式标记 > 员工档案 is_continuous_shift。 */
+    private boolean resolveContinuousShift(HrmEmployee employee, tbplanlist plan, HrmWorkPlanCustomShift customShift) {
+        if (customShift != null && customShift.getContinuousShift() != null) {
+            return customShift.getContinuousShift() == 1;
+        }
+        if (plan != null && plan.getCustomContinuousShift() != null) {
+            return Boolean.TRUE.equals(plan.getCustomContinuousShift());
+        }
+        return employee != null && Objects.equals(employee.getIsContinuousShift(), 1);
+    }
+
+    /** 有效工时按打卡分段累计（上午上班-上午下班-下午上班-下午下班），午休缺口天然排除。 */
+    private PunchWorkResult computePunchWork(List<PunchRecord> punchRecords) {
+        long workedMinutes = 0L;
+        int segmentCount = 0;
+        LocalDateTime openOnDutyTime = null;
+        for (PunchRecord record : sortPunchRecords(punchRecords)) {
+            if (record == null || record.getActualTime() == null) {
+                continue;
+            }
+            if (record.getType() == PunchRecordType.ON_DUTY) {
+                if (openOnDutyTime == null) {
+                    openOnDutyTime = record.getActualTime();
+                }
+            } else if (openOnDutyTime != null) {
+                if (!record.getActualTime().isBefore(openOnDutyTime)) {
+                    workedMinutes += Duration.between(openOnDutyTime, record.getActualTime()).toMinutes();
+                    segmentCount++;
+                }
+                openOnDutyTime = null;
+            }
+        }
+        return new PunchWorkResult(workedMinutes, segmentCount);
+    }
+
+    private String buildDailyCalcProcess(LocalDate workDate,
+                                         tbplanlist plan,
+                                         boolean restDayPlan,
+                                         boolean continuousShift,
+                                         LocalDateTime scheduledStartTime,
+                                         LocalDateTime scheduledEndTime,
+                                         LocalDateTime firstOnDutyTime,
+                                         LocalDateTime actualOffTime,
+                                         long workedMinutes,
+                                         long lunchDeductMinutes,
+                                         BigDecimal overtimeHours,
+                                         int nightShiftCount,
+                                         boolean approvalOverride,
+                                         boolean notCountable) {
+        StringBuilder text = new StringBuilder();
+        text.append(DAY_FORMATTER.format(workDate)).append("：");
+        if (plan == null) {
+            text.append("无排班，不计加班");
+        } else if (restDayPlan) {
+            text.append("排班为休息/调休，不计加班");
+        } else {
+            text.append("排班 ")
+                    .append(formatCalcTime(scheduledStartTime)).append('-').append(formatCalcTime(scheduledEndTime))
+                    .append(continuousShift ? "(连班)" : "(不连班)");
+            if (firstOnDutyTime != null) {
+                text.append("，上班卡 ").append(formatCalcTime(firstOnDutyTime));
+            }
+            if (actualOffTime != null) {
+                text.append("，下班卡 ").append(formatCalcTime(actualOffTime));
+            }
+            text.append("，有效工时 ").append(formatCalcMinutes(workedMinutes)).append("h");
+            if (lunchDeductMinutes > 0) {
+                text.append("（未分段计午休，扣除2h）");
+            }
+            text.append("，超8h基准部分计加班 ").append(overtimeHours).append("h");
+        }
+        if (nightShiftCount > 0) {
+            text.append("；下班超过次日凌晨3点，计夜班1次");
+        }
+        if (approvalOverride) {
+            text.append("；存在本地加班审批，按审批时长计");
+        }
+        if (notCountable) {
+            text.append("；非生产体系且非固定月休，加班/夜班记0");
+        }
+        return text.toString();
+    }
+
+    private String formatCalcTime(LocalDateTime time) {
+        return time != null ? time.format(DateTimeFormatter.ofPattern("HH:mm")) : "--:--";
+    }
+
+    private String formatCalcMinutes(long minutes) {
+        return BigDecimal.valueOf(minutes)
+                .divide(BigDecimal.valueOf(60), 2, RoundingMode.HALF_UP)
+                .toPlainString();
     }
 
     private HrmOvertimeNightStatisticsDetail buildZeroDetailRow(HrmEmployee employee,
@@ -1282,6 +1465,7 @@ public class HrmOvertimeNightStatisticsServiceImpl implements IHrmOvertimeNightS
                 ? attendanceDays.getAccruedAttendanceHours()
                 : BigDecimal.ZERO.setScale(2, RoundingMode.HALF_UP));
         detail.setAttendanceManualAdjusted(0);
+        detail.setCalcProcess("当月无排班/打卡/审批数据，零值占位行");
         detail.setCreateTime(now);
         detail.setUpdateTime(now);
         return detail;
@@ -3281,6 +3465,24 @@ public class HrmOvertimeNightStatisticsServiceImpl implements IHrmOvertimeNightS
         }
     }
 
+    private static class PunchWorkResult {
+        private final long workedMinutes;
+        private final int segmentCount;
+
+        private PunchWorkResult(long workedMinutes, int segmentCount) {
+            this.workedMinutes = workedMinutes;
+            this.segmentCount = segmentCount;
+        }
+
+        private long getWorkedMinutes() {
+            return workedMinutes;
+        }
+
+        private int getSegmentCount() {
+            return segmentCount;
+        }
+    }
+
     private static class OvertimeNightSummary {
         private static final OvertimeNightSummary ZERO = new OvertimeNightSummary(
                 BigDecimal.ZERO.setScale(2, RoundingMode.HALF_UP),
@@ -3292,7 +3494,8 @@ public class HrmOvertimeNightStatisticsServiceImpl implements IHrmOvertimeNightS
                 "",
                 BigDecimal.ZERO.setScale(2, RoundingMode.HALF_UP),
                 Collections.emptyList(),
-                false
+                false,
+                ""
         );
 
         private final BigDecimal overtimeHours;
@@ -3305,6 +3508,7 @@ public class HrmOvertimeNightStatisticsServiceImpl implements IHrmOvertimeNightS
         private final BigDecimal accruedAttendanceHours;
         private final List<DailyOvertimeNightDetailVO> dailyDetails;
         private final boolean manualAttendanceAdjusted;
+        private final String calcProcess;
 
         private OvertimeNightSummary(BigDecimal overtimeHours,
                                      Integer nightShiftCount,
@@ -3315,7 +3519,8 @@ public class HrmOvertimeNightStatisticsServiceImpl implements IHrmOvertimeNightS
                                      String actualAttendanceRemark,
                                      BigDecimal accruedAttendanceHours,
                                      List<DailyOvertimeNightDetailVO> dailyDetails,
-                                     boolean manualAttendanceAdjusted) {
+                                     boolean manualAttendanceAdjusted,
+                                     String calcProcess) {
             this.overtimeHours = overtimeHours;
             this.nightShiftCount = nightShiftCount;
             this.expectedAttendanceDays = expectedAttendanceDays;
@@ -3332,6 +3537,7 @@ public class HrmOvertimeNightStatisticsServiceImpl implements IHrmOvertimeNightS
                     : null;
             this.dailyDetails = dailyDetails;
             this.manualAttendanceAdjusted = manualAttendanceAdjusted;
+            this.calcProcess = calcProcess != null ? calcProcess : "";
         }
 
         public BigDecimal getOvertimeHours() {
@@ -3372,6 +3578,10 @@ public class HrmOvertimeNightStatisticsServiceImpl implements IHrmOvertimeNightS
 
         public boolean isManualAttendanceAdjusted() {
             return manualAttendanceAdjusted;
+        }
+
+        public String getCalcProcess() {
+            return calcProcess;
         }
     }
 

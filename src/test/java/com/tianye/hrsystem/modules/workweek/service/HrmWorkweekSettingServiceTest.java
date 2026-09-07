@@ -401,6 +401,36 @@ public class HrmWorkweekSettingServiceTest {
         return rows;
     }
 
+    @Test
+    public void countWorkDays_shouldCountWorkdaysAcrossMonthBoundary() {
+        // 复现跨月调休 7/24(周五)~8/4(周二)：第30周单休(7/20-7/26，周六上班)、第31周双休(7/27-8/2)、第32周单休(8/3-8/9)。
+        // 全区间工作日 = 7/24 + 7/25(单休周六) + 7/27~7/31 + 8/3 + 8/4 = 9 天；7 月部分 7 天、8 月部分 2 天。
+        when(repository.findAllBySettingYearOrderByWeekNoAsc(2026)).thenReturn(Arrays.asList(
+                buildSetting(30L, 2026, 30, 1, 0, LocalDate.of(2026, 7, 20), LocalDate.of(2026, 7, 26)),
+                buildSetting(31L, 2026, 31, 2, 0, LocalDate.of(2026, 7, 27), LocalDate.of(2026, 8, 2)),
+                buildSetting(32L, 2026, 32, 1, 0, LocalDate.of(2026, 8, 3), LocalDate.of(2026, 8, 9))
+        ));
+        when(legalHolidaysRepository.findAllByHolidayTimeGreaterThanEqualAndHolidayTimeLessThan(any(Date.class), any(Date.class)))
+                .thenReturn(Collections.emptyList());
+
+        Assert.assertEquals(9, service.countWorkDays(LocalDate.of(2026, 7, 24), LocalDate.of(2026, 8, 4)));
+        Assert.assertEquals(7, service.countWorkDays(LocalDate.of(2026, 7, 24), LocalDate.of(2026, 7, 31)));
+        Assert.assertEquals(2, service.countWorkDays(LocalDate.of(2026, 8, 1), LocalDate.of(2026, 8, 4)));
+    }
+
+    @Test
+    public void countWorkDays_shouldDefaultToMondayFridayWithoutWeekSettings_andHonorManualOverride() {
+        // 年度单双休未初始化：默认周一至周五上班，但已保存日级设置仍生效（7/25 手动设为上班）。
+        when(repository.findAllBySettingYearOrderByWeekNoAsc(2026)).thenReturn(Collections.emptyList());
+        when(legalHolidaysRepository.findAllByHolidayTimeGreaterThanEqualAndHolidayTimeLessThan(any(Date.class), any(Date.class)))
+                .thenReturn(Collections.emptyList());
+        when(daySettingRepository.findAllBySettingYearAndWorkDateGreaterThanEqualAndWorkDateLessThanOrderByWorkDateAsc(any(), any(Date.class), any(Date.class)))
+                .thenReturn(Collections.singletonList(buildDaySetting(LocalDate.of(2026, 7, 25), 1)));
+
+        // 7/24(五)~7/31(五)：默认 6 个工作日 + 手动上班的周六 7/25 = 7
+        Assert.assertEquals(7, service.countWorkDays(LocalDate.of(2026, 7, 24), LocalDate.of(2026, 7, 31)));
+    }
+
     private HrmWorkweekSetting buildSetting(Long settingId,
                                             Integer year,
                                             Integer weekNo,

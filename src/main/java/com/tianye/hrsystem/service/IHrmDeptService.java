@@ -6,6 +6,7 @@ import com.tianye.hrsystem.entity.bo.AddDeptBO;
 import com.tianye.hrsystem.entity.bo.QueryDeptListBO;
 import com.tianye.hrsystem.entity.bo.QueryEmployeeByDeptIdBO;
 import com.tianye.hrsystem.entity.vo.DeptVO;
+import com.tianye.hrsystem.entity.vo.DeptLeaderVO;
 import com.tianye.hrsystem.entity.vo.QueryEmployeeListByDeptIdVO;
 import com.tianye.hrsystem.entity.vo.SimpleHrmDeptVO;
 
@@ -41,6 +42,14 @@ public interface IHrmDeptService extends BaseService<HrmDept> {
      * @return
      */
     DeptVO queryById(Long deptId);
+
+    /**
+     * 查询部门分管领导（员工新建/编辑选择部门时自动带出直属上级）
+     *
+     * @param deptId
+     * @return 分管领导员工ID与姓名，未设置时为空对象
+     */
+    DeptLeaderVO queryDeptLeader(Long deptId);
 
     /**
      * 查询部门列表

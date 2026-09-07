@@ -15,7 +15,9 @@ public class MiniAppLoginVO implements Serializable {
     private String companyName;
     private String depName;
     private Long depId;
-    /** 手机号跨公司匹配到多条时返回候选人，非空表示需要用户选择公司后调用 bindCompany */
+    /** 首次自助绑定时为 true */
+    private Boolean bindRequired;
+    /** OpenID 匹配到多公司或首次绑定时返回公司候选 */
     private java.util.List<CompanyOptionVO> candidates;
 
     public String getToken() {
@@ -72,6 +74,14 @@ public class MiniAppLoginVO implements Serializable {
 
     public void setDepId(Long depId) {
         this.depId = depId;
+    }
+
+    public Boolean getBindRequired() {
+        return bindRequired;
+    }
+
+    public void setBindRequired(Boolean bindRequired) {
+        this.bindRequired = bindRequired;
     }
 
     public java.util.List<CompanyOptionVO> getCandidates() {

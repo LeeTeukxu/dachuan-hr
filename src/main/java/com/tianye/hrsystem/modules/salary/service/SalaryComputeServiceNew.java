@@ -405,12 +405,6 @@ public class SalaryComputeServiceNew
      */
     private BigDecimal calculateUnionFee(HrmEmployeeVO hrmEmployeeVO, HrmSalaryMonthEmpRecord salaryMonthEmpRecord,
                                          SalaryBaseTotal salaryBaseTotal) {
-        LoginUserInfo info = CompanyContext.get();
-        // 成都、0005攀枝花公司不收工会费
-        if (info.getCompanyId().equals("0002") || info.getCompanyId().equals("0005")) {
-            return BigDecimal.ZERO;
-        }
-
         // 应发工资小于等于0不收工会费
         if (salaryBaseTotal.getShouldPaySalary().compareTo(BigDecimal.ZERO) <= 0) {
             return BigDecimal.ZERO;

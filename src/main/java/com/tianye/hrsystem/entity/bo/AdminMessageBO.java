@@ -20,8 +20,17 @@ public class AdminMessageBO {
     @ApiModelProperty("消息内容")
     private String content;
 
+    @ApiModelProperty("消息大类 1 任务 2 日志 3 oa审批 4公告 5 日程 6 crm消息 7 知识库 8 人资")
+    private Integer label;
+
+    @ApiModelProperty("消息类型 详见AdminMessageEnum")
+    private Integer type;
+
     @ApiModelProperty("关联业务主键ID")
     private Long typeId;
+
+    @ApiModelProperty("跳转链接")
+    private String linkUrl;
 
     @ApiModelProperty("发送人")
     private Long userId;

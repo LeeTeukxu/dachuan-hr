@@ -3,7 +3,11 @@ package com.tianye.hrsystem.modules.salary.service;
 import cn.hutool.core.bean.BeanUtil;
 import cn.hutool.core.collection.CollUtil;
 import cn.hutool.core.collection.CollectionUtil;
+import cn.hutool.core.io.IoUtil;
 import cn.hutool.core.util.StrUtil;
+import cn.hutool.poi.excel.ExcelReader;
+import cn.hutool.poi.excel.ExcelUtil;
+import cn.hutool.poi.excel.ExcelWriter;
 import com.alibaba.fastjson.JSON;
 import com.github.pagehelper.PageInfo;
 import com.tianye.hrsystem.base.BaseServiceImpl;
@@ -12,6 +16,7 @@ import com.tianye.hrsystem.config.CompanyContext;
 import com.tianye.hrsystem.entity.vo.HrmEmployeeVO;
 import com.tianye.hrsystem.entity.vo.OperationLog;
 import com.tianye.hrsystem.enums.*;
+import com.tianye.hrsystem.common.ResultCode;
 import com.tianye.hrsystem.exception.HrmException;
 import com.tianye.hrsystem.mapper.HrmEmployeeMapper;
 import com.tianye.hrsystem.model.LoginUserInfo;
@@ -26,9 +31,15 @@ import com.tianye.hrsystem.service.employee.IHrmEmployeeService;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.web.multipart.MultipartFile;
 import  com.tianye.hrsystem.entity.po.HrmEmployee;
 
+import javax.servlet.http.HttpServletResponse;
+import java.io.IOException;
+import java.io.InputStream;
 import java.math.BigDecimal;
+import java.net.URLEncoder;
+import java.text.SimpleDateFormat;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.YearMonth;
@@ -197,6 +208,12 @@ public class HrmSalaryArchivesService  extends BaseServiceImpl<HrmSalaryArchives
     public QueryChangeOptionValueVO queryChangeOptionValue(QueryChangeOptionValueDto changeOptionValueDto) {
         //查询出定薪/调薪模板
         HrmSalaryChangeTemplate changeTemplate = hrmSalaryChangeTemplateService.getById(changeOptionValueDto.getTemplateId());
+        if (changeTemplate == null || changeTemplate.getValue() == null || changeTemplate.getValue().isEmpty()) {
+            QueryChangeOptionValueVO data = new QueryChangeOptionValueVO();
+            data.setProSalary(new ArrayList<>());
+            data.setSalary(new ArrayList<>());
+            return data;
+        }
         //根据模板查询出对应的薪资项
         List<ChangeSalaryOptionVO> changeSalaryOptions = JSON.parseArray(changeTemplate.getValue(), ChangeSalaryOptionVO.class);
         //查询出员工的薪资项与对应的金额(员工与薪资项关联数据)
@@ -206,12 +223,12 @@ public class HrmSalaryArchivesService  extends BaseServiceImpl<HrmSalaryArchives
         Map<Integer, String> codeValueMap = isProMap.get(0);
         //转正后工资
         List<ChangeSalaryOptionVO> proSalary = changeSalaryOptions.stream().map(option -> {
-            String value = Objects.isNull(proCodeValueMap.get(option.getCode())) ? "" : proCodeValueMap.get(option.getCode());
+            String value = (proCodeValueMap != null && proCodeValueMap.get(option.getCode()) != null) ? proCodeValueMap.get(option.getCode()) : "";
             return new ChangeSalaryOptionVO(option.getName(), option.getCode(), value);
         }).collect(Collectors.toList());
         //试用期工资
         List<ChangeSalaryOptionVO> salary = changeSalaryOptions.stream().map(option -> {
-            String value = Objects.isNull(codeValueMap.get(option.getCode())) ? "" : codeValueMap.get(option.getCode());
+            String value = (codeValueMap != null && codeValueMap.get(option.getCode()) != null) ? codeValueMap.get(option.getCode()) : "";
             return new ChangeSalaryOptionVO(option.getName(), option.getCode(), value);
         }).collect(Collectors.toList());
         QueryChangeOptionValueVO data = new QueryChangeOptionValueVO();
@@ -634,6 +651,157 @@ public class HrmSalaryArchivesService  extends BaseServiceImpl<HrmSalaryArchives
         result.put("successNum", employeeIds.size() - errorNum);
         result.put("operationLog", operationLogs);
         return result;
+    }
+
+    /**
+     * 上传调薪/定薪(Excel导入，沿用watch模板格式：第4行起，姓名+手机号匹配，
+     * 列1-3为试用期基本/岗位/职务工资，列4-6为正式期工资)
+     */
+    @Transactional(rollbackFor = Exception.class)
+    public Map<String, Object> importSalaryFixing(MultipartFile file) {
+        Map<String, Object> result = new HashMap<>();
+        List<String> errors = new ArrayList<>();
+        List<SetFixSalaryRecordDto> records = new ArrayList<>();
+        List<HrmEmployee> employees = employeeService.lambdaQuery()
+                .select(HrmEmployee::getEmployeeId, HrmEmployee::getEmployeeName, HrmEmployee::getMobile)
+                .ne(HrmEmployee::getIsDel, 1).list();
+        try (InputStream in = file.getInputStream()) {
+            ExcelReader reader = ExcelUtil.getReader(in);
+            List<List<Object>> rows = reader.read();
+            for (int i = 3; i < rows.size(); i++) {
+                List<Object> row = rows.get(i);
+                String employeeName = cellStr(row, 0);
+                if (StrUtil.isBlank(employeeName)) {
+                    continue;
+                }
+                String mobile = cellStr(row, 7);
+                List<HrmEmployee> matched = employees.stream()
+                        .filter(e -> employeeName.equals(e.getEmployeeName()))
+                        .filter(e -> StrUtil.isBlank(mobile) || mobile.equals(e.getMobile()))
+                        .collect(Collectors.toList());
+                if (matched.isEmpty()) {
+                    errors.add("第" + (i + 1) + "行：未找到员工[" + employeeName + (StrUtil.isNotBlank(mobile) ? "/" + mobile : "") + "]");
+                    continue;
+                }
+                if (matched.size() > 1) {
+                    errors.add("第" + (i + 1) + "行：员工[" + employeeName + (StrUtil.isNotBlank(mobile) ? "/" + mobile : "") + "]匹配到多条记录，请核对");
+                    continue;
+                }
+                try {
+                    records.add(buildFixSalaryRecord(matched.get(0), row));
+                } catch (Exception ex) {
+                    errors.add("第" + (i + 1) + "行：员工[" + employeeName + "]数据有误(" + ex.getMessage() + ")");
+                }
+            }
+        } catch (HrmException ex) {
+            throw ex;
+        } catch (Exception ex) {
+            throw new HrmException(ResultCode.INTERNAL_SERVER_ERROR.code(), "Excel解析失败，请使用下载的导入模板");
+        }
+        if (!errors.isEmpty()) {
+            result.put("success", false);
+            result.put("errors", errors);
+            return result;
+        }
+        setFixSalaryRecord(records);
+        result.put("success", true);
+        result.put("count", records.size());
+        return result;
+    }
+
+    private SetFixSalaryRecordDto buildFixSalaryRecord(HrmEmployee employee, List<Object> row) {
+        SetFixSalaryRecordDto dto = new SetFixSalaryRecordDto();
+        dto.setEmployeeId(employee.getEmployeeId());
+        dto.setRemarks(employee.getEmployeeName());
+        List<ChangeSalaryOptionVO> proSalary = new ArrayList<>();
+        proSalary.add(new ChangeSalaryOptionVO("基本工资", 10101, amountStr(row, 1)));
+        proSalary.add(new ChangeSalaryOptionVO("岗位工资", 10102, amountStr(row, 2)));
+        proSalary.add(new ChangeSalaryOptionVO("职务工资", 10103, amountStr(row, 3)));
+        dto.setProSalary(proSalary);
+        dto.setProSum(sumStr(proSalary));
+        List<ChangeSalaryOptionVO> salary = new ArrayList<>();
+        salary.add(new ChangeSalaryOptionVO("基本工资", 10101, amountStr(row, 4)));
+        salary.add(new ChangeSalaryOptionVO("岗位工资", 10102, amountStr(row, 5)));
+        salary.add(new ChangeSalaryOptionVO("职务工资", 10103, amountStr(row, 6)));
+        dto.setSalary(salary);
+        dto.setSum(sumStr(salary));
+        return dto;
+    }
+
+    private String amountStr(List<Object> row, int idx) {
+        String s = cellStr(row, idx);
+        if (StrUtil.isBlank(s)) {
+            return "0";
+        }
+        return new BigDecimal(s).stripTrailingZeros().toPlainString();
+    }
+
+    private String sumStr(List<ChangeSalaryOptionVO> options) {
+        BigDecimal sum = BigDecimal.ZERO;
+        for (ChangeSalaryOptionVO option : options) {
+            sum = sum.add(new BigDecimal(option.getValue()));
+        }
+        return sum.stripTrailingZeros().toPlainString();
+    }
+
+    private String cellStr(List<Object> row, int idx) {
+        if (row == null || row.size() <= idx || row.get(idx) == null) {
+            return "";
+        }
+        return row.get(idx).toString().trim();
+    }
+
+    /**
+     * 下载调薪/定薪导入模板
+     */
+    public void downloadSalaryFixingTemplate(HttpServletResponse response) throws IOException {
+        try (InputStream in = getClass().getClassLoader().getResourceAsStream("export/调薪定薪导入模板.xlsx")) {
+            if (in == null) {
+                throw new HrmException(ResultCode.INTERNAL_SERVER_ERROR.code(), "模板文件不存在");
+            }
+            response.setContentType("application/octet-stream;charset=UTF-8");
+            response.setHeader("Content-Disposition", "attachment;filename=" + URLEncoder.encode("调薪定薪导入模板.xlsx", "UTF-8"));
+            IoUtil.copy(in, response.getOutputStream());
+        }
+    }
+
+    /**
+     * 下载薪资档案数据(导出当前全部员工薪资档案)
+     */
+    public void downloadSalaryFixingData(HttpServletResponse response) throws IOException {
+        QuerySalaryArchivesListDto queryDto = new QuerySalaryArchivesListDto();
+        List<QuerySalaryArchivesListVO> list = queryEmpSalaryArchivesList(queryDto);
+        SimpleDateFormat dateFormat = new SimpleDateFormat("yyyy-MM-dd");
+        List<Map<String, Object>> rows = list.stream().map(vo -> {
+            Map<String, Object> map = new LinkedHashMap<>();
+            map.put("employeeName", vo.getEmployeeName());
+            map.put("jobNumber", vo.getJobNumber());
+            map.put("deptName", vo.getDeptName());
+            map.put("postion", vo.getPostion());
+            map.put("status", EmployeeStatusEnum.parseName(vo.getStatus() == null ? 0 : vo.getStatus()));
+            map.put("entryTime", vo.getEntryTime() == null ? "" : dateFormat.format(vo.getEntryTime()));
+            map.put("becomeTime", vo.getBecomeTime() == null ? "" : dateFormat.format(vo.getBecomeTime()));
+            map.put("changeType", SalaryChangeTypeEnum.parseName(vo.getChangeType() == null ? 0 : vo.getChangeType()));
+            map.put("changeDate", vo.getChangeDate() == null ? "" : vo.getChangeDate().toString());
+            map.put("total", vo.getTotal());
+            return map;
+        }).collect(Collectors.toList());
+        ExcelWriter writer = ExcelUtil.getWriter(true);
+        writer.addHeaderAlias("employeeName", "员工名称");
+        writer.addHeaderAlias("jobNumber", "工号");
+        writer.addHeaderAlias("deptName", "部门");
+        writer.addHeaderAlias("postion", "岗位");
+        writer.addHeaderAlias("status", "状态");
+        writer.addHeaderAlias("entryTime", "入职时间");
+        writer.addHeaderAlias("becomeTime", "转正时间");
+        writer.addHeaderAlias("changeType", "定薪状态");
+        writer.addHeaderAlias("changeDate", "变动日期");
+        writer.addHeaderAlias("total", "总薪资");
+        writer.write(rows, true);
+        response.setContentType("application/octet-stream;charset=UTF-8");
+        response.setHeader("Content-Disposition", "attachment;filename=" + URLEncoder.encode("薪资档案数据.xlsx", "UTF-8"));
+        writer.flush(response.getOutputStream());
+        writer.close();
     }
 
 }

@@ -94,4 +94,23 @@ public class HrmAttendanceRule implements Serializable {
     @TableField(fill = FieldFill.UPDATE)
     @JsonSerialize(using = ToStringSerializer.class)
     private Long updateUserId;
+
+    @ApiModelProperty(value = "本地判定：打卡有效窗口提前分钟数（默认120）")
+    @TableField("judge_window_before_minutes")
+    private Integer judgeWindowBeforeMinutes;
+
+    @ApiModelProperty(value = "本地判定：打卡有效窗口延后分钟数（默认240）")
+    @TableField("judge_window_after_minutes")
+    private Integer judgeWindowAfterMinutes;
+
+    @ApiModelProperty(value = "每月最多补卡次数（默认3）")
+    @TableField("max_monthly_card_repair")
+    private Integer maxMonthlyCardRepair;
+
+    public Integer getJudgeWindowBeforeMinutes() { return judgeWindowBeforeMinutes; }
+    public void setJudgeWindowBeforeMinutes(Integer v) { this.judgeWindowBeforeMinutes = v; }
+    public Integer getJudgeWindowAfterMinutes() { return judgeWindowAfterMinutes; }
+    public void setJudgeWindowAfterMinutes(Integer v) { this.judgeWindowAfterMinutes = v; }
+    public Integer getMaxMonthlyCardRepair() { return maxMonthlyCardRepair; }
+    public void setMaxMonthlyCardRepair(Integer v) { this.maxMonthlyCardRepair = v; }
 }

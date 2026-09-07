@@ -135,11 +135,20 @@ public class DashboardServiceImpl implements DashboardService {
         }
     }
 
+    /**
+     * 根据公司名查找部门树根节点 dept_id，用于过滤子公司数据
+     */
+    private Long resolveCompanyRootDeptId(String companyName) {
+        if (companyName == null || companyName.isEmpty()) return null;
+        return dashboardAggMapper.findCompanyRootDeptId(companyName);
+    }
+
     @Override
     public Map<String, Object> personnelOverview(DashboardQueryBO bo) {
         return withCompanyContext(bo, () -> {
             Period p = Period.of(bo);
-            return dashboardAggMapper.personnelOverview(p.end, p.start, p.prevEnd, bo.getDeptId());
+            Long rootDeptId = resolveCompanyRootDeptId(bo.getCompanyName());
+            return dashboardAggMapper.personnelOverview(p.end, p.start, p.prevEnd, bo.getDeptId(), rootDeptId);
         });
     }
 
@@ -147,15 +156,16 @@ public class DashboardServiceImpl implements DashboardService {
     public Map<String, Object> flowOverview(DashboardQueryBO bo) {
         return withCompanyContext(bo, () -> {
             Period p = Period.of(bo);
-            Map<String, Object> result = dashboardAggMapper.personnelOverview(p.end, p.start, p.prevEnd, bo.getDeptId());
-            long prevHired = sumCnt(dashboardAggMapper.hireTrend("%Y-%m", p.prevStart, p.prevEnd, bo.getDeptId()));
-            long prevQuit = sumCnt(dashboardAggMapper.quitTrend("%Y-%m", p.prevStart, p.prevEnd, bo.getDeptId(), bo.getQuitType()));
+            Long rootDeptId = resolveCompanyRootDeptId(bo.getCompanyName());
+            Map<String, Object> result = dashboardAggMapper.personnelOverview(p.end, p.start, p.prevEnd, bo.getDeptId(), rootDeptId);
+            long prevHired = sumCnt(dashboardAggMapper.hireTrend("%Y-%m", p.prevStart, p.prevEnd, bo.getDeptId(), rootDeptId));
+            long prevQuit = sumCnt(dashboardAggMapper.quitTrend("%Y-%m", p.prevStart, p.prevEnd, bo.getDeptId(), bo.getQuitType(), rootDeptId));
             result.put("prevHiredCount", prevHired);
             result.put("prevQuitCount", prevQuit);
-            Long keyLost = dashboardAggMapper.keyQuitCount(p.start, p.end, bo.getDeptId(), bo.getQuitType());
+            Long keyLost = dashboardAggMapper.keyQuitCount(p.start, p.end, bo.getDeptId(), bo.getQuitType(), rootDeptId);
             result.put("keyLostCount", keyLost == null ? 0L : keyLost);
             Map<String, Object> typeDist = new HashMap<>();
-            for (Map<String, Object> row : dashboardAggMapper.quitDist("type", p.start, p.end, bo.getDeptId(), null)) {
+            for (Map<String, Object> row : dashboardAggMapper.quitDist("type", p.start, p.end, bo.getDeptId(), null, rootDeptId)) {
                 typeDist.put(String.valueOf(row.get("name")), ((Number) row.get("value")).longValue());
             }
             result.put("typeDist", typeDist);
@@ -180,12 +190,13 @@ public class DashboardServiceImpl implements DashboardService {
     public List<Map<String, Object>> structure(DashboardQueryBO bo) {
         return withCompanyContext(bo, () -> {
             String dim = normalizeDim(bo.getDim());
+            Long rootDeptId = resolveCompanyRootDeptId(bo.getCompanyName());
             if ("dept".equals(dim)) {
                 return dashboardAggMapper.deptStructure(Period.of(bo).end, bo.getDeptId(),
-                        bo.getSex(), bo.getEdu(), bo.getAgeBand(), bo.getTenureBand(), bo.getEntryStatus());
+                        bo.getSex(), bo.getEdu(), bo.getAgeBand(), bo.getTenureBand(), bo.getEntryStatus(), rootDeptId);
             }
             List<Map<String, Object>> rows = dashboardAggMapper.structure(
-                    dim, Period.of(bo).end, bo.getDeptId());
+                    dim, Period.of(bo).end, bo.getDeptId(), rootDeptId);
             if ("edu".equals(dim)) {
                 for (Map<String, Object> row : rows) {
                     Object name = row.get("name");
@@ -203,11 +214,12 @@ public class DashboardServiceImpl implements DashboardService {
         return withCompanyContext(bo, () -> {
             Period p = Period.of(bo);
             String df = dfGranule(bo);
+            Long rootDeptId = resolveCompanyRootDeptId(bo.getCompanyName());
             Map<String, Object> result = new HashMap<>();
-            result.put("hiredRows", dashboardAggMapper.hireTrend(df, p.start, p.end, bo.getDeptId()));
-            result.put("quitRows", dashboardAggMapper.quitTrend(df, p.start, p.end, bo.getDeptId(), bo.getQuitType()));
-            result.put("prevQuitRows", dashboardAggMapper.quitTrend(df, p.prevStart, p.prevEnd, bo.getDeptId(), bo.getQuitType()));
-            result.put("keyDeptRows", dashboardAggMapper.keyQuitTrendByDept(df, p.start, p.end, bo.getDeptId(), bo.getQuitType()));
+            result.put("hiredRows", dashboardAggMapper.hireTrend(df, p.start, p.end, bo.getDeptId(), rootDeptId));
+            result.put("quitRows", dashboardAggMapper.quitTrend(df, p.start, p.end, bo.getDeptId(), bo.getQuitType(), rootDeptId));
+            result.put("prevQuitRows", dashboardAggMapper.quitTrend(df, p.prevStart, p.prevEnd, bo.getDeptId(), bo.getQuitType(), rootDeptId));
+            result.put("keyDeptRows", dashboardAggMapper.keyQuitTrendByDept(df, p.start, p.end, bo.getDeptId(), bo.getQuitType(), rootDeptId));
             return result;
         });
     }
@@ -220,7 +232,8 @@ public class DashboardServiceImpl implements DashboardService {
             if (xDim.equals(sDim)) {
                 sDim = "dept".equals(xDim) ? "edu" : "dept";
             }
-            List<Map<String, Object>> rows = dashboardAggMapper.crossMatrix(xDim, sDim, Period.of(bo).end, bo.getDeptId());
+            Long rootDeptId = resolveCompanyRootDeptId(bo.getCompanyName());
+            List<Map<String, Object>> rows = dashboardAggMapper.crossMatrix(xDim, sDim, Period.of(bo).end, bo.getDeptId(), rootDeptId);
             for (Map<String, Object> row : rows) {
                 row.put("kx", translateDimValue(xDim, row.get("kx")));
                 row.put("ks", translateDimValue(sDim, row.get("ks")));
@@ -239,8 +252,9 @@ public class DashboardServiceImpl implements DashboardService {
             if (bo.getPageType() == null) {
                 bo.setPageType(1);
             }
+            Long rootDeptId = resolveCompanyRootDeptId(bo.getCompanyName());
             return dashboardAggMapper.personnelPageList(page(bo),
-                    bo.getDeptId(), bo.getSex(), bo.getEdu(), bo.getAgeBand(), bo.getTenureBand(), bo.getEntryStatus());
+                    bo.getDeptId(), bo.getSex(), bo.getEdu(), bo.getAgeBand(), bo.getTenureBand(), bo.getEntryStatus(), rootDeptId);
         });
     }
 
@@ -248,7 +262,8 @@ public class DashboardServiceImpl implements DashboardService {
     public List<Map<String, Object>> flowDeptCompare(DashboardQueryBO bo) {
         return withCompanyContext(bo, () -> {
             Period p = Period.of(bo);
-            return dashboardAggMapper.flowDeptCompare(p.start, p.end, bo.getDeptId(), bo.getQuitType());
+            Long rootDeptId = resolveCompanyRootDeptId(bo.getCompanyName());
+            return dashboardAggMapper.flowDeptCompare(p.start, p.end, bo.getDeptId(), bo.getQuitType(), rootDeptId);
         });
     }
 
@@ -257,7 +272,8 @@ public class DashboardServiceImpl implements DashboardService {
         return withCompanyContext(bo, () -> {
             String dim = bo.getDim() == null ? "type" : bo.getDim();
             Period p = Period.of(bo);
-            List<Map<String, Object>> rows = dashboardAggMapper.quitDist(dim, p.start, p.end, bo.getDeptId(), bo.getQuitType());
+            Long rootDeptId = resolveCompanyRootDeptId(bo.getCompanyName());
+            List<Map<String, Object>> rows = dashboardAggMapper.quitDist(dim, p.start, p.end, bo.getDeptId(), bo.getQuitType(), rootDeptId);
             if ("reason".equals(dim)) {
                 for (Map<String, Object> row : rows) {
                     Object name = row.get("name");
@@ -277,8 +293,9 @@ public class DashboardServiceImpl implements DashboardService {
                 bo.setPageType(1);
             }
             Period p = Period.of(bo);
+            Long rootDeptId = resolveCompanyRootDeptId(bo.getCompanyName());
             BasePage<Map<String, Object>> page = page(bo);
-            dashboardAggMapper.flowPageList(page, p.start, p.end, bo.getDeptId(), bo.getQuitType());
+            dashboardAggMapper.flowPageList(page, p.start, p.end, bo.getDeptId(), bo.getQuitType(), rootDeptId);
             return page;
         });
     }
@@ -318,7 +335,8 @@ public class DashboardServiceImpl implements DashboardService {
     public List<Map<String, Object>> salaryDeptCompare(DashboardQueryBO bo) {
         return withCompanyContext(bo, () -> {
             Period p = Period.of(bo);
-            return dashboardAggMapper.salaryDeptCompare(p.startYear, p.startMonth, p.endYear, p.endMonth);
+            Long rootDeptId = resolveCompanyRootDeptId(bo.getCompanyName());
+            return dashboardAggMapper.salaryDeptCompare(p.startYear, p.startMonth, p.endYear, p.endMonth, rootDeptId);
         });
     }
 
@@ -330,7 +348,8 @@ public class DashboardServiceImpl implements DashboardService {
             }
             Integer year = bo.getYear() == null ? LocalDate.now().getYear() : bo.getYear();
             Integer month = bo.getMonth() == null ? LocalDate.now().getMonthValue() : bo.getMonth();
-            return dashboardAggMapper.salaryEmpDetail(page(bo), year, month, bo.getDeptId());
+            Long rootDeptId = resolveCompanyRootDeptId(bo.getCompanyName());
+            return dashboardAggMapper.salaryEmpDetail(page(bo), year, month, bo.getDeptId(), rootDeptId);
         });
     }
 
@@ -339,8 +358,9 @@ public class DashboardServiceImpl implements DashboardService {
         return withCompanyContext(bo, () -> {
             Period p = Period.of(bo);
             Integer type = bo.getIndicatorType() == null ? 1 : bo.getIndicatorType();
+            Long rootDeptId = resolveCompanyRootDeptId(bo.getCompanyName());
             List<Map<String, Object>> rows =
-                    dashboardAggMapper.perfTrend(type, bo.getDeptId(), dfGranule(bo), p.startYear, p.startMonth, p.endYear, p.endMonth);
+                    dashboardAggMapper.perfTrend(type, bo.getDeptId(), dfGranule(bo), p.startYear, p.startMonth, p.endYear, p.endMonth, rootDeptId);
             for (Map<String, Object> row : rows) {
                 attachCompletion(row, type);
             }
@@ -355,8 +375,9 @@ public class DashboardServiceImpl implements DashboardService {
     public List<Map<String, Object>> perfCompletion(DashboardQueryBO bo) {
         return withCompanyContext(bo, () -> {
             Period p = Period.of(bo);
+            Long rootDeptId = resolveCompanyRootDeptId(bo.getCompanyName());
             List<Map<String, Object>> rows =
-                    dashboardAggMapper.perfCompletion(bo.getDeptId(), p.startYear, p.startMonth, p.endYear, p.endMonth);
+                    dashboardAggMapper.perfCompletion(bo.getDeptId(), p.startYear, p.startMonth, p.endYear, p.endMonth, rootDeptId);
             for (Map<String, Object> row : rows) {
                 attachCompletion(row, ((Number) row.get("indicatorType")).intValue());
             }
@@ -564,7 +585,7 @@ public class DashboardServiceImpl implements DashboardService {
 
     private Map<Long, String> deptNameMap() {
         Map<Long, String> map = new HashMap<>();
-        List<Map<String, Object>> depts = dashboardAggMapper.flowDeptCompare("1900-01-01", "2999-12-31", null, null);
+        List<Map<String, Object>> depts = dashboardAggMapper.flowDeptCompare("1900-01-01", "2999-12-31", null, null, null);
         for (Map<String, Object> d : depts) {
             Object name = d.get("deptName");
             if (d.get("deptId") != null && name != null) {
@@ -665,7 +686,7 @@ public class DashboardServiceImpl implements DashboardService {
             LoginUserInfo ctx = copyContextForCompany(original, cid);
             CompanyContext.set(ctx);
             try {
-                Map<String, Object> one = dashboardAggMapper.personnelOverview(p.end, p.start, p.prevEnd, bo.getDeptId());
+                Map<String, Object> one = dashboardAggMapper.personnelOverview(p.end, p.start, p.prevEnd, bo.getDeptId(), null);
                 Map<String, Object> detail = new HashMap<>();
                 detail.put("companyId", cid);
                 detail.put("companyName", comp.getCompanyName());
@@ -690,8 +711,8 @@ public class DashboardServiceImpl implements DashboardService {
             LoginUserInfo ctx = copyContextForCompany(original, cid);
             CompanyContext.set(ctx);
             try {
-                long prevHired = sumCnt(dashboardAggMapper.hireTrend("%Y-%m", p.prevStart, p.prevEnd, bo.getDeptId()));
-                long prevQuit = sumCnt(dashboardAggMapper.quitTrend("%Y-%m", p.prevStart, p.prevEnd, bo.getDeptId(), bo.getQuitType()));
+                long prevHired = sumCnt(dashboardAggMapper.hireTrend("%Y-%m", p.prevStart, p.prevEnd, bo.getDeptId(), null));
+                long prevQuit = sumCnt(dashboardAggMapper.quitTrend("%Y-%m", p.prevStart, p.prevEnd, bo.getDeptId(), bo.getQuitType(), null));
                 totalPrevHired += prevHired;
                 totalPrevQuit += prevQuit;
             } finally {
@@ -723,11 +744,11 @@ public class DashboardServiceImpl implements DashboardService {
             LoginUserInfo ctx = copyContextForCompany(original, cid);
             CompanyContext.set(ctx);
             try {
-                for (Map<String, Object> row : dashboardAggMapper.hireTrend(df, p.start, p.end, bo.getDeptId())) {
+                for (Map<String, Object> row : dashboardAggMapper.hireTrend(df, p.start, p.end, bo.getDeptId(), null)) {
                     String period = String.valueOf(row.get("period"));
                     hiredMerged.merge(period, getLong(row, "cnt"), Long::sum);
                 }
-                for (Map<String, Object> row : dashboardAggMapper.quitTrend(df, p.start, p.end, bo.getDeptId(), bo.getQuitType())) {
+                for (Map<String, Object> row : dashboardAggMapper.quitTrend(df, p.start, p.end, bo.getDeptId(), bo.getQuitType(), null)) {
                     String period = String.valueOf(row.get("period"));
                     quitMerged.merge(period, getLong(row, "cnt"), Long::sum);
                 }
@@ -751,7 +772,7 @@ public class DashboardServiceImpl implements DashboardService {
             LoginUserInfo ctx = copyContextForCompany(original, cid);
             CompanyContext.set(ctx);
             try {
-                for (Map<String, Object> row : dashboardAggMapper.quitTrend(df, p.prevStart, p.prevEnd, bo.getDeptId(), bo.getQuitType())) {
+                for (Map<String, Object> row : dashboardAggMapper.quitTrend(df, p.prevStart, p.prevEnd, bo.getDeptId(), bo.getQuitType(), null)) {
                     String period = String.valueOf(row.get("period"));
                     prevQuitMerged.merge(period, getLong(row, "cnt"), Long::sum);
                 }
@@ -778,7 +799,7 @@ public class DashboardServiceImpl implements DashboardService {
             LoginUserInfo ctx = copyContextForCompany(original, cid);
             CompanyContext.set(ctx);
             try {
-                for (Map<String, Object> row : dashboardAggMapper.flowDeptCompare(p.start, p.end, bo.getDeptId(), bo.getQuitType())) {
+                for (Map<String, Object> row : dashboardAggMapper.flowDeptCompare(p.start, p.end, bo.getDeptId(), bo.getQuitType(), null)) {
                     String deptName = String.valueOf(row.get("deptName"));
                     byDept.computeIfAbsent(deptName, k -> {
                         Map<String, Object> m = new HashMap<>();
@@ -811,7 +832,7 @@ public class DashboardServiceImpl implements DashboardService {
             LoginUserInfo ctx = copyContextForCompany(original, cid);
             CompanyContext.set(ctx);
             try {
-                for (Map<String, Object> row : dashboardAggMapper.quitDist(dim, p.start, p.end, bo.getDeptId(), bo.getQuitType())) {
+                for (Map<String, Object> row : dashboardAggMapper.quitDist(dim, p.start, p.end, bo.getDeptId(), bo.getQuitType(), null)) {
                     String name = String.valueOf(row.get("name"));
                     distMerged.merge(name, getLong(row, "value"), Long::sum);
                 }
@@ -852,7 +873,7 @@ public class DashboardServiceImpl implements DashboardService {
             CompanyContext.set(ctx);
             try {
                 BasePage<Map<String, Object>> tempPage = new BasePage<>(1L, 10000L);
-                dashboardAggMapper.flowPageList(tempPage, p.start, p.end, bo.getDeptId(), bo.getQuitType());
+                dashboardAggMapper.flowPageList(tempPage, p.start, p.end, bo.getDeptId(), bo.getQuitType(), null);
                 List<Map<String, Object>> rows = tempPage.getList();
                 if (rows != null) {
                     for (Map<String, Object> row : rows) {
@@ -896,7 +917,7 @@ public class DashboardServiceImpl implements DashboardService {
             LoginUserInfo ctx = copyContextForCompany(original, cid);
             CompanyContext.set(ctx);
             try {
-                Map<String, Object> ov = dashboardAggMapper.personnelOverview(p.end, p.start, p.prevEnd, bo.getDeptId());
+                Map<String, Object> ov = dashboardAggMapper.personnelOverview(p.end, p.start, p.prevEnd, bo.getDeptId(), null);
                 long active = getLong(ov, "activeCount");
                 long hired = getLong(ov, "hiredCount");
                 long quit = getLong(ov, "quitCount");
@@ -987,7 +1008,7 @@ public class DashboardServiceImpl implements DashboardService {
             LoginUserInfo ctx = copyContextForCompany(original, cid);
             CompanyContext.set(ctx);
             try {
-                List<Map<String, Object>> rows = dashboardAggMapper.perfCompletion(bo.getDeptId(), p.startYear, p.startMonth, p.endYear, p.endMonth);
+                List<Map<String, Object>> rows = dashboardAggMapper.perfCompletion(bo.getDeptId(), p.startYear, p.startMonth, p.endYear, p.endMonth, null);
                 for (Map<String, Object> row : rows) {
                     int type = ((Number) row.get("indicatorType")).intValue();
                     double tv = toDouble(row.get("targetValue"));

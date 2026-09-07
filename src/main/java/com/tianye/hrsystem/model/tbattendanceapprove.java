@@ -47,6 +47,12 @@ public class tbattendanceapprove implements Serializable {
    **/
   @Column(name = "durationUnit")
   private String durationUnit;
+
+  /**
+    时长(天)：与 duration(小时) 一致派生，恒 = duration(小时)/8（按 8 工作小时=1天口径）
+   **/
+  @Column(name = "durationDay")
+  private String durationDay;
   @Column(name = "userId")
   private String  userId;
   @Column(name = "groupId")
@@ -154,6 +160,14 @@ public class tbattendanceapprove implements Serializable {
 
   public void setDuration(String duration) {
     this.duration = duration;
+  }
+
+  public String getDurationDay() {
+    return durationDay;
+  }
+
+  public void setDurationDay(String durationDay) {
+    this.durationDay = durationDay;
   }
 
   public Date getWorkDate() {

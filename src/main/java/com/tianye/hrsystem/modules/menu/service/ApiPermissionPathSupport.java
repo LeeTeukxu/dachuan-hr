@@ -80,7 +80,10 @@ public class ApiPermissionPathSupport {
         putExact("/hrmSalaryBasic/saveSalaryBasic", "/hrm/salary/index", "/manage/salary");
         putExact("/hrmSalaryBasic/queryById", "/hrm/salary/index", "/manage/salary");
         putExact("/hrmSalaryBasic/deleteSalaryBasic", "/hrm/salary/index", "/manage/salary");
-        put("/hrmSalaryConfig", "/manage/salary");
+        // 计薪设置（/manage/salaryConfig，2026-09-03 新增菜单）专用接口。
+        // 仍走菜单权限校验，但映射的是“计薪设置”菜单本身；用户能进入该菜单即视为有权保存，
+        // 原来的映射误指向旧菜单 /manage/salary，导致在计薪设置页保存被【当前账号没有访问该功能的权限】拦截。
+        put("/hrmSalaryConfig", "/manage/salaryConfig");
         put("/hrmSalaryBasic", "/manage/salary");
         put("/hrmSalaryChangeTemplate", "/manage/salary");
         putExact("/hrmBonus/importBonus", "/hrm/bonus/payroll");
@@ -109,6 +112,15 @@ public class ApiPermissionPathSupport {
         put("/tempworker", "/hrm/dataConfig/index");
 
         put("/workPlanApplication", "/hrm/attendance/scheduling");
+
+        // 排班小程序权限（2026-09-06）：/mp 排班数据加载接口挂租户级菜单开关；
+        // /mpPermission 为 PC 端"排班小程序权限"配置页接口。
+        // 注意：/mp/schedule/*（添加排班）与 /mp/application/*（申请/审批）不进映射表，
+        // 分别由 mp_schedule_permission 员工级配置与直属上级校验控制。
+        putExact("/mp/mySchedule", "/miniapp/schedule/load");
+        putExact("/mp/mySchedule/day", "/miniapp/schedule/load");
+        putExact("/mp/schedule/query", "/miniapp/schedule/load");
+        put("/mpPermission", "/hrm/system/miniappPermission");
     }
 
     /**

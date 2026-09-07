@@ -17,7 +17,9 @@ import com.tianye.hrsystem.model.LoginUserInfo;
 import com.tianye.hrsystem.model.tbattendanceapprove;
 import com.tianye.hrsystem.model.tbattendanceuser;
 import com.tianye.hrsystem.modules.salary.entity.HrmSalaryBasic;
+import com.tianye.hrsystem.modules.salary.entity.HrmSalaryConfig;
 import com.tianye.hrsystem.modules.salary.mapper.HrmSalaryBasicMapper;
+import com.tianye.hrsystem.modules.salary.service.HrmSalaryConfigService;
 import com.tianye.hrsystem.repository.hrmDeptRepository;
 import com.tianye.hrsystem.repository.hrmEmployeeRepository;
 import com.tianye.hrsystem.repository.hrmOvertimeNightStatisticsDetailRepository;
@@ -82,6 +84,9 @@ public class HrmProduceAttendanceServiceImplTest {
 
     @Mock
     private tbattendanceapproveRepository attendanceApproveRepository;
+
+    @Mock
+    private HrmSalaryConfigService salaryConfigService;
 
     @After
     public void tearDown() {
@@ -157,6 +162,7 @@ public class HrmProduceAttendanceServiceImplTest {
                 .thenReturn(Collections.singletonList(metric));
 
         MockHttpServletResponse response = new MockHttpServletResponse();
+        stubAdministrativePayDay();
         service.downloadAdministrativeAttendance(bo, response);
 
         Assert.assertEquals("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", response.getContentType());
@@ -184,7 +190,7 @@ public class HrmProduceAttendanceServiceImplTest {
             Assert.assertEquals(4.5, cellNumber(dataRow, 8), 0.001);
             Assert.assertEquals(2.0, cellNumber(dataRow, 9), 0.001);
             Assert.assertEquals(8.0, cellNumber(dataRow, 10), 0.001);
-            Assert.assertEquals(0.0, cellNumber(dataRow, 11), 0.001);
+            Assert.assertEquals(1.0, cellNumber(dataRow, 11), 0.001);
             Assert.assertEquals(0.5, cellNumber(dataRow, 12), 0.001);
             Assert.assertEquals(2.0, cellNumber(dataRow, 13), 0.001);
             Assert.assertEquals(1.0, cellNumber(dataRow, 14), 0.001);
@@ -192,6 +198,19 @@ public class HrmProduceAttendanceServiceImplTest {
             Assert.assertEquals(4.0, cellNumber(dataRow, 16), 0.001);
             Assert.assertEquals(7.0, cellNumber(dataRow, 17), 0.001);
             Assert.assertEquals(5.5, cellNumber(dataRow, 18), 0.001);
+            assertCommentContains(dataRow.getCell(7), "事假", "发生时间");
+            assertCommentContains(dataRow.getCell(8), "病假", "分钟÷60");
+            assertCommentContains(dataRow.getCell(9), "调休");
+            assertCommentContains(dataRow.getCell(10), "年假");
+            assertCommentContains(dataRow.getCell(11), "出差", "本月合计：1.00 天");
+            assertCommentContains(dataRow.getCell(12), "旷工");
+            assertCommentContains(dataRow.getCell(13), "迟到", "每天打卡迟到记 1 次");
+            assertCommentContains(dataRow.getCell(14), "早退");
+            assertCommentContains(dataRow.getCell(15), "上班缺卡");
+            assertCommentContains(dataRow.getCell(16), "下班缺卡");
+            assertCommentContains(dataRow.getCell(17), "上班缺卡次数 + 下班缺卡次数", "7.00 次");
+            assertCommentContains(dataRow.getCell(18), "加班", "本月合计：5.50 小时");
+            Assert.assertNull("非批注列不应添加批注", dataRow.getCell(0).getCellComment());
             Assert.assertNull("production employee should not be exported", sheet.getRow(5));
         }
     }
@@ -240,6 +259,7 @@ public class HrmProduceAttendanceServiceImplTest {
                 ));
 
         MockHttpServletResponse response = new MockHttpServletResponse();
+        stubAdministrativePayDay();
         service.downloadAdministrativeAttendance(bo, response);
 
         try (Workbook workbook = WorkbookFactory.create(new ByteArrayInputStream(response.getContentAsByteArray()))) {
@@ -301,6 +321,7 @@ public class HrmProduceAttendanceServiceImplTest {
                 .thenReturn(Collections.singletonList(compensatoryLeave));
 
         MockHttpServletResponse response = new MockHttpServletResponse();
+        stubAdministrativePayDay();
         service.downloadAdministrativeAttendance(bo, response);
 
         try (Workbook workbook = WorkbookFactory.create(new ByteArrayInputStream(response.getContentAsByteArray()))) {
@@ -742,6 +763,22 @@ public class HrmProduceAttendanceServiceImplTest {
         return calendar.getTime();
     }
 
+    private void stubAdministrativePayDay() {
+        HrmSalaryConfig salaryConfig = new HrmSalaryConfig();
+        salaryConfig.setPayDay(10);
+        when(salaryConfigService.getOne(any(), org.mockito.ArgumentMatchers.anyBoolean())).thenReturn(salaryConfig);
+    }
+
+    private static void assertCommentContains(Cell cell, String... fragments) {
+        Assert.assertNotNull("目标单元格必须存在", cell);
+        Assert.assertNotNull("目标单元格必须带批注", cell.getCellComment());
+        String comment = cell.getCellComment().getString().getString();
+        for (String fragment : fragments) {
+            Assert.assertTrue("批注应包含：" + fragment + "\n实际批注：" + comment,
+                    comment.contains(fragment));
+        }
+    }
+
     private static String cellText(Row row, int columnIndex) {
         if (row == null) {
             return "";
@@ -766,6 +803,132 @@ public class HrmProduceAttendanceServiceImplTest {
             }
             Assert.assertTrue("row " + (rowIndex + 1) + " should not contain cells after S",
                     row.getLastCellNum() <= 19);
+        }
+    }
+
+    @Test
+    public void downloadAdministrativeAttendance_shouldFallbackToProduceAttendanceWhenStatisticsDetailEmpty() throws Exception {
+        LoginUserInfo loginUserInfo = new LoginUserInfo();
+        loginUserInfo.setCompanyName("测试公司");
+        CompanyContext.set(loginUserInfo);
+
+        QueryMonthAttendanceBO bo = new QueryMonthAttendanceBO();
+        bo.setYear(2026);
+        bo.setMonth(7);
+
+        HrmEmployee administrativeEmployee = new HrmEmployee();
+        administrativeEmployee.setEmployeeId(2001L);
+        administrativeEmployee.setEmployeeName("王五");
+        administrativeEmployee.setDeptId(3001L);
+        administrativeEmployee.setAffiliationSystem(1);
+        administrativeEmployee.setIsDel(0);
+        when(employeeRepository.findAll()).thenReturn(Collections.singletonList(administrativeEmployee));
+
+        HrmDept dept = new HrmDept();
+        dept.setDeptId(3001L);
+        dept.setName("行政部");
+        when(deptRepository.findAllByDeptIdIn(Collections.singletonList(3001L))).thenReturn(Collections.singletonList(dept));
+
+        when(overtimeNightStatisticsDetailRepository.findAllByStatYearAndStatMonthOrderByWorkDateDescEmployeeIdAsc(2026, 7))
+                .thenReturn(Collections.emptyList());
+
+        HrmProduceAttendance attendance = new HrmProduceAttendance();
+        attendance.setEmployeeId(2001L);
+        attendance.setEmployeeName("王五");
+        attendance.setYear(2026);
+        attendance.setMonth(7);
+        attendance.setDepartment(1);
+        attendance.setPositiveAttendance(new BigDecimal("176.00"));
+        attendance.setProbationAttendance(new BigDecimal("0.00"));
+        when(produceAttendanceMapper.selectList(any())).thenReturn(Collections.singletonList(attendance));
+
+        tbattendanceuser attendanceUser = new tbattendanceuser();
+        attendanceUser.setEmpId(2001L);
+        attendanceUser.setUserId("ding-2001");
+        when(attendanceUserRepository.findAllByEmpIdIn(Collections.singletonList(2001L)))
+                .thenReturn(Collections.singletonList(attendanceUser));
+        when(attendanceApproveRepository.findAllByUserIdInAndWorkDateBetween(any(), any(Date.class), any(Date.class)))
+                .thenReturn(Collections.emptyList());
+
+        when(produceAttendanceMapper.queryAdministrativeAttendanceReportMetrics(any(Date.class), any(Date.class), any()))
+                .thenReturn(Collections.emptyList());
+
+        MockHttpServletResponse response = new MockHttpServletResponse();
+        stubAdministrativePayDay();
+        service.downloadAdministrativeAttendance(bo, response);
+
+        Assert.assertEquals("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", response.getContentType());
+        try (Workbook workbook = WorkbookFactory.create(new ByteArrayInputStream(response.getContentAsByteArray()))) {
+            Sheet sheet = workbook.getSheetAt(0);
+            Assert.assertEquals("2026年7月份行政后勤考勤统计表", cellText(sheet.getRow(0), 0));
+            Row dataRow = sheet.getRow(4);
+            Assert.assertNotNull("should have data row when statistics detail is empty but produce attendance exists", dataRow);
+            Assert.assertEquals("1", cellText(dataRow, 0));
+            Assert.assertEquals("王五", cellText(dataRow, 1));
+            Assert.assertEquals("行政部", cellText(dataRow, 2));
+        }
+    }
+
+    @Test
+    public void downloadAdministrativeAttendance_shouldIncludeAllAdministrativeEmployeesWhenStatisticsDetailPartial() throws Exception {
+        LoginUserInfo loginUserInfo = new LoginUserInfo();
+        loginUserInfo.setCompanyName("测试公司");
+        CompanyContext.set(loginUserInfo);
+
+        QueryMonthAttendanceBO bo = new QueryMonthAttendanceBO();
+        bo.setYear(2026);
+        bo.setMonth(8);
+
+        HrmEmployee statEmployee = new HrmEmployee();
+        statEmployee.setEmployeeId(3001L);
+        statEmployee.setEmployeeName("聂小玲");
+        statEmployee.setDeptId(3001L);
+        statEmployee.setAffiliationSystem(1);
+        statEmployee.setIsDel(0);
+
+        HrmEmployee otherEmployee = new HrmEmployee();
+        otherEmployee.setEmployeeId(3002L);
+        otherEmployee.setEmployeeName("王五");
+        otherEmployee.setDeptId(3001L);
+        otherEmployee.setAffiliationSystem(1);
+        otherEmployee.setIsDel(0);
+
+        HrmEmployee productionEmployee = new HrmEmployee();
+        productionEmployee.setEmployeeId(3003L);
+        productionEmployee.setEmployeeName("李四");
+        productionEmployee.setDeptId(3002L);
+        productionEmployee.setAffiliationSystem(2);
+        productionEmployee.setIsDel(0);
+        when(employeeRepository.findAll()).thenReturn(Arrays.asList(statEmployee, otherEmployee, productionEmployee));
+
+        HrmDept dept = new HrmDept();
+        dept.setDeptId(3001L);
+        dept.setName("行政部");
+        when(deptRepository.findAllByDeptIdIn(Collections.singletonList(3001L))).thenReturn(Collections.singletonList(dept));
+
+        // 统计明细只覆盖一名员工（单人统计残留），考勤汇总当月无数据
+        HrmOvertimeNightStatisticsDetail partialDetail = statisticsDetail(3001L, "聂小玲", "行政部");
+        when(overtimeNightStatisticsDetailRepository.findAllByStatYearAndStatMonthOrderByWorkDateDescEmployeeIdAsc(2026, 8))
+                .thenReturn(Collections.singletonList(partialDetail));
+        when(produceAttendanceMapper.selectList(any())).thenReturn(Collections.emptyList());
+
+        when(attendanceUserRepository.findAllByEmpIdIn(any())).thenReturn(Collections.emptyList());
+        when(produceAttendanceMapper.queryAdministrativeAttendanceReportMetrics(any(Date.class), any(Date.class), any()))
+                .thenReturn(Collections.emptyList());
+
+        MockHttpServletResponse response = new MockHttpServletResponse();
+        stubAdministrativePayDay();
+        service.downloadAdministrativeAttendance(bo, response);
+
+        try (Workbook workbook = WorkbookFactory.create(new ByteArrayInputStream(response.getContentAsByteArray()))) {
+            Sheet sheet = workbook.getSheetAt(0);
+            Row firstRow = sheet.getRow(4);
+            Row secondRow = sheet.getRow(5);
+            Assert.assertNotNull("有统计明细的员工应导出", secondRow);
+            Assert.assertNotNull("无统计明细的行政体系员工也应导出", firstRow);
+            Assert.assertEquals("王五", cellText(firstRow, 1));
+            Assert.assertEquals("聂小玲", cellText(secondRow, 1));
+            Assert.assertNull("生产体系员工不应导出", sheet.getRow(6));
         }
     }
 

@@ -400,6 +400,11 @@ public class MiniAppScheduleServiceImpl implements IMiniAppScheduleService {
         return result;
     }
 
+    /**
+     * 排班行 userId → 员工身份（2026-09 决议：不再读写 tbattendanceuser）。
+     * 双键口径：行内 userId 可能是 dingtalk_user_id（新写入）或历史遗留的 employeeId 字符串，
+     * 两个键都注册到员工档案上；返回对象仅作内存载体（getEmpId）。
+     */
     private Map<String, tbattendanceuser> loadAttendanceUsers(List<tbplanlist> rows) {
         Set<String> userIds = new HashSet<>();
         for (tbplanlist row : rows) {
@@ -409,10 +414,35 @@ public class MiniAppScheduleServiceImpl implements IMiniAppScheduleService {
         if (userIds.isEmpty()) {
             return result;
         }
-        for (tbattendanceuser user : attendanceUserRepository.findAllByUserIdIn(new ArrayList<>(userIds))) {
-            result.put(user.getUserId(), user);
+        List<HrmEmployee> employees = employeeRepository.findAllByIsDelAndEntryStatusIn(0, Arrays.asList(1, 3, 4));
+        if (employees == null) {
+            return result;
+        }
+        for (HrmEmployee employee : employees) {
+            if (employee == null || employee.getEmployeeId() == null) {
+                continue;
+            }
+            tbattendanceuser identity = null;
+            String dingTalkKey = StringUtils.trimToEmpty(employee.getDingtalkUserId());
+            if (!dingTalkKey.isEmpty() && userIds.contains(dingTalkKey)) {
+                identity = buildUserIdentity(employee, dingTalkKey);
+                result.put(dingTalkKey, identity);
+            }
+            String employeeKey = String.valueOf(employee.getEmployeeId());
+            if (userIds.contains(employeeKey) && !result.containsKey(employeeKey)) {
+                result.put(employeeKey, identity != null ? identity : buildUserIdentity(employee, employeeKey));
+            }
         }
         return result;
+    }
+
+    private tbattendanceuser buildUserIdentity(HrmEmployee employee, String userId) {
+        tbattendanceuser identity = new tbattendanceuser();
+        identity.setEmpId(employee.getEmployeeId());
+        identity.setUserId(userId);
+        identity.setUserName(employee.getEmployeeName());
+        identity.setDepId(employee.getDeptId());
+        return identity;
     }
 
     private Map<Long, HrmWorkPlanCustomShift> loadCustomShifts(List<tbplanlist> rows) {

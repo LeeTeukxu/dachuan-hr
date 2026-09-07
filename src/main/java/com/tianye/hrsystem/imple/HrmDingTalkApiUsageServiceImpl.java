@@ -43,11 +43,16 @@ public class HrmDingTalkApiUsageServiceImpl implements IHrmDingTalkApiUsageServi
     @Override
     public DingTalkApiUsageVO queryMonthlyUsage() {
         YearMonth month = YearMonth.from(LocalDate.now(clock));
-        ZoneId zoneId = clock.getZone();
-        Date begin = Date.from(month.atDay(1).atStartOfDay(zoneId).toInstant());
-        Date end = Date.from(month.plusMonths(1).atDay(1).atStartOfDay(zoneId).toInstant());
-        List<Postresultlog> logs = logRepository.findAllByCreateTimeGreaterThanEqualAndCreateTimeLessThan(begin, end);
-        return buildUsage(month, logs == null ? new ArrayList<Postresultlog>() : logs);
+        try {
+            ZoneId zoneId = clock.getZone();
+            Date begin = Date.from(month.atDay(1).atStartOfDay(zoneId).toInstant());
+            Date end = Date.from(month.plusMonths(1).atDay(1).atStartOfDay(zoneId).toInstant());
+            List<Postresultlog> logs = logRepository.findAllByCreateTimeGreaterThanEqualAndCreateTimeLessThan(begin, end);
+            return buildUsage(month, logs == null ? new ArrayList<Postresultlog>() : logs);
+        } catch (Exception e) {
+            // 连接池耗尽或数据库异常时返回空数据，避免全局异常
+            return buildUsage(month, new ArrayList<Postresultlog>());
+        }
     }
 
     private DingTalkApiUsageVO buildUsage(YearMonth month, List<Postresultlog> logs) {

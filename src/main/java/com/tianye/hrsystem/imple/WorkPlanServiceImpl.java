@@ -87,6 +87,7 @@ import java.util.Collections;
 import java.util.Comparator;
 import java.util.Date;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -183,6 +184,11 @@ public class WorkPlanServiceImpl implements IWorkPlanService {
 
     private final WorkPlanCustomShiftResolver customShiftResolver = new WorkPlanCustomShiftResolver();
     private final WorkPlanDingTalkErrorTranslator dingTalkErrorTranslator = new WorkPlanDingTalkErrorTranslator();
+
+    /** 排班推送钉钉考勤组开关（2026-09 决议：弃用推送，本地 tbplanlist 为唯一事实源；默认关闭，置 true 可回滚旧行为） */
+    @org.springframework.beans.factory.annotation.Value("${hrm.dingtalk.schedule-push.enabled:false}")
+    private boolean schedulePushEnabled;
+
     @Autowired
     tbPlanListRepository planRep;
     @Autowired
@@ -703,27 +709,19 @@ public class WorkPlanServiceImpl implements IWorkPlanService {
         String customShiftPeriod = SHIFT_TYPE_REST.equals(shiftType)
                 ? null
                 : normalizeCustomShiftPeriod(row.getCustomShiftPeriod());
-        tbattendanceuser attendanceUser = null;
+        // 排班归属身份统一锚定员工档案（employeeId → hrm_employee.dingtalk_user_id），
+        // 不再采信考勤用户表的 UserID，杜绝"考勤用户表过期/员工ID兜底"产生的孤儿排班（界面上显示为数字员工行）
+        String canonicalUserId = null;
         if (employee != null && employee.getEmployeeId() != null) {
-            Optional<tbattendanceuser> findUser = userRep.findFirstByEmpId(employee.getEmployeeId());
-            if (findUser.isPresent()) {
-                attendanceUser = findUser.get();
-            } else if (StringUtils.isNotBlank(employee.getDingtalkUserId())) {
-                attendanceUser = new tbattendanceuser();
-                attendanceUser.setEmpId(employee.getEmployeeId());
-                attendanceUser.setUserId(employee.getDingtalkUserId());
-                attendanceUser.setUserName(employee.getEmployeeName());
-            } else {
-                errors.add("未找到员工对应的钉钉考勤用户");
-            }
+            canonicalUserId = resolveCanonicalPlanUserId(employee, errors);
         }
         if (!errors.isEmpty()) {
             return null;
         }
         tbplanlist plan = new tbplanlist();
         plan.setWorkDate(workDate);
-        plan.setUserId(attendanceUser.getUserId());
-        plan.setGroupId(attendanceUser.getGroupId() == null ? null : String.valueOf(attendanceUser.getGroupId()));
+        plan.setUserId(canonicalUserId);
+        plan.setGroupId(null);
         plan.setProductName(StringUtils.trimToEmpty(row.getProductName()));
         plan.setLinkName(StringUtils.trimToEmpty(row.getPositionName()));
         plan.setWorkshopName(StringUtils.trimToEmpty(row.getWorkshopName()));
@@ -1079,6 +1077,84 @@ public class WorkPlanServiceImpl implements IWorkPlanService {
         removeEmployeeFromLocalPlans(targetUserId, localPlans);
     }
 
+    @Override
+    @Transactional
+    public int batchSetRestDay(Date workDate) throws Exception {
+        if (workDate == null) {
+            throw new Exception("排班日期不能为空");
+        }
+        List<HrmEmployee> allActive = employeeRep.findAllByIsDelAndEntryStatusIn(0, Collections.singletonList(1));
+        List<HrmEmployee> targets = allActive.stream()
+                .filter(e -> Integer.valueOf(2).equals(e.getAffiliationSystem())
+                        && Integer.valueOf(2).equals(e.getRestType()))
+                .collect(Collectors.toList());
+        if (targets.isEmpty()) {
+            return 0;
+        }
+        Set<String> targetUserIds = new HashSet<>();
+        Map<String, HrmEmployee> employeeByUserId = new HashMap<>();
+        for (HrmEmployee emp : targets) {
+            String userId = emp.getDingtalkUserId();
+            if (StringUtils.isBlank(userId)) {
+                continue;
+            }
+            targetUserIds.add(userId);
+            employeeByUserId.put(userId, emp);
+        }
+        if (targetUserIds.isEmpty()) {
+            return 0;
+        }
+        List<tbplanlist> dayPlans = planRep.findAllByWorkDateBetweenOrderByIdDesc(startOfDay(workDate), endOfDay(workDate));
+        List<tbplanlist> toDelete = new ArrayList<>();
+        List<tbplanlist> toUpdate = new ArrayList<>();
+        for (tbplanlist plan : dayPlans) {
+            List<String> planUserIds = parseUserIds(plan.getUserId());
+            List<String> remaining = planUserIds.stream()
+                    .filter(uid -> !targetUserIds.contains(uid))
+                    .collect(Collectors.toList());
+            boolean hasTarget = planUserIds.stream().anyMatch(targetUserIds::contains);
+            if (!hasTarget) {
+                continue;
+            }
+            if (remaining.isEmpty()) {
+                toDelete.add(plan);
+            } else {
+                plan.setUserId(String.join(",", remaining));
+                toUpdate.add(plan);
+            }
+        }
+        if (!toUpdate.isEmpty()) {
+            planRep.saveAll(toUpdate);
+        }
+        if (!toDelete.isEmpty()) {
+            planRep.deleteAll(toDelete);
+        }
+        List<tbplanlist> restPlans = new ArrayList<>();
+        for (String userId : targetUserIds) {
+            HrmEmployee emp = employeeByUserId.get(userId);
+            tbattendanceuser identity = new tbattendanceuser();
+            identity.setEmpId(emp.getEmployeeId());
+            identity.setUserId(userId);
+            identity.setUserName(emp.getEmployeeName());
+            identity.setDepId(emp.getDeptId());
+            tbplanlist restPlan = buildBaseAssignmentPlan(identity, workDate);
+            restPlan.setProductName("");
+            restPlan.setLinkName("");
+            restPlan.setShiftType(SHIFT_TYPE_REST);
+            restPlan.setRestShiftType(REST_SHIFT_TYPE_REST);
+            restPlan.setCustomStart(null);
+            restPlan.setCustomEnd(null);
+            restPlan.setCustomCrossDay(false);
+            restPlan.setCustomContinuousShift(false);
+            restPlan.setClassId(null);
+            restPlan.setCustomShiftId(null);
+            restPlans.add(restPlan);
+        }
+        List<ResolvedWorkPlanAssignment> assignments = buildLocalRestAssignments(restPlans);
+        persistResolvedAssignments(assignments);
+        return targetUserIds.size();
+    }
+
     private void removeEmployeeFromLocalPlans(String targetUserId, List<tbplanlist> localPlans) {
         List<tbplanlist> rowsToUpdate = new ArrayList<>();
         List<tbplanlist> rowsToDelete = new ArrayList<>();
@@ -1157,14 +1233,7 @@ public class WorkPlanServiceImpl implements IWorkPlanService {
         plan.setLinkName(StringUtils.trimToEmpty(assignment.getPositionName()));
         plan.setWorkshopName(StringUtils.trimToEmpty(assignment.getWorkshopName()));
         String normalizedShiftType = normalizeShiftTypeValue(assignment.getShiftType());
-        if (!SHIFT_TYPE_REST.equals(normalizedShiftType)) {
-            if (StringUtils.isBlank(plan.getProductName())) {
-                throw new Exception("生产产品不能为空");
-            }
-            if (StringUtils.isBlank(plan.getLinkName())) {
-                throw new Exception("岗位不能为空");
-            }
-        }
+
         plan.setShiftType(normalizedShiftType);
         if (SHIFT_TYPE_REST.equals(normalizedShiftType)) {
             plan.setProductName("");
@@ -1301,7 +1370,13 @@ public class WorkPlanServiceImpl implements IWorkPlanService {
             }
         }
         if (!standardPlans.isEmpty()) {
-            assignments.addAll(submitRemoteSchedules(standardPlans));
+            if (schedulePushEnabled) {
+                assignments.addAll(submitRemoteSchedules(standardPlans));
+            } else {
+                // 弃用钉钉推送：标准班也只构建本地指派，不再调用 changeGroup/scheduleShift
+                logger.info("[排班推送] 已关闭钉钉推送（hrm.dingtalk.schedule-push.enabled=false），{} 条标准班仅落本地", standardPlans.size());
+                assignments.addAll(buildLocalAssignments(standardPlans));
+            }
         }
         if (!customPlans.isEmpty()) {
             assignments.addAll(buildLocalCustomAssignments(customPlans));
@@ -1542,34 +1617,46 @@ public class WorkPlanServiceImpl implements IWorkPlanService {
         throw new Exception("排班日期格式错误，格式应为yyyy-MM-dd");
     }
 
-    private tbattendanceuser resolveAttendanceUserByEmployeeId(Long employeeId) throws Exception {
-        Optional<tbattendanceuser> attendanceUser = userRep.findFirstByEmpId(employeeId);
-        if (!attendanceUser.isPresent() || StringUtils.isBlank(attendanceUser.get().getUserId())) {
-            // 尝试从员工表获取钉钉用户ID并创建考勤用户记录
-            Optional<HrmEmployee> employeeOpt = employeeRep.findById(employeeId);
-            if (employeeOpt.isPresent()) {
-                HrmEmployee employee = employeeOpt.get();
-                String userId = employee.getDingtalkUserId();
-                // 如果没有钉钉用户ID，使用员工ID作为临时userId
-                if (StringUtils.isBlank(userId)) {
-                    userId = String.valueOf(employeeId);
-                    logger.warn("员工 {} 没有钉钉用户ID，使用员工ID作为临时考勤用户ID", employee.getEmployeeName());
-                }
-                // 创建考勤用户记录
-                tbattendanceuser newUser = new tbattendanceuser();
-                newUser.setEmpId(employeeId);
-                newUser.setUserId(userId);
-                newUser.setUserName(employee.getEmployeeName());
-                newUser.setDepId(employee.getDeptId());
-                newUser.setCreateTime(new Date());
-                newUser.setCreateMan(1);
-                userRep.save(newUser);
-                logger.info("为员工 {} 创建了考勤用户记录，用户ID: {}", employee.getEmployeeName(), userId);
-                return newUser;
+    /**
+     * 排班身份唯一解析（仅 Excel 导入路径使用）：employeeId 锚定员工档案，
+     * UserID 一律取 hrm_employee.dingtalk_user_id，与矩阵展示列表（loadUsersFromLocalSnapshot）同口径；
+     * 不再采信考勤用户表的 UserID，杜绝"考勤用户表过期"导致导入排班挂到孤儿 ID（界面显示为数字员工行）。
+     */
+    private String resolveCanonicalPlanUserId(HrmEmployee employee, List<String> errors) {
+        if (employee == null || employee.getEmployeeId() == null) {
+            if (errors != null) {
+                errors.add("员工不能为空");
             }
-            throw new Exception("未找到员工对应的考勤用户，请先同步考勤用户");
+            return null;
         }
-        return attendanceUser.get();
+        String userId = StringUtils.trimToEmpty(employee.getDingtalkUserId());
+        if (StringUtils.isBlank(userId)) {
+            if (errors != null) {
+                errors.add("员工[" + StringUtils.trimToEmpty(employee.getEmployeeName())
+                        + "]缺少钉钉用户ID，请先同步钉钉通讯录后再导入排班");
+            }
+            return null;
+        }
+        return userId;
+    }
+
+    private tbattendanceuser resolveAttendanceUserByEmployeeId(Long employeeId) throws Exception {
+        // 排班域不再读写 tbattendanceuser（2026-09 决议）：身份直接锚定员工档案，
+        // userId 取 hrm_employee.dingtalk_user_id（缺失即明确报错，不再用 employeeId 兜底，不再自动建档）；
+        // 返回对象仅作内存身份载体（userId/userName/depId），groupId 属钉钉考勤组数据，推送弃用后排班落库不再需要
+        HrmEmployee employee = employeeRep.findById(employeeId)
+                .orElseThrow(() -> new Exception("未找到员工[" + employeeId + "]的档案，无法解析排班身份"));
+        String userId = StringUtils.trimToEmpty(employee.getDingtalkUserId());
+        if (StringUtils.isBlank(userId)) {
+            throw new Exception("员工[" + StringUtils.trimToEmpty(employee.getEmployeeName())
+                    + "]缺少钉钉用户ID，请先在钉钉创建该员工并完成通讯录同步，或使用员工管理的「重新映射」");
+        }
+        tbattendanceuser identity = new tbattendanceuser();
+        identity.setEmpId(employeeId);
+        identity.setUserId(userId);
+        identity.setUserName(employee.getEmployeeName());
+        identity.setDepId(employee.getDeptId());
+        return identity;
     }
 
     private List<tbplanlist> findEmployeeDayPlans(String userId, Date workDate) {
@@ -1828,36 +1915,13 @@ public class WorkPlanServiceImpl implements IWorkPlanService {
         if (employees == null || employees.isEmpty()) {
             return Collections.emptyList();
         }
-        boolean hasEmployeeWithoutDingTalkId = employees.stream()
-                .anyMatch(employee -> employee != null
-                        && StringUtils.isBlank(employee.getDingtalkUserId()));
-        Map<Long, tbattendanceuser> attendanceUsersByEmployeeId = new HashMap<>();
-        if (hasEmployeeWithoutDingTalkId) {
-            List<tbattendanceuser> attendanceUsers = userRep.findAll();
-            if (attendanceUsers != null) {
-                for (tbattendanceuser attendanceUser : attendanceUsers) {
-                    if (attendanceUser == null || attendanceUser.getEmpId() == null) {
-                        continue;
-                    }
-                    tbattendanceuser existing = attendanceUsersByEmployeeId.get(attendanceUser.getEmpId());
-                    if (existing == null || StringUtils.isBlank(existing.getUserId())) {
-                        attendanceUsersByEmployeeId.put(attendanceUser.getEmpId(), attendanceUser);
-                    }
-                }
-            }
-        }
         Map<String, UserObject> deduplicated = new LinkedHashMap<>();
         for (HrmEmployee employee : employees) {
             if (employee == null || StringUtils.isBlank(employee.getEmployeeName())) {
                 continue;
             }
-            tbattendanceuser attendanceUser = employee.getEmployeeId() == null
-                    ? null
-                    : attendanceUsersByEmployeeId.get(employee.getEmployeeId());
+            // 双键口径：优先 dingtalk_user_id，历史员工ID键兜底（读侧兼容，写侧已统一钉钉键）
             String userId = StringUtils.trimToEmpty(employee.getDingtalkUserId());
-            if (StringUtils.isBlank(userId) && attendanceUser != null) {
-                userId = StringUtils.trimToEmpty(attendanceUser.getUserId());
-            }
             if (StringUtils.isBlank(userId) && employee.getEmployeeId() != null) {
                 userId = String.valueOf(employee.getEmployeeId());
             }
@@ -1871,9 +1935,7 @@ public class WorkPlanServiceImpl implements IWorkPlanService {
             item.setId(userId);
             item.setName(employee.getEmployeeName().trim());
             item.setEmployeeId(employee.getEmployeeId());
-            item.setGroupId(attendanceUser == null || attendanceUser.getGroupId() == null
-                    ? ""
-                    : String.valueOf(attendanceUser.getGroupId()));
+            item.setGroupId("");
             deduplicated.put(userId, item);
         }
         return new ArrayList<>(deduplicated.values());
@@ -2824,39 +2886,27 @@ public class WorkPlanServiceImpl implements IWorkPlanService {
         if (userIds == null || userIds.isEmpty()) {
             return result;
         }
-        List<tbattendanceuser> attendanceUsers = userRep.findAllByUserIdIn(userIds);
-        if (attendanceUsers == null || attendanceUsers.isEmpty()) {
-            return result;
-        }
-        List<Long> employeeIds = attendanceUsers.stream()
-                .filter(item -> item != null && item.getEmpId() != null)
-                .map(tbattendanceuser::getEmpId)
-                .distinct()
-                .collect(Collectors.toList());
-        if (employeeIds.isEmpty()) {
-            return result;
-        }
-        List<HrmEmployee> employees = employeeRep.findAllByEmployeeIdIn(employeeIds);
+        // 双键口径：userId 可能是 dingtalk_user_id（新写入）或 employeeId 字符串（历史行），都映射回员工
+        List<HrmEmployee> employees = employeeRep.findAll();
         if (employees == null || employees.isEmpty()) {
             return result;
         }
-        Map<Long, Boolean> employeeContinuousShift = new HashMap<>();
+        Set<String> wanted = new HashSet<>(userIds);
         for (HrmEmployee employee : employees) {
             if (employee == null || employee.getEmployeeId() == null) {
                 continue;
             }
             Optional<Boolean> continuousShift = toEmployeeContinuousShift(employee);
-            if (continuousShift.isPresent()) {
-                employeeContinuousShift.put(employee.getEmployeeId(), continuousShift.get());
-            }
-        }
-        for (tbattendanceuser user : attendanceUsers) {
-            if (user == null || StringUtils.isBlank(user.getUserId()) || user.getEmpId() == null) {
+            if (!continuousShift.isPresent()) {
                 continue;
             }
-            Boolean continuousShift = employeeContinuousShift.get(user.getEmpId());
-            if (continuousShift != null) {
-                result.put(user.getUserId(), continuousShift);
+            String dingTalkKey = StringUtils.trimToEmpty(employee.getDingtalkUserId());
+            if (!dingTalkKey.isEmpty() && wanted.contains(dingTalkKey)) {
+                result.put(dingTalkKey, continuousShift.get());
+            }
+            String employeeKey = String.valueOf(employee.getEmployeeId());
+            if (wanted.contains(employeeKey)) {
+                result.put(employeeKey, continuousShift.get());
             }
         }
         return result;

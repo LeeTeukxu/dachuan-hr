@@ -20,11 +20,28 @@ public class HrmInsuranceMonthRecordController {
     @Autowired
     private HrmInsuranceMonthRecordService insuranceMonthRecordService;
 
+    @PostMapping("/getSuggestMonth")
+    @ApiOperation("查询建议生成的社保报表年月")
+    public Result getSuggestMonth() {
+        try {
+            JSONObject data = insuranceMonthRecordService.getSuggestMonth();
+            return Result.OK(data);
+        } catch (Exception e) {
+            return Result.Error(e);
+        }
+    }
+
     @PostMapping("/computeInsuranceData")
     @ApiOperation("核算社保数据")
-    public Result computeInsuranceData() {
+    public Result computeInsuranceData(@RequestBody(required = false) JSONObject body) {
         try {
-            JSONObject data = insuranceMonthRecordService.computeInsuranceData();
+            Integer year = null;
+            Integer month = null;
+            if (body != null) {
+                year = body.getInteger("year");
+                month = body.getInteger("month");
+            }
+            JSONObject data = insuranceMonthRecordService.computeInsuranceData(year, month);
             return Result.OK(data.getString("year"));
         }catch (Exception ax) {
             ax.printStackTrace();

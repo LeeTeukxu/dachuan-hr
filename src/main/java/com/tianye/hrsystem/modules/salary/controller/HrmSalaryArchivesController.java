@@ -15,8 +15,12 @@ import com.tianye.hrsystem.modules.salary.vo.QuerySalaryArchivesListVO;
 import io.swagger.annotations.Api;
 import io.swagger.annotations.ApiOperation;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.http.MediaType;
 import org.springframework.web.bind.annotation.*;
+import org.springframework.web.multipart.MultipartFile;
 
+import javax.servlet.http.HttpServletResponse;
+import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -118,5 +122,28 @@ public class HrmSalaryArchivesController
         List<OperationLog> operationLog = (List<OperationLog>) result.get("operationLog");
         result.remove("operationLog");
         return OperationResult.ok(result, operationLog);
+    }
+
+    @PostMapping("/importSalaryFixing")
+    @ApiOperation("上传调薪/定薪(Excel导入)")
+    public Result<Map<String, Object>> importSalaryFixing(@RequestParam("file") MultipartFile file) {
+        try {
+            return Result.ok(hrmSalaryArchivesService.importSalaryFixing(file));
+        } catch (Exception ex) {
+            ex.printStackTrace();
+            return Result.error(ResultCode.INTERNAL_SERVER_ERROR.code(), "导入失败，请检查文件内容");
+        }
+    }
+
+    @GetMapping("/downloadSalaryFixingTemplate")
+    @ApiOperation(value = "下载调薪/定薪导入模板", produces = MediaType.APPLICATION_OCTET_STREAM_VALUE)
+    public void downloadSalaryFixingTemplate(HttpServletResponse response) throws IOException {
+        hrmSalaryArchivesService.downloadSalaryFixingTemplate(response);
+    }
+
+    @GetMapping("/downloadSalaryFixingData")
+    @ApiOperation(value = "下载薪资档案数据", produces = MediaType.APPLICATION_OCTET_STREAM_VALUE)
+    public void downloadSalaryFixingData(HttpServletResponse response) throws IOException {
+        hrmSalaryArchivesService.downloadSalaryFixingData(response);
     }
 }

@@ -30,6 +30,11 @@ public class HrmEmployee implements Serializable {
   @Column(name = "mobile")
   private String mobile;
 	/**
+	 * 微信小程序 openid
+	 */
+  @Column(name = "openid")
+  private String openid;
+	/**
 	 * 国家地区
 	 */
   @Column(name = "country")
@@ -266,6 +271,14 @@ public class HrmEmployee implements Serializable {
   }
   public void setMobile(String mobile) {
     this.mobile = mobile;
+  }
+
+  public String getOpenid() {
+    return openid;
+  }
+
+  public void setOpenid(String openid) {
+    this.openid = openid;
   }
 
 

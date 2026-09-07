@@ -155,5 +155,26 @@ public class HrmSalaryExport implements Serializable {
      * 部门名称
      */
     private String deptname;
+
+    /**
+     * 全勤奖批注（导出时按员工生成，不落库）
+     */
+    private transient String fullAttendanceComment;
+    /**
+     * 超缺勤工资批注（导出时按员工生成，不落库）
+     */
+    private transient String absenceComment;
+    /**
+     * 个人所得税批注（导出时按员工生成，不落库）
+     */
+    private transient String taxComment;
+    /**
+     * 工会费批注（导出时按员工生成，不落库）
+     */
+    private transient String unionFeesComment;
+    /**
+     * 其他补贴批注（导出时按员工生成，不落库）
+     */
+    private transient String otherSubsidyComment;
 }
 

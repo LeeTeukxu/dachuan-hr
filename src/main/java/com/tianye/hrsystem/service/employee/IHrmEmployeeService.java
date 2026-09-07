@@ -40,9 +40,11 @@ public interface IHrmEmployeeService extends BaseService<HrmEmployee> {
     /**
      * 查询所用员工(表单选择使用)
      *
+     * @param employeeName 员工姓名（可选，模糊搜索）
+     * @param month 月份（可选，格式YYYY-MM，筛选在职员工和该月计划离职的员工）
      * @return
      */
-    List<SimpleHrmEmployeeVO> queryAllEmployeeList(String employeeName);
+    List<SimpleHrmEmployeeVO> queryAllEmployeeList(String employeeName, String month);
 
     /**
      * 查询考核范围上级可查询所用员工(表单选择使用)
@@ -518,4 +520,14 @@ public interface IHrmEmployeeService extends BaseService<HrmEmployee> {
      * @return
      */
     void importEmployee(MultipartFile multipartFile) throws Exception;
+
+    /**
+     * 批量设置-按部门查询候选员工
+     */
+    List<SimpleHrmEmployeeVO> listForBatchSetting(List<Long> deptIds);
+
+    /**
+     * 批量设置-更新员工指定字段(白名单)
+     */
+    Integer batchUpdateEmployeeField(String fieldName, Integer fieldValue, List<Long> employeeIds);
 }

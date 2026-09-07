@@ -1,7 +1,7 @@
 # Development Notes
 
 ## Architecture Overview
-- 三端一系统：`hainan/`（Spring Boot 2.1.6 / Java 8，JPA + MyBatis-Plus，本地端口 29080、测试实例 29081）+ `hr_web/`（Vue3 + Element Plus PC 前端）+ `排班小程序/`（uni-app Vue3，目标 mp-weixin）。
+- 三端一系统：`hainan/`（Spring Boot 2.1.6 / Java 8，JPA + MyBatis-Plus，本地端口 29080、测试实例 29081）+ `hr_web/`（Vue3 + Element Plus PC 前端）+ `miniapp/`（uni-app Vue3，目标 mp-weixin）。
 - 多租户动态数据源：业务表在各租户库 `hr_XXXX`（JPA/MyBatis 按 `CompanyContext` 路由，`hr_0001~hr_0005` 同实例分 schema）；系统库 `hrsystem` 只放跨租户数据（`tbCompanyList`、`miniapp_user_binding`、`tb_api_permission` 等）。租户连接元数据存 `hrsystem.tbCompanyList.url`，改密需同步。
 - 鉴权：JWT（请求头 `token`，裸 token 无 Bearer）；鉴权失败返回 HTTP 200 + `success:false`（非 401）。拦截器三分支：① `/mp/*` 仅校验 token；② `tb_api_permission`（系统库，73 行）映射表内的路径走菜单权限校验；③ 映射表外的非 `/mp` 路径要求操作员 token（account 非空），员工 token 一律拒绝。
 - 统一排班语义：PC 添加排班/排班管理与小程序生产排班共用扁平事实表 `tbplanlist`（ProductName=产品、LinkName=岗位、UserID=逗号拼接员工、shift_source=standard/custom/rest、custom_shift_id→hrm_workplan_custom_shift），不建独立排班表。
@@ -10,16 +10,16 @@
 ## 功能模块索引
 | 模块 | 文档路径 | 菜单前缀 | 关键端点 |
 |---|---|---|---|
-| 系统管理 | modules/system.md | /hrm/system、/manage | /hrsystem/login、/tbLoginUser、/tbMenu |
+| 系统管理 | modules/system.md | /hrm/system、/manage、/mpPermission | /hrsystem/login、/hrsystem/switchCompany、/tbLoginUser、/tbMenu |
 | 员工管理 | modules/employee.md | /hrm/dept、/hrm/employee* | /hrmEmployee/queryPageList、exportDepartmentDetail |
 | 排班与单双休 | modules/attendance-scheduling.md | /workPlan*、/hrmWorkweekSetting | /workPlan/saveAll、queryEmployeeDayAssignments |
-| 考勤同步 | modules/attendance-sync.md | /attendanceData、/hrmAttendanceApproval | /attendanceData/sync、/hrmAttendanceApproval/fetchMonthData |
+| 考勤同步 | modules/attendance-sync.md | /attendanceData、/hrmAttendanceApproval | /attendanceData/sync、/hrmAttendanceApproval/fetchMonthData、/attendanceData/judgeRecompute、/attendanceData/judgeQuery（本地考勤判定） |
 | 加班/夜班与考勤汇总 | modules/overtime.md | /hrmOvertimeNightStatistics、/hrmProduceAttendance | startStatistics、syncFromOvertimeNightStatistics |
 | 薪资管理 | modules/salary.md | /hrmSalary*、/hrmPersonalIncomeTax | computeSalaryData、exportSalary |
 | 奖金中心 | modules/bonus.md | /hrmBonus | importBonus、importTaxOnlyBonus |
 | 社保管理 | modules/insurance.md | /hrmInsurance* | computeInsuranceData、updateSalaryBasicInsuranceAmount |
 | 数据与运行配置 | modules/dataconfig.md | /dict、/tbCompanyList、/report | /dict/add、跨域/备份/日志清理 |
-| 小程序后端 | modules/miniapp.md | /mp/* | /mp/login、/mp/mySchedule、/mp/schedule/save |
+| 小程序后端 | modules/miniapp.md | /mp/* | /mp/login、/mp/mySchedule、/mp/schedule/save（排班小程序权限见 modules/miniapp.md 与 hr_web system.md） |
 
 ## 跨模块约定（仅当前生效规则）
 - token：请求头 `token` 裸 JWT；PC 菜单权限在 `menuTree`（登录返回），接口权限经 `ApiPermissionPathSupport` 按 `tb_api_permission`/菜单前缀校验；退出 `/hrsystem/logout` 将 jti 写 Redis 黑名单，改密 `bumpSessionSeed` 使在途会话失效。
@@ -28,6 +28,7 @@
 - 契约兼容：不破坏既有接口路径与入参；雪花 ID 一律按字符串传输（18 位精度）；列表 Map 结果须显式驼峰别名；用户侧错误文案必须中文，技术细节只进日志；异步长任务统一"提交即返回 + 进度轮询"模式（同步考勤、审批获取、排班提交、薪资/社保核算均如此）。
 - DDL 纪律：JPA `hbm2ddl.auto=none`，任何新列/新表先出 `docs/sql/` 幂等脚本并在 `hr_0001~hr_0005` 执行复核后再发布代码。
 - 安全加固要点：敏感值不入源码；密码 BCrypt；导出 ZIP 走 AES-256 + `X-Archive-Password` 响应头（CORS 需暴露）。
+- 算法知识库（hr_web 顶栏弹窗，纯前端）：算法口径数据维护在 `hr_web/src/constants/knowledgeBase.js`，**任何模块的算法/计算口径改动须同步该文件**（大白话描述，勿写代码细节），设计见 `hr_web/docs/modules/system.md`、Prompt 清单 7.10。
 
 ## 其他文档
 - `reference/PRD.md`：产品视角主文档（业务背景、角色、模块目标、验收口径）。

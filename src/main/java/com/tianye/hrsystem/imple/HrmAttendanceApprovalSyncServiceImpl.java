@@ -14,6 +14,10 @@ import com.dingtalk.api.response.OapiAttendanceGetupdatedataResponse;
 import com.dingtalk.api.response.OapiSmartworkHrmEmployeeQueryonjobResponse;
 import com.dingtalk.api.response.OapiSmartworkHrmEmployeeV2ListResponse;
 import com.tianye.hrsystem.common.BaseUtil;
+import com.tianye.hrsystem.common.EmployeeNotInDingTalkException;
+import com.tianye.hrsystem.common.ProgressTracker;
+import com.tianye.hrsystem.common.Redis;
+import com.tianye.hrsystem.config.CompanyContext;
 import com.tianye.hrsystem.model.HrmAttendanceApprovalFetchMark;
 import com.tianye.hrsystem.model.HrmEmployee;
 import com.tianye.hrsystem.model.tbattendanceapprove;
@@ -25,6 +29,7 @@ import com.tianye.hrsystem.repository.tbattendanceuserRepository;
 import com.tianye.hrsystem.service.IHrmAttendanceApprovalSyncService;
 import com.tianye.hrsystem.service.ddTalk.IAccessToken;
 import com.taobao.api.ApiException;
+import org.apache.commons.lang.StringUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -61,6 +66,62 @@ public class HrmAttendanceApprovalSyncServiceImpl implements IHrmAttendanceAppro
     private static final String TYPE_MISSCARD = "misscard";
     private static final String TYPE_LEAVE = "leave";
     private static final String TYPE_TRAVEL = "travel";
+
+    @Override
+    public String ensureDingTalkUserId(HrmEmployee employee) throws Exception {
+        if (employee == null) {
+            throw new EmployeeNotInDingTalkException("员工信息为空，无法映射钉钉用户");
+        }
+        String existing = normalizeText(employee.getDingtalkUserId());
+        if (!existing.isEmpty()) {
+            return existing;
+        }
+        if (normalizeEmployeeName(employee.getEmployeeName()).isEmpty()
+                || normalizePhoneNumber(employee.getMobile()).isEmpty()) {
+            throw new EmployeeNotInDingTalkException("员工「"
+                    + StringUtils.defaultString(employee.getEmployeeName())
+                    + "」缺少姓名或手机号，无法在钉钉中匹配，请先补全员工资料");
+        }
+        // 已入库员工：加载完整实体，避免部分字段被 JPA save 覆盖为空
+        HrmEmployee mappingTarget = employee;
+        if (employee.getEmployeeId() != null) {
+            HrmEmployee full = hrmEmployeeRepository.findById(employee.getEmployeeId()).orElse(null);
+            if (full == null) {
+                throw new EmployeeNotInDingTalkException("员工不存在，无法映射钉钉用户");
+            }
+            if (StringUtils.isNotBlank(employee.getEmployeeName())) {
+                full.setEmployeeName(employee.getEmployeeName());
+            }
+            if (StringUtils.isNotBlank(employee.getMobile())) {
+                full.setMobile(employee.getMobile());
+            }
+            mappingTarget = full;
+        }
+        String token;
+        try {
+            token = tokenCreator.Refresh();
+            Optional<String> lookedUp = fetchDingTalkUserIdByNameAndMobile(token, mappingTarget.getEmployeeName(), mappingTarget.getMobile());
+            if (lookedUp.isPresent()) {
+                // 新员工（未入库）只解析返回，由保存流程随实体写入；已入库员工立即回写
+                if (mappingTarget.getEmployeeId() != null) {
+                    saveEmployeeDingTalkUserId(mappingTarget, lookedUp.get());
+                }
+                return lookedUp.get();
+            }
+        } catch (IllegalStateException ex) {
+            throw ex;
+        } catch (Exception ex) {
+            if (EmployeeNotInDingTalkException.isDingTalkPermissionError(String.valueOf(ex.getMessage()))) {
+                // 权限缺失是配置问题，必须让用户看到并找管理员，不能静默放行
+                logger.warn("钉钉通讯录权限缺失, employeeId={}, employeeName={}", employee.getEmployeeId(), employee.getEmployeeName(), ex);
+                throw new EmployeeNotInDingTalkException(EmployeeNotInDingTalkException.DINGTALK_PERMISSION_GUIDANCE, ex);
+            }
+            logger.warn("钉钉服务调用失败，员工映射暂缓, employeeId={}, employeeName={}", employee.getEmployeeId(), employee.getEmployeeName(), ex);
+            throw new Exception("钉钉服务暂不可用，员工「" + employee.getEmployeeName() + "」将以待映射状态保存，稍后自动重试", ex);
+        }
+        throw new EmployeeNotInDingTalkException("员工「" + employee.getEmployeeName() + "」未能在钉钉中匹配（姓名+手机号），请先在钉钉创建该员工并完善手机号");
+    }
+
     private static final String GENERIC_FETCH_ERROR_MESSAGE = "获取审批数据失败，请稍后重试";
     private static final String WORKFLOW_PERMISSION_DENIED_MESSAGE = "当前钉钉应用未开通审批读取权限，请联系管理员开通后重试";
     private static final String PROCESS_CODE_MISSING_MESSAGE = "当前应用未匹配到所选审批类型对应的审批流程，请先确认钉钉审批模板名称和权限配置";
@@ -90,12 +151,119 @@ public class HrmAttendanceApprovalSyncServiceImpl implements IHrmAttendanceAppro
     @Autowired
     private HrmAttendanceApprovalProcessInstanceParser processInstanceParser;
 
+    @Autowired
+    private ProgressTracker progressTracker;
+
+    @Autowired
+    private com.tianye.hrsystem.common.Redis redis;
+
+    @Autowired
+    private AdminMessageServiceImpl adminMessageService;
+
+    // ProgressTracker 前缀（与 HrmAttendanceApprovalServiceImpl 保持一致）
+    private static final String FETCH_KEY_PREFIX = "attendance:fetch";
+
+    /** 发起窗口最多往前回溯月数（护栏，防用户乱点把调用量/范围拉爆），默认 3，可配置 */
+    @Value("${hrm.approval-fetch.max-months-before:3}")
+    private int maxMonthsBefore = 3;
+
+    /** 钉钉 processinstance/listids 单次发起时间跨度上限（毫秒）：官方限 120 天，超出需分片 */
+    private static final long LISTIDS_MAX_SPAN_MILLIS = 120L * 24L * 60L * 60L * 1000L;
+
+    /** 当前抓取请求的发起时间窗口（由窗口入口设置，循环抓取结束后复位）。
+     *  因 fetch 按公司互斥 + 单实例任务线程串行执行，此处实例字段安全。
+     *  仅用于让基类 fetchProcessInstanceIds 按窗口分片拉取，同时保持被测试子类 override 的调用点不变。 */
+    private Long requestFetchStartTime;
+    private Long requestFetchEndTime;
+
     @Override
     public long fetchMonthData(YearMonth month, List<Long> employeeIds, List<String> approvalTypes) throws Exception {
+        // 老入口/定时任务：业务月抓取。不设发起窗口（requestFetch 字段保持 null）→
+        // 基类 listids 按 month 首日~末日、主循环按业务月过滤、收尾按 month 边界清理，行为与改造前一致。
+        if (month == null) {
+            throw new IllegalArgumentException("请选择月份");
+        }
+        try {
+            return doFetchMonthData(month, employeeIds, approvalTypes);
+        } finally {
+            requestFetchStartTime = null;
+            requestFetchEndTime = null;
+        }
+    }
+
+    @Override
+    public long fetchMonthData(YearMonth month, Long fetchStartTime, Long fetchEndTime,
+                               List<Long> employeeIds, List<String> approvalTypes) throws Exception {
+        // 未传窗口：等同老入口（业务月抓取）
+        if (fetchStartTime == null && fetchEndTime == null) {
+            return fetchMonthData(month, employeeIds, approvalTypes);
+        }
+        // 发起窗口入口（前端手动）：写入实例字段驱动分片拉取与全量落库
+        resolveAndValidateFetchWindow(month, fetchStartTime, fetchEndTime);
+        logger.info("审批抓取窗口模式, month={}, fetchStartTime={}, fetchEndTime={}, employeeCount={}, approvalTypes={}",
+                month,
+                requestFetchStartTime,
+                requestFetchEndTime,
+                employeeIds == null ? 0 : employeeIds.size(),
+                summarizeStringList(normalizeApprovalTypes(approvalTypes), 10));
+        try {
+            return doFetchMonthData(month, employeeIds, approvalTypes);
+        } finally {
+            requestFetchStartTime = null;
+            requestFetchEndTime = null;
+        }
+    }
+
+    /**
+     * 解析并校验本次抓取窗口；同时把合法窗口写入实例字段（供基类分片拉取）。
+     * 兼容：未传窗口（老调用/定时任务）→ 按 month 首日~末日；只传了部分 → 缺失端补足。
+     * 护栏：fetchStartTime 不得早于 fetchEndTime − maxMonthsBefore 个月。
+     */
+    private void resolveAndValidateFetchWindow(YearMonth month, Long fetchStartTime, Long fetchEndTime) {
+        long start;
+        long end;
+        if (fetchStartTime == null && fetchEndTime == null) {
+            if (month == null) {
+                throw new IllegalArgumentException("请选择月份或指定发起时间范围");
+            }
+            start = month.atDay(1).atStartOfDay(ZONE_ID).toInstant().toEpochMilli();
+            end = month.atEndOfMonth().atTime(23, 59, 59).atZone(ZONE_ID).toInstant().toEpochMilli();
+        } else {
+            end = (fetchEndTime != null) ? fetchEndTime : System.currentTimeMillis();
+            long earliestStart = earliestAllowedFetchStartTime(end);
+            start = (fetchStartTime != null) ? fetchStartTime : (end - LISTIDS_MAX_SPAN_MILLIS < earliestStart ? earliestStart : end - LISTIDS_MAX_SPAN_MILLIS);
+            if (start >= end) {
+                throw new IllegalArgumentException("发起时间范围不合法：开始时间需早于结束时间");
+            }
+            if (start < earliestStart) {
+                throw new IllegalArgumentException("开始日期最早只能选择到今天前 " + maxMonthsBefore + " 个月内，请放宽开始日期后重试");
+            }
+        }
+        requestFetchStartTime = start;
+        requestFetchEndTime = end;
+    }
+
+    /** 护栏下限：点确定时刻(end)往前 maxMonthsBefore 个月的那天 00:00 */
+    private long earliestAllowedFetchStartTime(long endMillis) {
+        int months = Math.max(1, maxMonthsBefore);
+        java.time.ZonedDateTime endAt = java.time.ZonedDateTime.ofInstant(
+                java.time.Instant.ofEpochMilli(endMillis), ZONE_ID);
+        java.time.ZonedDateTime lower = endAt.minusMonths(months);
+        return lower.toLocalDate().atStartOfDay(ZONE_ID).toInstant().toEpochMilli();
+    }
+
+    /**
+     * 主抓取流程：按当前窗口（requestFetchStartTime/requestFetchEndTime，由 fetchMonthData 先解析写入）
+     * 拉取每个员工每个审批模板的实例 id 列表，逐单 get 详情、已通过审批按业务日幂等落库。
+     * 窗口起止决定"拉取哪些发起时间段的审批"，业务日(month)只用于列表/统计展示口径与清理口径。
+     */
+    private long doFetchMonthData(YearMonth month, List<Long> employeeIds, List<String> approvalTypes) throws Exception {
         List<String> normalizedApprovalTypes = normalizeApprovalTypes(approvalTypes);
         if (normalizedApprovalTypes.isEmpty()) {
             throw new IllegalArgumentException("请选择审批类型");
         }
+        // 进度：准备阶段
+        updateFetchProgress(15, "正在获取员工信息");
         String token = tokenCreator.Refresh();
         List<tbattendanceuser> users = resolveTargetUsers(employeeIds, token);
         if (users == null || users.isEmpty()) {
@@ -113,11 +281,22 @@ public class HrmAttendanceApprovalSyncServiceImpl implements IHrmAttendanceAppro
         long insertedCount = 0L;
         Set<String> completedUserIds = new HashSet<>();
         List<tbattendanceuser> missingDingTalkUsers = new ArrayList<>();
+        // 进度：员工处理阶段
+        int totalUsers = users.size();
+        int processedUsers = 0;
+        int baseProgress = 15;
+        int userProgressRange = 75; // 15% - 90%
         for (int userIndex = 0; userIndex < users.size(); userIndex++) {
             tbattendanceuser user = users.get(userIndex);
             if (user == null || user.getUserId() == null || user.getUserId().trim().isEmpty()) {
                 continue;
             }
+            // 更新员工处理进度
+            processedUsers++;
+            int currentProgress = baseProgress + (processedUsers * userProgressRange / totalUsers);
+            String progressMessage = String.format("正在处理员工 %d/%d - %s",
+                    processedUsers, totalUsers, user.getUserName() != null ? user.getUserName() : "");
+            updateFetchProgress(currentProgress, progressMessage);
             logger.info("审批抓取员工映射, month={}, employeeId={}, dingTalkUserId={}, userName={}",
                     month, user.getEmpId(), user.getUserId(), user.getUserName());
             List<String> employeeProcessCodes;
@@ -211,13 +390,20 @@ public class HrmAttendanceApprovalSyncServiceImpl implements IHrmAttendanceAppro
                         throw translateWorkflowFetchException("topapi/processinstance/get", ex);
                     }
                     if (!isApprovedProcessInstance(processInstance)) {
-                        logger.info("审批实例非同意完成，跳过入库, month={}, employeeId={}, dingTalkUserId={}, processInstanceId={}, status={}, result={}",
+                        logger.info("【诊断标记LINKAGE】↓↓↓审批实例非同意完成，跳过入库↓↓↓ month={}, employeeId={}, dingTalkUserId={}, processInstanceId={}, status={}, result={}, operationTypes={}, linkage={}",
                                 month,
                                 user.getEmpId(),
                                 user.getUserId(),
                                 processInstanceId,
                                 processInstance == null ? null : processInstance.getStatus(),
-                                processInstance == null ? null : processInstance.getResult());
+                                processInstance == null ? null : processInstance.getResult(),
+                                summarizeOperationTypes(processInstance),
+                                summarizeLinkage(processInstance));
+                        // 该实例曾以"通过(COMPLETED+agree)"状态入库，如今钉钉侧已撤销/终止/拒绝（status 非 COMPLETED 等，
+                        // 或操作记录含 TERMINATE_PROCESS_INSTANCE 表示已被撤销）。
+                        // 为满足"只同步通过未撤销的审批"，凡本次复核为非同意完成的既有本地快照一律删除，
+                        // 避免窗口抓取模式（不做整段 stale 清理）把已撤销审批继续保留在列表/统计中。
+                        removeRevokedStaleApproval(processInstanceId);
                         continue;
                     }
                     Optional<tbattendanceapprove> parsed = processInstanceParser.parse(processInstanceId, processInstance);
@@ -228,16 +414,16 @@ public class HrmAttendanceApprovalSyncServiceImpl implements IHrmAttendanceAppro
                     if (!matchesApprovalRecord(entity, normalizedApprovalTypes)) {
                         continue;
                     }
-                    if (!isApprovalInTargetMonth(entity, month)) {
-                        logger.info("审批实例业务日期不在目标月份内，跳过入库, month={}, employeeId={}, dingTalkUserId={}, processInstanceId={}, beginTime={}, workDate={}, endTime={}",
-                                month,
-                                user.getEmpId(),
-                                user.getUserId(),
-                                processInstanceId,
-                                entity.getBeginTime(),
-                                entity.getWorkDate(),
-                                entity.getEndTime());
-                        continue;
+                    // 发起窗口入口（前端手动，治跨月）：已通过审批一律幂等落库，不做业务月过滤。
+                    // 发起在别月、业务落本次抓取月的跨月单（如7月申请8月年假、9月补卡8月缺卡）也能被拉到并持久化，
+                    // 列表/统计页天然按业务 beginTime 归类展示。
+                    if (requestFetchStartTime == null && requestFetchEndTime == null) {
+                        // 老入口/定时任务（未设发起窗口）：仍按业务日期过滤到目标月，保持老语义
+                        if (!isApprovalInTargetMonth(entity, month)) {
+                            logger.info("审批实例业务日期不在目标月份内，跳过入库(业务月抓取模式), month={}, employeeId={}, dingTalkUserId={}, processInstanceId={}",
+                                    month, user.getEmpId(), user.getUserId(), processInstanceId);
+                            continue;
+                        }
                     }
                     Optional<tbattendanceapprove> existing = approvalRepository.findById(processInstanceId);
                     if (existing.isPresent()) {
@@ -246,6 +432,13 @@ public class HrmAttendanceApprovalSyncServiceImpl implements IHrmAttendanceAppro
                         preserveManuallyEditedSubtype(existingEntity, entity);
                     }
                     addRetainedApprovalId(retainedApprovalIds, entity);
+                    logger.info("【诊断标记LINKAGE】↓↓↓审批实例同意完成，入库↓↓↓ month={}, employeeId={}, dingTalkUserId={}, processInstanceId={}, status={}, result={}, operationTypes={}, linkage={}, beginTime={}, endTime={}",
+                            month, user.getEmpId(), user.getUserId(), processInstanceId,
+                            processInstance == null ? null : processInstance.getStatus(),
+                            processInstance == null ? null : processInstance.getResult(),
+                            summarizeOperationTypes(processInstance),
+                            summarizeLinkage(processInstance),
+                            entity.getBeginTime(), entity.getEndTime());
                     approvalRepository.save(entity);
                     insertedCount++;
                 }
@@ -257,11 +450,15 @@ public class HrmAttendanceApprovalSyncServiceImpl implements IHrmAttendanceAppro
         if (completedUserIds.isEmpty() && !missingDingTalkUsers.isEmpty()) {
             throw new IllegalStateException(buildMissingDingTalkUsersMessage(missingDingTalkUsers));
         }
+        // 进度：保存数据阶段
+        updateFetchProgress(90, "正在保存审批数据");
         List<tbattendanceuser> completedUsers = users.stream()
                 .filter(user -> user != null && user.getUserId() != null && completedUserIds.contains(user.getUserId()))
                 .collect(Collectors.toList());
         deleteStaleMonthDataForSelectedEmployees(month, employeeIds, completedUsers, normalizedApprovalTypes, retainedApprovalIds);
         saveFetchMarks(month, completedUsers, completedUserIds, normalizedApprovalTypes);
+        // 进度：保存完成，等待外层设置最终100%
+        updateFetchProgress(95, "审批数据已保存，正在完成收尾");
         return insertedCount;
     }
 
@@ -722,6 +919,15 @@ public class HrmAttendanceApprovalSyncServiceImpl implements IHrmAttendanceAppro
                                                           List<tbattendanceuser> users,
                                                           List<String> approvalTypes,
                                                           Set<String> retainedApprovalIds) {
+        // 发起窗口入口（用户自选开始日期→点确定当下）：本表无"审批发起时间"列，
+        // 无法按发起窗口安全地表达"只删窗口内未回库的单"；按业务月整段删非 retained
+        // 会误删"发起早于窗口起点、但业务落目标月"的既有跨月单。故窗口入口不做整段 stale 清理，
+        // 仅靠幂等 upsert 拉回，缺失/撤销单走"同步考勤/人工核对"路径兜底。
+        if (requestFetchStartTime != null && requestFetchEndTime != null) {
+            logger.info("审批窗口抓取跳过整段陈旧清理(表内无发起时间列、避免误删跨月单), month={}, requestedEmployeeIds={}",
+                    month, summarizeLongList(requestedEmployeeIds, 20));
+            return;
+        }
         List<Long> normalizedEmployeeIds = normalizeEmployeeIds(requestedEmployeeIds);
         if (month == null || users == null || users.isEmpty() || approvalTypes == null || approvalTypes.isEmpty()) {
             return;
@@ -770,6 +976,28 @@ public class HrmAttendanceApprovalSyncServiceImpl implements IHrmAttendanceAppro
             return;
         }
         retainedApprovalIds.add(approval.getId().trim());
+    }
+
+    /**
+     * 钉钉侧某审批实例本次复核为非同意完成（已被撤销/终止/拒绝）时，删除其此前以"通过"状态入库的本地快照。
+     * tbattendanceapprove.id 即钉钉 proc_inst_id，按 id 精确定位，不会误删其他审批；重复删除（无记录）无害。
+     * 用于保证"只同步通过未撤销的审批"，同时弥补窗口抓取模式不做整段 stale 清理的缺口。
+     */
+    private void removeRevokedStaleApproval(String processInstanceId) {
+        if (processInstanceId == null || processInstanceId.trim().isEmpty()) {
+            return;
+        }
+        String id = processInstanceId.trim();
+        try {
+            if (!approvalRepository.findById(id).isPresent()) {
+                return;
+            }
+            approvalRepository.deleteById(id);
+            logger.info("审批实例已撤销/非通过，删除本地快照, processInstanceId={}", id);
+        } catch (Exception ex) {
+            logger.warn("删除已撤销审批本地快照失败, processInstanceId={}, reason={}",
+                    id, extractErrorMessage(ex));
+        }
     }
 
     private List<String> collectApprovalCleanupUserIds(List<tbattendanceuser> users) {
@@ -1069,41 +1297,68 @@ public class HrmAttendanceApprovalSyncServiceImpl implements IHrmAttendanceAppro
     }
 
     protected List<String> fetchProcessInstanceIds(String token, String userId, YearMonth month, String processCode) throws ApiException {
-        DingTalkClient client = new DefaultDingTalkClient("https://oapi.dingtalk.com/topapi/processinstance/listids");
+        // 若本次请求设置了发起时间窗口（用户点确定当下为终点），按 [start, end] 拉取；
+        // 否则回退到老行为：按目标业务月的 1 日~末日拉取（老调用/定时任务/测试子类）。
+        if (requestFetchStartTime != null && requestFetchEndTime != null) {
+            return fetchProcessInstanceIdsInWindow(token, userId, processCode, requestFetchStartTime, requestFetchEndTime);
+        }
+        return fetchProcessInstanceIdsInWindow(token, userId, processCode,
+                month.atDay(1).atStartOfDay(ZONE_ID).toInstant().toEpochMilli(),
+                month.atEndOfMonth().atTime(23, 59, 59).atZone(ZONE_ID).toInstant().toEpochMilli());
+    }
+
+    /**
+     * 拉取某审批模板在发起时间窗 [startMillis, endMillis] 内、指定钉钉用户的全部审批实例 id。
+     * 钉钉 topapi/processinstance/listids 单次发起时间跨度上限约 120 天，窗口超限则按 120 天分片依次枚举并去重。
+     */
+    private List<String> fetchProcessInstanceIdsInWindow(String token, String userId, String processCode,
+                                                         long startMillis, long endMillis) throws ApiException {
+        List<String> allIds = new ArrayList<>();
         long cursor = 0L;
-        List<String> result = new ArrayList<>();
-        while (true) {
-            OapiProcessinstanceListidsRequest request = new OapiProcessinstanceListidsRequest();
-            request.setProcessCode(processCode);
-            request.setUseridList(userId);
-            request.setStartTime(month.atDay(1).atStartOfDay(ZONE_ID).toInstant().toEpochMilli());
-            request.setEndTime(month.atEndOfMonth().atTime(23, 59, 59).atZone(ZONE_ID).toInstant().toEpochMilli());
-            request.setCursor(cursor);
-            request.setSize(20L);
-            OapiProcessinstanceListidsResponse response = client.execute(request, token);
-            // 串行外呼间隔 100ms，降低 1 号集中抓取触发钉钉频控的概率
-            try {
-                Thread.sleep(100L);
-            } catch (InterruptedException interruptedException) {
-                Thread.currentThread().interrupt();
+        long sliceStart = startMillis;
+        while (sliceStart <= endMillis) {
+            long sliceEnd = Math.min(sliceStart + LISTIDS_MAX_SPAN_MILLIS, endMillis);
+            DingTalkClient client = new DefaultDingTalkClient("https://oapi.dingtalk.com/topapi/processinstance/listids");
+            cursor = 0L;
+            while (true) {
+                OapiProcessinstanceListidsRequest request = new OapiProcessinstanceListidsRequest();
+                request.setProcessCode(processCode);
+                request.setUseridList(userId);
+                request.setStartTime(sliceStart);
+                request.setEndTime(sliceEnd);
+                request.setCursor(cursor);
+                request.setSize(20L);
+                OapiProcessinstanceListidsResponse response = client.execute(request, token);
+                // 串行外呼间隔 100ms，降低 1 号集中抓取触发钉钉频控的概率
+                try {
+                    Thread.sleep(100L);
+                } catch (InterruptedException interruptedException) {
+                    Thread.currentThread().interrupt();
+                }
+                if (!response.isSuccess() || response.getResult() == null) {
+                    throw new IllegalStateException(buildWorkflowApiErrorDetail(
+                            "topapi/processinstance/listids",
+                            response.getErrcode(),
+                            response.getErrmsg()
+                    ));
+                }
+                if (response.getResult().getList() != null) {
+                    allIds.addAll(response.getResult().getList());
+                }
+                Long nextCursor = response.getResult().getNextCursor();
+                if (nextCursor == null || (response.getResult().getList() == null || response.getResult().getList().isEmpty())) {
+                    break;
+                }
+                cursor = nextCursor;
             }
-            if (!response.isSuccess() || response.getResult() == null) {
-                throw new IllegalStateException(buildWorkflowApiErrorDetail(
-                        "topapi/processinstance/listids",
-                        response.getErrcode(),
-                        response.getErrmsg()
-                ));
-            }
-            if (response.getResult().getList() != null) {
-                result.addAll(response.getResult().getList());
-            }
-            Long nextCursor = response.getResult().getNextCursor();
-            if (nextCursor == null || (response.getResult().getList() == null || response.getResult().getList().isEmpty())) {
+            if (sliceEnd >= endMillis) {
                 break;
             }
-            cursor = nextCursor;
+            sliceStart = sliceEnd + 1L;
         }
-        return result;
+        // 分片边界理论上不会重叠，去重兜底
+        Set<String> deduplicated = new LinkedHashSet<>(allIds);
+        return new ArrayList<>(deduplicated);
     }
 
     private boolean matchesApprovalTemplateName(String templateName, List<String> approvalTypes) {
@@ -1151,6 +1406,8 @@ public class HrmAttendanceApprovalSyncServiceImpl implements IHrmAttendanceAppro
         return response.getProcessInstance();
     }
 
+    /** 仅业务月抓取（老入口/定时任务，未设发起窗口）时按业务日期过滤到目标月，保持老语义；
+     *  发起窗口入口（前端手动，治跨月）不做此过滤，凡已通过审批一律幂等落库，列表/统计按业务月归类展示。 */
     private boolean isApprovalInTargetMonth(tbattendanceapprove approval, YearMonth month) {
         if (approval == null || month == null) {
             return false;
@@ -1299,8 +1556,109 @@ public class HrmAttendanceApprovalSyncServiceImpl implements IHrmAttendanceAppro
         if (processInstance == null) {
             return false;
         }
+        // 钉钉对"通过后又被撤销/终止"的审批，processinstance/get 仍可能返回 status=COMPLETED + result=agree，
+        // 单看状态/结果无法识别。终止/撤销必定在操作记录里留下 TERMINATE_PROCESS_INSTANCE（=终止(撤销)流程实例）。
+        // 凡含此操作记录的实例一律视为已撤销，不再当作"通过"审批入库，以达成"只同步通过未撤销的审批"。
+        if (containsTerminateOperation(processInstance)) {
+            return false;
+        }
+        // 关键补充判据（2026-09-05 用户定稿规则）：本地只保留"右上角(业务级)与审批结果(单条审核)都为通过/同意"的最终有效单。
+        // 钉钉 App 端按 business_id 归并判断：当某笔业务整体被判"已撤销"，其内部的"撤销后重发"派生单在 App 上右上角显示"已撤销"、
+        // 标题带"（撤销）"并收进"撤销流程"折叠项——即使 processinstance/get 对这条派生单仍返回 COMPLETED+agree。
+        // 判别它属于"撤销后重发替身"的唯一 API 信号 = bizAction=REVOKE 或 mainProcessInstanceId 非空（指向被顶替/被撤销的原单）。
+        // 凡命中即视为业务级已作废，不入库。原单被替代作废另由 attachedProcessInstanceIds 非空暴露（见 hasAttachedReplacementInstances）。
+        // 例：CfyM0j(bizAction=REVOKE, mainProcessInstanceId=Do4xK4, attached=空) → 撤销重发替身 → 作废删；
+        // hgNowj(bizAction=NONE, mainProcessInstanceId=空, attached=空, COMPLETED+agree) → 独立有效单 → 保留。
+        if (isRevokeDerivative(processInstance)) {
+            return false;
+        }
+        if (hasAttachedReplacementInstances(processInstance)) {
+            return false;
+        }
         return "COMPLETED".equalsIgnoreCase(normalizeText(processInstance.getStatus()))
                 && "agree".equalsIgnoreCase(normalizeText(processInstance.getResult()));
+    }
+
+    /**
+     * 判断钉钉审批实例是否已被"撤销后重发"流程替代作废。钉钉会把后续撤销动作单及撤销后重发的新单 id
+     * 挂在被替代的作废原单的 attachedProcessInstanceIds 上（而重发新单自身不携带 attached，仅带
+     * mainProcessInstanceId / bizAction 指回原单）。因此 attachedProcessInstanceIds 非空即代表本单已被撤销作废。
+     */
+    private boolean hasAttachedReplacementInstances(OapiProcessinstanceGetResponse.ProcessInstanceTopVo processInstance) {
+        if (processInstance == null) {
+            return false;
+        }
+        List<String> attached = processInstance.getAttachedProcessInstanceIds();
+        return attached != null && !attached.isEmpty();
+    }
+
+    /**
+     * 判断钉钉审批实例是否为"撤销后重发的派生替身"（2026-09-05 用户定稿规则新增）。
+     * 钉钉 App 端把这类单在业务维度标为"已撤销/撤销流程"，即便单条流程 processinstance/get 返回 COMPLETED+agree
+     * （= 单条"审核结果"通过），也不构成"最终有效通过单"。判别信号 = bizAction=REVOKE（表示该实例是由原实例撤销后
+     * 重新发起的）或 mainProcessInstanceId 非空（指回被它顶替/撤销的原单）。
+     */
+    private boolean isRevokeDerivative(OapiProcessinstanceGetResponse.ProcessInstanceTopVo processInstance) {
+        if (processInstance == null) {
+            return false;
+        }
+        if ("REVOKE".equalsIgnoreCase(normalizeText(processInstance.getBizAction()))) {
+            return true;
+        }
+        return !normalizeText(processInstance.getMainProcessInstanceId()).isEmpty();
+    }
+
+    /**
+     * 判断钉钉审批实例的操作记录中是否包含"终止(撤销)流程实例"操作（TERMINATE_PROCESS_INSTANCE）。
+     * 官方操作类型：TERMINATE_PROCESS_INSTANCE = 终止(撤销)流程实例；正常审批通过仅有
+     * EXECUTE_TASK_NORMAL / FINISH_PROCESS_INSTANCE 等，因此该信号可精确识别被撤销的审批单。
+     */
+    private boolean containsTerminateOperation(OapiProcessinstanceGetResponse.ProcessInstanceTopVo processInstance) {
+        if (processInstance == null || processInstance.getOperationRecords() == null) {
+            return false;
+        }
+        for (OapiProcessinstanceGetResponse.OperationRecordsVo record : processInstance.getOperationRecords()) {
+            if (record == null) {
+                continue;
+            }
+            if ("TERMINATE_PROCESS_INSTANCE".equalsIgnoreCase(normalizeText(record.getOperationType()))) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** 汇总实例操作记录的操作类型，供诊断日志观察被撤销/终止信号。 */
+    private String summarizeOperationTypes(OapiProcessinstanceGetResponse.ProcessInstanceTopVo processInstance) {
+        if (processInstance == null || processInstance.getOperationRecords() == null
+                || processInstance.getOperationRecords().isEmpty()) {
+            return "[]";
+        }
+        List<String> types = new ArrayList<>();
+        for (OapiProcessinstanceGetResponse.OperationRecordsVo record : processInstance.getOperationRecords()) {
+            if (record != null && record.getOperationType() != null && !record.getOperationType().trim().isEmpty()) {
+                types.add(record.getOperationType().trim());
+            }
+        }
+        return String.join(",", types);
+    }
+
+    /**
+     * 汇总实例的"撤销/重发"关联字段（诊断用）：bizAction / mainProcessInstanceId /
+     * attachedProcessInstanceIds / finishTime。钉钉在"已通过审批被撤销后重新发起"时会在新实例上
+     * 打 bizAction、并以 attached 关联原单；这些字段可能提供"通过后撤销"的可识别信号。
+     */
+    private String summarizeLinkage(OapiProcessinstanceGetResponse.ProcessInstanceTopVo processInstance) {
+        if (processInstance == null) {
+            return "[]";
+        }
+        StringBuilder sb = new StringBuilder();
+        sb.append("bizAction=").append(processInstance.getBizAction());
+        sb.append(",mainProcessInstanceId=").append(processInstance.getMainProcessInstanceId());
+        List<String> attached = processInstance.getAttachedProcessInstanceIds();
+        sb.append(",attachedProcessInstanceIds=").append(attached == null || attached.isEmpty() ? "[]" : String.join(",", attached));
+        sb.append(",finishTime=").append(processInstance.getFinishTime());
+        return sb.toString();
     }
 
     private boolean containsAnyKeyword(String tagName, String subType, List<String> keywords) {
@@ -1423,5 +1781,49 @@ public class HrmAttendanceApprovalSyncServiceImpl implements IHrmAttendanceAppro
             this.name = name;
             this.mobile = mobile;
         }
+    }
+
+    /**
+     * 更新审批获取进度
+     */
+    private void updateFetchProgress(int percent, String message) {
+        String companyId = getCompanyId();
+        ProgressTracker.ProgressState state = new ProgressTracker.ProgressState();
+        state.progress = Math.max(0, Math.min(100, percent));
+        state.status = ProgressTracker.STATUS_RUNNING;
+        state.message = message;
+        state.done = false;
+        state.success = false;
+        if (progressTracker != null) {
+            progressTracker.saveProgress(FETCH_KEY_PREFIX, companyId, state);
+        }
+        // 同步更新通知中心的进度内容
+        updateNotificationProgress(companyId, percent);
+    }
+
+    /**
+     * 更新通知中心的进度内容（实时百分比）
+     */
+    private void updateNotificationProgress(String companyId, int percent) {
+        try {
+            String messageIdStr = redis.get("attendance:notification:fetch:" + companyId);
+            if (messageIdStr == null || messageIdStr.isEmpty()) {
+                return;
+            }
+            Long messageId = Long.parseLong(messageIdStr);
+            adminMessageService.updateContent(messageId, "进度 " + percent + "%");
+        } catch (Exception e) {
+            logger.warn("[审批获取进度] 更新通知内容失败", e);
+        }
+    }
+
+    /**
+     * 获取当前公司 ID
+     */
+    private String getCompanyId() {
+        if (CompanyContext.get() != null && CompanyContext.get().getCompanyId() != null) {
+            return CompanyContext.get().getCompanyId();
+        }
+        return "default";
     }
 }

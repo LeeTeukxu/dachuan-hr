@@ -6,7 +6,7 @@ import com.alibaba.fastjson.JSON;
 import com.tianye.hrsystem.entity.vo.HrmFieldExtend;
 import com.tianye.hrsystem.enums.Const;
 import com.tianye.hrsystem.enums.FieldEnum;
-import com.tianye.hrsystem.repository.hrmFieldExtendRepository;
+import com.tianye.hrsystem.mapper.HrmFieldExtendMapper;
 import com.tianye.hrsystem.service.employee.IHrmFieldExtendService;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
@@ -23,13 +23,12 @@ import java.util.*;
 public class HrmFieldExtendServiceImpl implements IHrmFieldExtendService {
 
     @Autowired
-    hrmFieldExtendRepository extendRep;
+    HrmFieldExtendMapper extendMapper;
     @Override
     public List<HrmFieldExtend> queryHrmFieldExtend(Long parentFieldId) {
-        List<com.tianye.hrsystem.model.HrmFieldExtend> Fs =
-                extendRep.findAllByParentFieldId(Math.toIntExact(parentFieldId));
-        String VV=JSON.toJSONString(Fs);
-        List<HrmFieldExtend> fieldExtends=JSON.parseArray(VV,HrmFieldExtend.class);
+        List<com.tianye.hrsystem.model.HrmFieldExtend> modelList = extendMapper.findAllByParentFieldId(Math.toIntExact(parentFieldId));
+        String json = JSON.toJSONString(modelList);
+        List<HrmFieldExtend> fieldExtends = JSON.parseArray(json, HrmFieldExtend.class);
         fieldExtends.forEach(fieldExtend -> recordToFormType(fieldExtend, FieldEnum.parse(fieldExtend.getType())));
         return fieldExtends;
     }

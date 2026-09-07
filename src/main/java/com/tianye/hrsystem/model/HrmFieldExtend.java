@@ -2,12 +2,16 @@ package com.tianye.hrsystem.model;
 
 import java.util.Date;
 import javax.persistence.*;
+import com.baomidou.mybatisplus.annotation.TableName;
+import com.baomidou.mybatisplus.annotation.TableId;
 import java.io.Serializable;
 
 @Entity
 @Table(name = "hrm_field_extend")
+@TableName("hrm_field_extend")
 public class HrmFieldExtend implements Serializable {
   @Id
+  @TableId(type = com.baomidou.mybatisplus.annotation.IdType.AUTO)
   @GeneratedValue(strategy=GenerationType.IDENTITY)
 	/**
 	 * 主键ID

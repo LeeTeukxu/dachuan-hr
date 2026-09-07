@@ -54,7 +54,7 @@ INSERT INTO tb_api_permission (api_prefix, menu_paths, match_type, sortno, remar
 ('/hrmSalaryBasic/saveSalaryBasic','/hrm/salary/index,/manage/salary','exact',407,NULL),
 ('/hrmSalaryBasic/queryById','/hrm/salary/index,/manage/salary','exact',408,NULL),
 ('/hrmSalaryBasic/deleteSalaryBasic','/hrm/salary/index,/manage/salary','exact',409,NULL),
-('/hrmSalaryConfig','/manage/salary','prefix',410,NULL),
+('/hrmSalaryConfig','/manage/salary,/manage/salaryConfig','prefix',410,NULL),
 ('/hrmSalaryBasic','/manage/salary','prefix',411,'注意：排在 /hrmSalaryBasic/* 精确项之后'),
 ('/hrmSalaryChangeTemplate','/manage/salary','prefix',412,NULL),
 ('/hrmBonus/importBonus','/hrm/bonus/payroll','exact',420,NULL),
@@ -80,5 +80,18 @@ INSERT INTO tb_api_permission (api_prefix, menu_paths, match_type, sortno, remar
 ('/report','/hrm/dataConfig/index','prefix',602,NULL),
 ('/tempworker','/hrm/dataConfig/index','prefix',603,NULL),
 ('/workPlanApplication','/hrm/attendance/scheduling','prefix',700,NULL),
-('/tenant/provision','/hrm/dataConfig/index','prefix',800,'SaaS 租户开通')
+('/tenant/provision','/hrm/system/tenant','prefix',800,'SaaS 租户开通'),
+('/tenant/list','/hrm/system/tenant','prefix',801,'租户列表'),
+('/tenant/tables','/hrm/system/tenant','prefix',802,'租户表清单'),
+('/tenant/reloadApiPermission','/hrm/system/tenant','prefix',803,'刷新权限映射'),
+('/tenant/resetAdminPassword','/hrm/system/tenant','prefix',804,'重置租户管理员密码'),
+('/backup','/hrm/system/databaseBackup','prefix',900,'数据库备份'),
+('/dashboard/permission/all','/hrm/system/dashboardPermission','exact',910,'看板权限查询'),
+('/dashboard/permission/save','/hrm/system/dashboardPermission','exact',911,'看板权限保存'),
+('/dashboard/permission/hiddenKpis','/hrm/system/dashboardPermission','exact',912,'看板隐藏元素查询'),
+('/companyPermission','/hrm/system/companyPermission','prefix',920,'企业权限管理'),
+('/mp/mySchedule','/miniapp/schedule/load','exact',930,'小程序-排班数据加载'),
+('/mp/mySchedule/day','/miniapp/schedule/load','exact',931,'小程序-排班数据加载(单日)'),
+('/mp/schedule/query','/miniapp/schedule/load','exact',932,'小程序-排班查询'),
+('/mpPermission','/hrm/system/miniappPermission','prefix',933,'排班小程序权限配置页')
 ON DUPLICATE KEY UPDATE menu_paths=VALUES(menu_paths), match_type=VALUES(match_type);

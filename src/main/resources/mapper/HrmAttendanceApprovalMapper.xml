@@ -17,6 +17,7 @@
             a.endTime as endTime,
             a.duration as duration,
             a.durationUnit as durationUnit,
+            a.durationDay as durationDay,
             a.workDate as workDate,
             a.createTime as createTime,
             a.statisticsStatus as statisticsStatus
@@ -61,9 +62,14 @@
             </foreach>
             )
         </if>
+        <!-- 跨月单区间重叠（2026-09-05 L1）：业务区间 [beginTime,endTime] 与所选月有交集即命中，
+             使 7/24-8/4 这类跨月单在 7 月、8 月都能查到。各边缺失兜底：
+             beginTime 缺→取 endTime/workDate；endTime 缺→退化为 beginTime 单点落月（保持原行为）。 -->
         <if test="data.times != null and data.times.size > 1">
-            and date_format(a.beginTime, '%Y-%m-%d') between date_format(#{data.times[0]}, '%Y-%m-%d')
-            and date_format(#{data.times[1]}, '%Y-%m-%d')
+            and date_format(coalesce(a.beginTime, a.endTime, a.workDate), '%Y-%m-%d')
+                &lt;= date_format(#{data.times[1]}, '%Y-%m-%d')
+            and date_format(coalesce(a.endTime, a.beginTime, a.workDate), '%Y-%m-%d')
+                &gt;= date_format(#{data.times[0]}, '%Y-%m-%d')
         </if>
         order by a.beginTime desc, a.createTime desc
     </select>

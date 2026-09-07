@@ -6,9 +6,11 @@ import com.dingtalk.api.DingTalkClient;
 import com.dingtalk.api.request.*;
 import com.dingtalk.api.response.*;
 import com.taobao.api.ApiException;
+import com.tianye.hrsystem.common.Redis;
 import com.tianye.hrsystem.config.CompanyContext;
 import com.tianye.hrsystem.imple.HrmAttendanceDataServiceImpl;
 import com.tianye.hrsystem.model.*;
+import com.tianye.hrsystem.task.AttendanceSyncTaskLauncher;
 import com.tianye.hrsystem.repository.hrmAttendanceGroupRepository;
 import com.tianye.hrsystem.repository.hrmAttendancePlanRepository;
 import com.tianye.hrsystem.repository.hrmAttendanceShiftRepository;
@@ -24,6 +26,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Controller;
+import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.ResponseBody;
 
@@ -58,6 +61,8 @@ public class HrmAttendanceDataController {
     @Autowired
     MyDateUtils dateUtils;
     @Autowired
+    Redis redis;
+    @Autowired
     IWorkPlanService planService;
     @Autowired
     hrmAttendanceShiftRepository shiftRep;
@@ -65,6 +70,50 @@ public class HrmAttendanceDataController {
     hrmAttendanceGroupRepository groupRep;
     @Autowired
     hrmAttendancePlanRepository attendancePlanRep;
+
+    @Autowired
+    private com.tianye.hrsystem.service.IHrmAttendanceJudgeService attendanceJudgeService;
+
+    @PostMapping("/judgeQuery")
+    @ResponseBody
+    @io.swagger.annotations.ApiOperation("查询本地考勤判定结果（考勤汇总本地判定列数据源）")
+    public successResult judgeQuery(String Begin, String End) {
+        successResult result = new successResult();
+        try {
+            SimpleDateFormat format = new SimpleDateFormat("yyyy-MM-dd");
+            Date begin = StringUtils.isBlank(Begin) ? null : format.parse(Begin.trim());
+            Date end = StringUtils.isBlank(End) ? null : format.parse(End.trim());
+            if (begin == null || end == null) {
+                throw new IllegalArgumentException("请提供 Begin/End（yyyy-MM-dd）");
+            }
+            result.setData(attendanceJudgeService.queryResults(begin, end, null));
+        } catch (Exception ax) {
+            result.raiseException(ax);
+        }
+        return result;
+    }
+
+    @PostMapping("/judgeRecompute")
+    @ResponseBody
+    @io.swagger.annotations.ApiOperation("本地考勤判定重算（弃用钉钉推送后的本地口径）")
+    public successResult judgeRecompute(String Begin, String End) {
+        successResult result = new successResult();
+        try {
+            SimpleDateFormat format = new SimpleDateFormat("yyyy-MM-dd");
+            Date begin = StringUtils.isBlank(Begin) ? null : format.parse(Begin.trim());
+            Date end = StringUtils.isBlank(End) ? null : format.parse(End.trim());
+            if (begin == null || end == null) {
+                throw new IllegalArgumentException("请提供 Begin/End（yyyy-MM-dd）");
+            }
+            int written = attendanceJudgeService.recompute(begin, end, null);
+            result.setMessage("本地判定完成，写库 " + written + " 行");
+        } catch (Exception ax) {
+            result.raiseException(ax);
+        }
+        return result;
+    }
+
+
 
     private static final ThreadLocal<SimpleDateFormat> SS1 =
             ThreadLocal.withInitial(() -> new SimpleDateFormat("HH:mm"));
@@ -90,8 +139,17 @@ public class HrmAttendanceDataController {
             Date BeginDate = FORMAT.get().parse(Begin);
             Date EndDate = dateUtils.setItEnd(FORMAT.get().parse(End));
             // 按公司互斥：提交路径同步抢占，重复触发当场返回“进行中”
-            if (!syncTaskLauncher.tryBegin(companyId)) {
-                throw new IllegalStateException("该公司的考勤数据同步正在进行中，请勿重复发起；可在进度条中查看当前进展");
+            if (!syncTaskLauncher.tryBegin(companyId, Info)) {
+                // 任务正在进行中，返回特殊状态码202（Accepted），而不是抛异常
+                // 前端会根据这个状态码自动切换到查看进度模式
+                result.setCode(202);
+                result.setMessage("考勤同步正在进行中，已自动切换到查看进度模式");
+                Map<String, Object> data = new HashMap<>();
+                data.put("alreadyRunning", true);
+                data.put("queued", true);
+                result.setData(data);
+                logger.info("公司{}考勤同步正在进行中，用户点击按钮时自动切换到查看进度模式", companyId);
+                return result;
             }
             lockHeld = true;
             long queuedAt = dataService.markSyncQueued();
@@ -139,8 +197,17 @@ public class HrmAttendanceDataController {
             String EmpID =
                     StringUtils.join(alls.stream().map(f -> Long.toString(f.getEmployeeId())).collect(Collectors.toList()), ',');
             // 按公司互斥：提交路径同步抢占，重复触发当场返回“进行中”
-            if (!syncTaskLauncher.tryBegin(companyId)) {
-                throw new IllegalStateException("该公司的考勤数据同步正在进行中，请勿重复发起；可在进度条中查看当前进展");
+            if (!syncTaskLauncher.tryBegin(companyId, Info)) {
+                // 任务正在进行中，返回特殊状态码202（Accepted），而不是抛异常
+                // 前端会根据这个状态码自动切换到查看进度模式
+                result.setCode(202);
+                result.setMessage("考勤同步正在进行中，已自动切换到查看进度模式");
+                Map<String, Object> data = new HashMap<>();
+                data.put("alreadyRunning", true);
+                data.put("queued", true);
+                result.setData(data);
+                logger.info("公司{}考勤同步正在进行中，用户点击按钮时自动切换到查看进度模式", companyId);
+                return result;
             }
             lockHeld = true;
             long queuedAt = dataService.markSyncQueued();
@@ -184,6 +251,58 @@ public class HrmAttendanceDataController {
             result.raiseException(new Exception(HrmAttendanceDataServiceImpl.toFriendlySyncErrorMessage(ax)));
         }
         return result;
+    }
+
+    private String buildDuplicateSyncMessage(String companyId, LoginUserInfo currentUser) {
+        Map<String, Object> owner = syncTaskLauncher.getRunningOwner(companyId);
+        String companyName = firstText(owner.get("companyName"));
+        if (StringUtils.isBlank(companyName) && currentUser != null) {
+            companyName = currentUser.getCompanyName();
+        }
+        if (StringUtils.isBlank(companyName)) {
+            companyName = "企业(" + companyId + ")";
+        }
+        String account = firstText(owner.get("account"));
+        String userName = firstText(owner.get("userName"));
+        String operator = StringUtils.isBlank(account) ? "未知账号" : account;
+        if (!StringUtils.isBlank(userName) && !userName.equals(account)) {
+            operator += "（" + userName + "）";
+        }
+        
+        // 获取更详细的锁信息
+        long acquiredAt = Long.parseLong(firstText(owner.get("acquiredAt")));
+        long now = System.currentTimeMillis();
+        long lockAge = now - acquiredAt;
+        
+        // 获取进度状态
+        String status = firstText(redis.get("attendance:sync:" + companyId + ":status"));
+        String updateTime = firstText(redis.get("attendance:sync:" + companyId + ":update_time"));
+        
+        StringBuilder message = new StringBuilder();
+        message.append("企业“").append(companyName).append("”（ID: ").append(companyId).append("）的考勤数据同步正在进行中");
+        message.append("，当前操作账号：").append(operator);
+        message.append("；锁已存在 ").append(lockAge / 1000).append(" 秒");
+        
+        if (!status.isEmpty()) {
+            message.append("，进度状态：").append(status);
+        }
+        if (!updateTime.isEmpty()) {
+            long updateTs = Long.parseLong(updateTime);
+            message.append("，最后更新：").append((now - updateTs) / 1000).append(" 秒前");
+        }
+        
+        message.append("；请勿重复发起，可在进度条中查看当前进展");
+        
+        // 记录详细日志
+        logger.warn("重复同步请求: companyId={}, operator={}, lockAge={}ms, status={}, updateTime={}", 
+                    companyId, operator, lockAge, status, updateTime);
+        
+        return message.toString();
+    }
+
+    private String firstText(Object value) {
+        String text = value == null ? "" : String.valueOf(value).trim();
+        return text;
     }
 
 
@@ -867,6 +986,57 @@ public class HrmAttendanceDataController {
             result.setData(res);
         } catch (Exception ax) {
             ax.printStackTrace();
+            result.raiseException(ax);
+        }
+        return result;
+    }
+
+    /**
+     * 锁健康检查：检查并清理残留的同步锁
+     * 手动调用，用于清理因异常未释放的锁
+     */
+    @RequestMapping("/checkStaleLocks")
+    @ResponseBody
+    public successResult checkStaleLocks() {
+        successResult result = new successResult();
+        try {
+            // 获取当前进程启动时间
+            long processStartedAt = System.currentTimeMillis();
+            
+            // 检查Redis中的锁
+            String lockPattern = AttendanceSyncTaskLauncher.RUNNING_LOCK_PREFIX + "*";
+            Set<Object> keys = redis.keys(lockPattern);
+            
+            List<Map<String, Object>> cleanedLocks = new ArrayList<>();
+            if (keys != null && !keys.isEmpty()) {
+                for (Object keyObj : keys) {
+                    String key = String.valueOf(keyObj);
+                    String companyId = key.replace(AttendanceSyncTaskLauncher.RUNNING_LOCK_PREFIX, "");
+                    Map<String, Object> owner = syncTaskLauncher.getRunningOwner(companyId);
+                    long acquiredAt = Long.parseLong(String.valueOf(owner.getOrDefault("acquiredAt", 0)));
+                    
+                    // 如果锁存在超过5分钟，清理它
+                    if (acquiredAt > 0 && (processStartedAt - acquiredAt) > 5 * 60 * 1000) {
+                        syncTaskLauncher.finish(companyId);
+                        Map<String, Object> cleaned = new HashMap<>();
+                        cleaned.put("companyId", companyId);
+                        cleaned.put("acquiredAt", acquiredAt);
+                        cleaned.put("lockAge", processStartedAt - acquiredAt);
+                        cleanedLocks.add(cleaned);
+                        logger.info("锁健康检查: 清理残留锁, companyId={}, lockAge={}ms", companyId, processStartedAt - acquiredAt);
+                    }
+                }
+            }
+            
+            Map<String, Object> data = new HashMap<>();
+            data.put("totalLocks", keys != null ? keys.size() : 0);
+            data.put("cleanedLocks", cleanedLocks);
+            data.put("cleanedCount", cleanedLocks.size());
+            result.setData(data);
+            
+            logger.info("锁健康检查完成: 总锁数={}, 清理数={}", keys != null ? keys.size() : 0, cleanedLocks.size());
+        } catch (Exception ax) {
+            logger.error("锁健康检查失败", ax);
             result.raiseException(ax);
         }
         return result;

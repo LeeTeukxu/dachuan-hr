@@ -22,6 +22,7 @@ CREATE TABLE `admin_message` (
   `label` int DEFAULT NULL COMMENT '消息大类 1 任务 2 日志 3 oa审批 4公告 5 日程 6 crm消息 7 知识库 8 人资',
   `type` int DEFAULT NULL COMMENT '消息类型 详见AdminMessageEnum',
   `type_id` bigint DEFAULT NULL COMMENT '关联ID',
+  `link_url` varchar(255) DEFAULT NULL COMMENT '跳转链接',
   `create_user` bigint NOT NULL COMMENT '消息创建者 0为系统',
   `recipient_user` bigint NOT NULL COMMENT '接收人',
   `create_time` datetime DEFAULT NULL COMMENT '创建时间',
@@ -338,6 +339,10 @@ CREATE TABLE `hrm_attendance_rule` (
   `update_user_id` bigint DEFAULT NULL COMMENT '更新人id',
   `update_time` datetime DEFAULT NULL COMMENT '更新时间',
   PRIMARY KEY (`attendance_rule_id`) USING BTREE
+,
+  `judge_window_before_minutes` INT NULL DEFAULT 120 COMMENT '本地判定：打卡有效窗口提前分钟数',
+  `judge_window_after_minutes` INT NULL DEFAULT 240 COMMENT '本地判定：打卡有效窗口延后分钟数',
+  `max_monthly_card_repair` INT NULL DEFAULT 3 COMMENT '每月最多补卡次数'
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci ROW_FORMAT=DYNAMIC COMMENT='打卡规则表';
 CREATE TABLE `hrm_attendance_shift` (
   `shift_id` bigint NOT NULL COMMENT '班次id',
@@ -468,6 +473,7 @@ CREATE TABLE `hrm_employee` (
   `employee_id` bigint NOT NULL AUTO_INCREMENT COMMENT '员工id',
   `employee_name` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL COMMENT '员工姓名',
   `mobile` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci DEFAULT NULL COMMENT '手机',
+  `openid` varchar(64) CHARACTER SET ascii COLLATE ascii_bin DEFAULT NULL COMMENT '微信小程序openid',
   `country` varchar(40) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci DEFAULT NULL COMMENT '国家地区',
   `nation` varchar(40) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci DEFAULT NULL COMMENT '民族',
   `id_type` int DEFAULT NULL COMMENT '证件类型 1 身份证 2 港澳通行证 3 台湾通行证 4 护照 5 其他',
@@ -519,7 +525,9 @@ CREATE TABLE `hrm_employee` (
   `leader_full_attendance_amount` decimal(10,2) DEFAULT NULL COMMENT '员工级领导全勤金额',
   `is_continuous_shift` int DEFAULT NULL COMMENT '是否连班：1是，2否',
   PRIMARY KEY (`employee_id`) USING BTREE,
-  KEY `wk_hrm_employee_job_number_index` (`job_number`) USING BTREE
+  UNIQUE KEY `uk_hrm_employee_openid` (`openid`),
+  KEY `wk_hrm_employee_job_number_index` (`job_number`) USING BTREE,
+  KEY `idx_dingtalk_user_id` (`dingtalk_user_id`)
 ) ENGINE=InnoDB AUTO_INCREMENT=2089995278117625858 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci ROW_FORMAT=DYNAMIC COMMENT='员工表';
 CREATE TABLE `hrm_employee_abnormal_change_record` (
   `change_record_id` bigint NOT NULL,
@@ -990,6 +998,7 @@ CREATE TABLE `hrm_overtime_night_statistics_detail` (
   `actual_attendance_hours` decimal(10,2) DEFAULT NULL COMMENT '月度实际出勤小时',
   `accrued_attendance_hours` decimal(10,2) DEFAULT NULL COMMENT '月度应计出勤小时',
   `attendance_manual_adjusted` tinyint NOT NULL DEFAULT '0' COMMENT '出勤时间是否人工调整：0=自动，1=人工',
+  `calc_process` varchar(1000) DEFAULT NULL COMMENT '加班/夜班计算过程说明',
   `create_user_id` bigint DEFAULT NULL COMMENT '创建人ID',
   `create_time` datetime DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
   `update_user_id` bigint DEFAULT NULL COMMENT '更新人ID',
@@ -1501,6 +1510,7 @@ CREATE TABLE `tbattendanceapprove` (
   `beginTime` datetime DEFAULT NULL COMMENT '开始时间',
   `endTime` datetime DEFAULT NULL COMMENT '结束时间',
   `durationUnit` varchar(20) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci DEFAULT NULL COMMENT '时长单位',
+  `durationDay` varchar(20) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci DEFAULT NULL COMMENT '时长(天)：与 duration(小时) 一致派生，恒=小时/8',
   `userId` varchar(100) DEFAULT NULL,
   `groupId` bigint DEFAULT NULL,
   `createTime` datetime DEFAULT NULL,
@@ -2004,3 +2014,58 @@ CREATE TABLE `hrm_user_dashboard_config` (
   PRIMARY KEY (`id`),
   UNIQUE KEY `uk_user_board` (`user_id`,`board_key`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='用户看板配置';
+
+-- 排班小程序员工级权限（2026-09-06）：有记录=该员工可添加排班；visible_scope 控制审批可见范围 1=直属下属 2=全部 3=自定义
+CREATE TABLE IF NOT EXISTS `mp_schedule_permission` (
+  `id` bigint NOT NULL AUTO_INCREMENT COMMENT '主键',
+  `employee_id` bigint NOT NULL COMMENT '员工id(hrm_employee.employee_id)',
+  `visible_scope` tinyint NOT NULL DEFAULT 1 COMMENT '审批信息可见范围 1=直属下属(默认) 2=全部员工 3=自定义',
+  `create_time` datetime DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+  `update_time` datetime DEFAULT NULL COMMENT '更新时间',
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_employee` (`employee_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='排班小程序员工权限';
+CREATE TABLE IF NOT EXISTS `mp_schedule_visible_employee` (
+  `id` bigint NOT NULL AUTO_INCREMENT COMMENT '主键',
+  `permission_employee_id` bigint NOT NULL COMMENT '配置的员工id',
+  `visible_employee_id` bigint NOT NULL COMMENT '可见其申请的员工id',
+  `create_time` datetime DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_pair` (`permission_employee_id`,`visible_employee_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='排班小程序审批可见范围-自定义明细';
+
+-- 部门钉钉同步配置（2026-09-06 watch 迁移）：排除关键字等，key=dingtalk_exclude_names
+CREATE TABLE IF NOT EXISTS `hrm_dept_sync_config` (
+  `id` bigint NOT NULL COMMENT '主键(应用层生成)',
+  `config_key` varchar(100) NOT NULL COMMENT '配置键',
+  `config_value` varchar(1000) DEFAULT NULL COMMENT '配置值',
+  `update_time` datetime DEFAULT NULL COMMENT '更新时间',
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_config_key` (`config_key`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='部门钉钉同步配置表';
+
+
+-- 2026-09-06 本地考勤判定引擎（弃用提交排班到钉钉后，以 tbplanlist 为应出勤基准本地判定）
+CREATE TABLE `hrm_attendance_judge_result` (
+  `id` BIGINT NOT NULL AUTO_INCREMENT,
+  `emp_id` BIGINT NOT NULL COMMENT '员工ID',
+  `work_date` DATE NOT NULL COMMENT '班表日期（跨天班记上班日）',
+  `rule_id` BIGINT NULL,
+  `should_attend` TINYINT(1) NULL,
+  `shift_type` VARCHAR(16) NULL,
+  `shift_start` VARCHAR(8) NULL,
+  `shift_end` VARCHAR(8) NULL,
+  `cross_day` TINYINT(1) NULL,
+  `first_punch_time` DATETIME NULL,
+  `last_punch_time` DATETIME NULL,
+  `late_minutes` INT NULL DEFAULT 0,
+  `early_minutes` INT NULL DEFAULT 0,
+  `miss_card_count` INT NULL DEFAULT 0,
+  `absenteeism` TINYINT(1) NULL,
+  `rest_day_work` TINYINT(1) NULL,
+  `judge_time` DATETIME NULL,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_judge_emp_date` (`emp_id`, `work_date`),
+  KEY `idx_judge_work_date` (`work_date`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='本地考勤判定结果';
+

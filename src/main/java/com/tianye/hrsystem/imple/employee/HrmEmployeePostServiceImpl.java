@@ -21,6 +21,8 @@ import com.tianye.hrsystem.entity.vo.*;
 import com.tianye.hrsystem.enums.*;
 import com.tianye.hrsystem.mapper.HrmEmployeePostMapper;
 import com.tianye.hrsystem.service.IHrmActionRecordService;
+import com.tianye.hrsystem.service.IHrmDeptService;
+import com.tianye.hrsystem.entity.po.HrmDept;
 import com.tianye.hrsystem.service.employee.*;
 import com.tianye.hrsystem.util.EmployeeUtil;
 import com.tianye.hrsystem.util.FieldUtil;
@@ -52,6 +54,9 @@ public class HrmEmployeePostServiceImpl extends BaseServiceImpl<HrmEmployeePostM
 
     @Autowired
     private IHrmEmployeeService employeeService;
+
+    @Autowired
+    private IHrmDeptService hrmDeptService;
 
     @Autowired
     private IHrmEmployeeDataService employeeDataService;
@@ -158,6 +163,9 @@ public class HrmEmployeePostServiceImpl extends BaseServiceImpl<HrmEmployeePostM
         boolean companyAgeStartCleared = fixedEmployeeData.stream().anyMatch(field ->
                 "company_age_start_time".equals(field.getFieldName()) && ObjectUtil.isEmpty(field.getFieldValue()));
         HrmEmployee employee = jsonObject.toJavaObject(HrmEmployee.class);
+        // 本次提交是否包含直属上级字段
+        boolean parentSubmitted = fixedEmployeeData.stream()
+                .anyMatch(field -> "parent_id".equals(field.getFieldName()));
         if (employee.getDeptId() == null) {
             employeeService.lambdaUpdate().set(HrmEmployee::getDeptId, null).eq(HrmEmployee::getEmployeeId, employeeId).update();
         }
@@ -169,6 +177,17 @@ public class HrmEmployeePostServiceImpl extends BaseServiceImpl<HrmEmployeePostM
         if (employee.getCompanyAgeStartTime() == null && companyAgeStartCleared) {
             employeeService.lambdaUpdate().set(HrmEmployee::getCompanyAgeStartTime, null)
                     .eq(HrmEmployee::getEmployeeId, employeeId).update();
+        }
+        // 编辑员工换了部门且本次未手动选直属上级时，直属上级自动改为新部门的分管领导；
+        // 分管领导是本人时不改（自己不能是自己的上级）
+        boolean deptChanged = employee.getDeptId() != null
+                && !employee.getDeptId().equals(oldHrmEmployee.getDeptId());
+        if (deptChanged && !parentSubmitted) {
+            HrmDept newDept = hrmDeptService.getById(employee.getDeptId());
+            if (newDept != null && newDept.getLeaderEmployeeId() != null
+                    && !employeeId.equals(newDept.getLeaderEmployeeId())) {
+                employee.setParentId(newDept.getLeaderEmployeeId());
+            }
         }
         employee.setEmployeeId(employeeId);
         Integer probation = employee.getProbation();

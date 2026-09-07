@@ -2,6 +2,10 @@ package com.tianye.hrsystem.imple;
 
 import org.apache.poi.ss.usermodel.Cell;
 import org.apache.poi.ss.usermodel.CellStyle;
+import org.apache.poi.ss.usermodel.ClientAnchor;
+import org.apache.poi.ss.usermodel.Comment;
+import org.apache.poi.ss.usermodel.CreationHelper;
+import org.apache.poi.ss.usermodel.Drawing;
 import org.apache.poi.ss.usermodel.Row;
 import org.apache.poi.ss.usermodel.Sheet;
 import org.apache.poi.ss.usermodel.Workbook;
@@ -15,7 +19,9 @@ import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.time.YearMonth;
 import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 
 final class AdministrativeAttendanceExportSupport {
 
@@ -75,7 +81,8 @@ final class AdministrativeAttendanceExportSupport {
                 clearBodyRows(sheet);
                 writeTopRows(sheet, targetMonth, companyName, printDate, titleStyle, infoStyle);
                 writeHeaders(sheet, mainHeaderStyle, headerStyle);
-                writeDataRows(sheet, rows == null ? Collections.emptyList() : rows, bodyStyles);
+                Drawing<?> drawing = sheet.createDrawingPatriarch();
+                writeDataRows(sheet, rows == null ? Collections.emptyList() : rows, bodyStyles, drawing);
                 removeCellsAfterColumnS(sheet);
 
                 workbook.write(outputStream);
@@ -127,7 +134,8 @@ final class AdministrativeAttendanceExportSupport {
 
     private static void writeDataRows(Sheet sheet,
                                       List<AdministrativeAttendanceExportRow> rows,
-                                      CellStyle[] bodyStyles) {
+                                      CellStyle[] bodyStyles,
+                                      Drawing<?> drawing) {
         for (int rowIndex = 0; rowIndex < rows.size(); rowIndex++) {
             AdministrativeAttendanceExportRow data = rows.get(rowIndex);
             int excelRowIndex = DATA_START_ROW + rowIndex;
@@ -150,6 +158,9 @@ final class AdministrativeAttendanceExportSupport {
             setNumber(sheet, excelRowIndex, 16, data.offDutyMissingCardCount, bodyStyles[16]);
             setNumber(sheet, excelRowIndex, 17, data.totalMissingCardCount, bodyStyles[17]);
             setNumber(sheet, excelRowIndex, 18, data.overtimeHours, bodyStyles[18]);
+            for (Map.Entry<Integer, String> entry : data.columnComments.entrySet()) {
+                setComment(sheet, drawing, excelRowIndex, entry.getKey(), entry.getValue());
+            }
         }
     }
 
@@ -239,6 +250,103 @@ final class AdministrativeAttendanceExportSupport {
         return value != null ? value : BigDecimal.ZERO;
     }
 
+    private static void setComment(Sheet sheet,
+                                   Drawing<?> drawing,
+                                   int rowIndex,
+                                   int columnIndex,
+                                   String text) {
+        if (text == null || text.trim().isEmpty()) {
+            return;
+        }
+        Workbook workbook = sheet.getWorkbook();
+        CreationHelper creationHelper = workbook.getCreationHelper();
+        ClientAnchor anchor = creationHelper.createClientAnchor();
+        anchor.setCol1(columnIndex);
+        anchor.setCol2(columnIndex + 4);
+        anchor.setRow1(rowIndex);
+        anchor.setRow2(rowIndex + 6);
+        Comment comment = drawing.createCellComment(anchor);
+        comment.setString(creationHelper.createRichTextString(text));
+        comment.setAuthor("考勤系统");
+        cell(sheet, rowIndex, columnIndex).setCellComment(comment);
+    }
+
+    /**
+     * 请假类批注（事假/病假/调休/年假）
+     */
+    static String buildLeaveCommentText(String label, String occurredDates, BigDecimal totalHours) {
+        if (occurredDates == null || occurredDates.trim().isEmpty()) {
+            return label + "：本月没有" + label + "记录，合计 0 小时。"
+                    + "计算过程：来自请假审批单，每笔审批的时长折算成小时后逐笔相加。";
+        }
+        return "发生时间：" + occurredDates + "。"
+                + "计算过程：" + label + "来自请假审批单，每笔审批的时长先折算成小时"
+                + "（不满1小时的按 分钟÷60 换算，按天审批的按每天8小时折算），再逐笔相加。"
+                + "本月合计：" + amount(totalHours) + " 小时。";
+    }
+
+    /**
+     * 出差批注（按天统计）
+     */
+    static String buildTravelCommentText(String occurredDates, BigDecimal totalDays) {
+        if (occurredDates == null || occurredDates.trim().isEmpty()) {
+            return "出差：本月没有出差记录，合计 0 天。计算过程：来自出差审批单，每笔审批时长÷8折算为天数后逐笔相加。";
+        }
+        return "发生时间：" + occurredDates + "。"
+                + "计算过程：来自出差审批单，每笔审批的时长÷8（每天8小时）折算为天数，再逐笔相加。"
+                + "本月合计：" + amount(totalDays) + " 天。";
+    }
+
+    /**
+     * 旷工批注（按天统计）
+     */
+    static String buildAbsenteeismCommentText(String occurredDates, BigDecimal totalDays) {
+        if (occurredDates == null || occurredDates.trim().isEmpty()) {
+            return "旷工：本月没有旷工记录，合计 0 天。计算过程：考勤统计中当天被记为旷工的按天累加。";
+        }
+        return "发生时间：" + occurredDates + "。"
+                + "计算过程：考勤统计中，当天未按规定出勤被记为旷工的按天累加"
+                + "（迟到时间过长按旷工计算的也一并计入）。"
+                + "本月合计：" + amount(totalDays) + " 天。";
+    }
+
+    /**
+     * 按次统计批注（迟到/早退/上下班缺卡）
+     */
+    static String buildCountCommentText(String label, String occurredDates, BigDecimal totalCount, String ruleText) {
+        if (occurredDates == null || occurredDates.trim().isEmpty()) {
+            return label + "：本月没有" + label + "记录，合计 0 次。计算过程：" + ruleText;
+        }
+        return "发生时间：" + occurredDates + "。"
+                + "计算过程：" + ruleText
+                + "本月合计：" + amount(totalCount) + " 次。";
+    }
+
+    /**
+     * 总缺卡批注：上班缺卡 + 下班缺卡
+     */
+    static String buildTotalMissingCardCommentText(BigDecimal onDutyCount, BigDecimal offDutyCount) {
+        return "计算过程：上班缺卡次数 + 下班缺卡次数。"
+                + "本月合计：" + amount(onDutyCount) + " + " + amount(offDutyCount)
+                + " = " + amount(onDutyCount.add(defaultDecimal(offDutyCount))) + " 次。";
+    }
+
+    /**
+     * 加班批注（按小时统计）
+     */
+    static String buildOvertimeCommentText(String occurredDates, BigDecimal totalHours) {
+        if (occurredDates == null || occurredDates.trim().isEmpty()) {
+            return "加班：本月没有加班记录，合计 0 小时。计算过程：来自加班审批单，每笔审批时长折算成小时后逐笔相加。";
+        }
+        return "发生时间：" + occurredDates + "。"
+                + "计算过程：来自加班审批单，每笔审批的时长折算成小时（不满1小时的按 分钟÷60 换算）后逐笔相加。"
+                + "本月合计：" + amount(totalHours) + " 小时。";
+    }
+
+    private static String amount(BigDecimal value) {
+        return defaultDecimal(value).toPlainString();
+    }
+
     private static String nullToEmpty(String value) {
         return value == null ? "" : value;
     }
@@ -263,6 +371,10 @@ final class AdministrativeAttendanceExportSupport {
         BigDecimal offDutyMissingCardCount = BigDecimal.ZERO;
         BigDecimal totalMissingCardCount = BigDecimal.ZERO;
         BigDecimal overtimeHours = BigDecimal.ZERO;
+        /**
+         * 批注文本（键 = 导出列索引），由服务层按员工明细生成
+         */
+        final Map<Integer, String> columnComments = new LinkedHashMap<>();
 
         AdministrativeAttendanceExportRow(Long employeeId,
                                           String employeeName,

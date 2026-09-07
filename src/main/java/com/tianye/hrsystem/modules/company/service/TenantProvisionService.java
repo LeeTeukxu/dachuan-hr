@@ -21,6 +21,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Scanner;
+import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -35,6 +36,7 @@ public class TenantProvisionService {
 
     private static final Pattern COMPANY_ID_PATTERN = Pattern.compile("^\\d{4}$");
     private static final String SCHEMA_SCRIPT = "sql/tenant/schema-baseline.sql";
+    private static final String EXAM_SCRIPT = "sql/tenant/exam-schema.sql";
     private static final String VIEWS_SCRIPT = "sql/tenant/views-template.sql";
     private static final String SEED_SCRIPT = "sql/tenant/seed-data.sql";
     /** 视图模板中硬编码的源库名，执行前替换为目标库名 */
@@ -61,9 +63,6 @@ public class TenantProvisionService {
     @Value("${spring.datasource.password:}")
     private String dataSourcePassword;
 
-    @Value("${hrm.tenant.provision-admin-companies:0004}")
-    private String provisionAdminCompanies;
-
     @Value("${spring.datasource.url:jdbc:mysql://localhost:3306/hrsystem}")
     private String springDatasourceUrl;
 
@@ -76,7 +75,8 @@ public class TenantProvisionService {
      * @return 结果消息
      */
     public String provision(String companyId, String companyName,
-                            String adminAccount, String adminPassword, String adminName) throws Exception {
+                            String adminAccount, String adminPassword, String adminName,
+                            String ddAppKey, String ddAppsecret, String ddAgentId) throws Exception {
         // 1. 校验
         if (companyId == null || !COMPANY_ID_PATTERN.matcher(companyId).matches()) {
             throw new IllegalArgumentException("公司编码必须是 4 位数字，如 0006");
@@ -104,6 +104,9 @@ public class TenantProvisionService {
                 use(conn, tenantDb);
                 executeScript(conn, readClasspathScript(SCHEMA_SCRIPT));
 
+                // 3.1 考试系统表结构
+                executeScript(conn, readClasspathScript(EXAM_SCRIPT));
+
                 // 4. 视图（模板内硬编码 hr_0003，替换为目标库名）
                 String viewsSql = readClasspathScript(VIEWS_SCRIPT)
                         .replace("`" + VIEW_SOURCE_DB + "`", "`" + tenantDb + "`")
@@ -113,12 +116,18 @@ public class TenantProvisionService {
                 // 5. 种子数据（菜单/角色/角色菜单/自定义字段）
                 executeScript(conn, readClasspathScript(SEED_SCRIPT));
 
+                // 5.1 插入 tbsettingmenu 子菜单（依赖根菜单 f_id，需动态获取）
+                insertSettingMenuChildren(conn, tenantDb);
+
                 // 6. 默认部门 + 管理员账号
                 long deptId = insertDefaultDept(conn, tenantDb, companyName);
                 insertAdminUser(conn, tenantDb, adminAccount, adminPassword,
                         StringUtils.isEmpty(adminName) ? "管理员" : adminName, deptId);
 
-                // 7. 切回主库并注册账号与公司（url 格式与 ConnectionParsor 解析规则一致）
+                // 7. 钉钉配置（必填）
+                insertDdAccount(conn, systemDatabaseName, companyId, ddAppKey, ddAppsecret, ddAgentId);
+
+                // 8. 切回主库并注册账号与公司（url 格式与 ConnectionParsor 解析规则一致）
                 use(conn, systemDatabaseName);
                 registerAccountInMainDb(conn, companyId, adminAccount);
                 insertCompanyRow(conn, companyId, companyName, tenantDb);
@@ -235,25 +244,31 @@ public class TenantProvisionService {
         }
     }
 
-    /** 系统管理员（roleId=1）或配置指定公司可开通新租户 */
-    public void checkProvisionPermission(com.tianye.hrsystem.model.LoginUserInfo info) {
-        if (info == null) {
-            throw new RuntimeException("当前账号没有开通租户的权限");
-        }
-        // 角色为系统管理员(2)直接放行
-        if ("2".equals(info.getRoleId())) {
-            return;
-        }
-        // 兼容：配置里指定的公司也可放行
-        List<String> allowed = new ArrayList<>();
-        for (String c : provisionAdminCompanies.split(",")) {
-            if (!StringUtils.isEmpty(c.trim())) {
-                allowed.add(c.trim());
+    /**
+     * 获取已有租户的钉钉配置列表（用于开户时绑定）
+     */
+    public List<Map<String, Object>> listDdAccounts() throws Exception {
+        List<Map<String, Object>> list = new ArrayList<>();
+        try (Connection conn = openMainConnection()) {
+            // ddAccount 与 tbcompanylist 的 companyId 列 collation 可能不一致（历史建表遗留），
+            // 显式 COLLATE 避免跨表比较抛 "Illegal mix of collations"
+            String sql = "SELECT d.companyId, c.companyName, d.appKey, d.appsecret, d.agentId " +
+                    "FROM `ddAccount` d LEFT JOIN tbcompanylist c ON d.companyId = c.companyId COLLATE utf8mb4_0900_ai_ci " +
+                    "ORDER BY d.companyId";
+            try (PreparedStatement ps = conn.prepareStatement(sql)) {
+                ResultSet rs = ps.executeQuery();
+                while (rs.next()) {
+                    Map<String, Object> row = new LinkedHashMap<>();
+                    row.put("companyId", rs.getString("companyId"));
+                    row.put("companyName", rs.getString("companyName"));
+                    row.put("appKey", rs.getString("appKey"));
+                    row.put("appsecret", rs.getString("appsecret"));
+                    row.put("agentId", rs.getString("agentId"));
+                    list.add(row);
+                }
             }
         }
-        if (!allowed.contains(info.getCompanyId())) {
-            throw new RuntimeException("当前账号没有开通租户的权限");
-        }
+        return list;
     }
 
     private Connection openMainConnection() throws Exception {
@@ -351,14 +366,29 @@ public class TenantProvisionService {
     }
 
     /**
+     * 插入钉钉账号配置到 hrsystem.ddAccount 表
+     */
+    private void insertDdAccount(Connection conn, String systemDb, String companyId,
+                                 String appKey, String appsecret, String agentId) throws Exception {
+        String sql = "INSERT INTO `" + systemDb + "`.`ddAccount` " +
+                "(companyId, appKey, appsecret, agentId, createTime) " +
+                "VALUES (?,?,?,?,NOW())";
+        try (PreparedStatement ps = conn.prepareStatement(sql)) {
+            ps.setString(1, companyId);
+            ps.setString(2, appKey);
+            ps.setString(3, appsecret);
+            ps.setString(4, agentId);
+            ps.executeUpdate();
+        }
+    }
+
+    /**
      * B：平台超管重置指定租户管理员密码。
-     * - 权限同开通（checkProvisionPermission）；
      * - 同一租户管理员累计最多重置 5 次；
      * - 不指定新密码时生成简单临时密码（易转告），并强制其下次登录改密。
      * @return 实际生效的明文密码（临时密码时返回，便于超管转告）
      */
     public String resetTenantAdminPassword(LoginUserInfo operator, String companyId, String newPassword) throws Exception {
-        checkProvisionPermission(operator);
         if (companyId == null || !COMPANY_ID_PATTERN.matcher(companyId).matches()) {
             throw new IllegalArgumentException("公司编码必须是 4 位数字");
         }
@@ -384,7 +414,6 @@ public class TenantProvisionService {
      * 仅当租户库内 0 张表时才允许删除；有表则拒绝，避免误删业务数据。
      */
     public void deleteEmptyTenant(LoginUserInfo operator, String companyId) throws Exception {
-        checkProvisionPermission(operator);
         if (companyId == null || !COMPANY_ID_PATTERN.matcher(companyId).matches()) {
             throw new IllegalArgumentException("公司编码必须是 4 位数字");
         }
@@ -454,6 +483,182 @@ public class TenantProvisionService {
             sb.append(chars.charAt(r.nextInt(chars.length())));
         }
         return sb.toString();
+    }
+
+    /**
+     * 对比两个租户库的表结构差异（表名、行数、字段数量）
+     * @param sourceCompanyId 源租户编码（点击查看表的租户）
+     * @param targetCompanyId 目标租户编码（选择对比的租户）
+     * @return 对比结果摘要和详细表对比
+     */
+    public Map<String, Object> compareTenantTables(String sourceCompanyId, String targetCompanyId) throws Exception {
+        if (sourceCompanyId == null || !COMPANY_ID_PATTERN.matcher(sourceCompanyId).matches()) {
+            throw new IllegalArgumentException("源租户编码必须是 4 位数字");
+        }
+        if (targetCompanyId == null || !COMPANY_ID_PATTERN.matcher(targetCompanyId).matches()) {
+            throw new IllegalArgumentException("目标租户编码必须是 4 位数字");
+        }
+        if (sourceCompanyId.equals(targetCompanyId)) {
+            throw new IllegalArgumentException("不能与自身对比");
+        }
+
+        String sourceDb = "hr_" + sourceCompanyId;
+        String targetDb = "hr_" + targetCompanyId;
+        Map<String, Object> result = new LinkedHashMap<>();
+
+        try (Connection conn = openMainConnection()) {
+            // 校验两个库都存在
+            Integer sourceExists = queryInt(conn,
+                    "SELECT COUNT(*) FROM information_schema.schemata WHERE schema_name = ?", sourceDb);
+            if (sourceExists == null || sourceExists == 0) {
+                throw new Exception("源租户库 " + sourceDb + " 不存在");
+            }
+            Integer targetExists = queryInt(conn,
+                    "SELECT COUNT(*) FROM information_schema.schemata WHERE schema_name = ?", targetDb);
+            if (targetExists == null || targetExists == 0) {
+                throw new Exception("目标租户库 " + targetDb + " 不存在");
+            }
+
+            // 获取源租户表信息
+            Map<String, Map<String, Object>> sourceTables = getTableInfo(conn, sourceDb);
+            // 获取目标租户表信息
+            Map<String, Map<String, Object>> targetTables = getTableInfo(conn, targetDb);
+
+            // 计算差异
+            Set<String> allTableNames = new java.util.TreeSet<>();
+            allTableNames.addAll(sourceTables.keySet());
+            allTableNames.addAll(targetTables.keySet());
+
+            List<Map<String, Object>> tableComparison = new ArrayList<>();
+            List<String> missingInTarget = new ArrayList<>();
+            List<String> extraInTarget = new ArrayList<>();
+            int diffCount = 0;
+
+            for (String tableName : allTableNames) {
+                Map<String, Object> sourceInfo = sourceTables.get(tableName);
+                Map<String, Object> targetInfo = targetTables.get(tableName);
+                Map<String, Object> comparison = new LinkedHashMap<>();
+                comparison.put("tableName", tableName);
+
+                if (sourceInfo != null && targetInfo != null) {
+                    // 两边都有表，对比详情
+                    comparison.put("sourceExists", true);
+                    comparison.put("targetExists", true);
+                    comparison.put("sourceRows", sourceInfo.get("tableRows"));
+                    comparison.put("targetRows", targetInfo.get("tableRows"));
+                    comparison.put("sourceColumns", sourceInfo.get("columnCount"));
+                    comparison.put("targetColumns", targetInfo.get("columnCount"));
+
+                    // 计算行数差异
+                    long sourceRows = (Long) sourceInfo.get("tableRows");
+                    long targetRows = (Long) targetInfo.get("tableRows");
+                    if (sourceRows != targetRows) {
+                        long diff = targetRows - sourceRows;
+                        double percent = sourceRows > 0 ? (double) diff / sourceRows * 100 : 0;
+                        comparison.put("rowDiff", diff + " (" + String.format("%.1f", percent) + "%)");
+                        diffCount++;
+                    } else {
+                        comparison.put("rowDiff", "相同");
+                    }
+
+                    // 计算列数差异
+                    int sourceCols = (Integer) sourceInfo.get("columnCount");
+                    int targetCols = (Integer) targetInfo.get("columnCount");
+                    if (sourceCols != targetCols) {
+                        comparison.put("columnDiff", Math.abs(targetCols - sourceCols) + "列差异");
+                        diffCount++;
+                    } else {
+                        comparison.put("columnDiff", "相同");
+                    }
+
+                    comparison.put("status", "normal");
+                } else if (sourceInfo != null) {
+                    // 只在源租户存在
+                    comparison.put("sourceExists", true);
+                    comparison.put("targetExists", false);
+                    missingInTarget.add(tableName);
+                    comparison.put("sourceRows", sourceInfo.get("tableRows"));
+                    comparison.put("targetRows", "-");
+                    comparison.put("sourceColumns", sourceInfo.get("columnCount"));
+                    comparison.put("targetColumns", "-");
+                    comparison.put("rowDiff", "目标缺失");
+                    comparison.put("columnDiff", "目标缺失");
+                    comparison.put("status", "missing");
+                    diffCount++;
+                } else {
+                    // 只在目标租户存在
+                    comparison.put("sourceExists", false);
+                    comparison.put("targetExists", true);
+                    extraInTarget.add(tableName);
+                    comparison.put("sourceRows", "-");
+                    comparison.put("targetRows", targetInfo.get("tableRows"));
+                    comparison.put("sourceColumns", "-");
+                    comparison.put("targetColumns", targetInfo.get("columnCount"));
+                    comparison.put("rowDiff", "源缺失");
+                    comparison.put("columnDiff", "源缺失");
+                    comparison.put("status", "extra");
+                    diffCount++;
+                }
+
+                tableComparison.add(comparison);
+            }
+
+            // 构建摘要
+            Map<String, Object> summary = new LinkedHashMap<>();
+            summary.put("sourceTableCount", sourceTables.size());
+            summary.put("targetTableCount", targetTables.size());
+            summary.put("totalTableCount", allTableNames.size());
+            summary.put("missingInTarget", missingInTarget);
+            summary.put("extraInTarget", extraInTarget);
+            summary.put("diffCount", diffCount);
+
+            result.put("summary", summary);
+            result.put("tableComparison", tableComparison);
+        }
+
+        return result;
+    }
+
+    /**
+     * 获取指定租户库的表信息（表名、行数、字段数量）
+     */
+    private Map<String, Map<String, Object>> getTableInfo(Connection conn, String db) throws Exception {
+        Map<String, Map<String, Object>> tables = new LinkedHashMap<>();
+
+        // 获取表的基本信息
+        try (PreparedStatement ps = conn.prepareStatement(
+                "SELECT table_name, table_type, engine, table_rows FROM information_schema.tables " +
+                "WHERE table_schema = ? ORDER BY table_type, table_name")) {
+            ps.setString(1, db);
+            try (java.sql.ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    Map<String, Object> info = new LinkedHashMap<>();
+                    String tableName = rs.getString("table_name");
+                    info.put("tableType", rs.getString("table_type"));
+                    info.put("engine", rs.getString("engine"));
+                    info.put("tableRows", rs.getLong("table_rows"));
+                    tables.put(tableName, info);
+                }
+            }
+        }
+
+        // 获取每张表的字段数量
+        for (Map.Entry<String, Map<String, Object>> entry : tables.entrySet()) {
+            String tableName = entry.getKey();
+            Map<String, Object> info = entry.getValue();
+            try (PreparedStatement ps = conn.prepareStatement(
+                    "SELECT COUNT(*) FROM information_schema.columns WHERE table_schema = ? AND table_name = ?")) {
+                ps.setString(1, db);
+                ps.setString(2, tableName);
+                try (java.sql.ResultSet rs = ps.executeQuery()) {
+                    if (rs.next()) {
+                        info.put("columnCount", rs.getInt(1));
+                    }
+                }
+            }
+        }
+
+        return tables;
     }
 
     private void registerAccountInMainDb(Connection conn, String companyId, String account) throws Exception {
@@ -539,5 +744,83 @@ public class TenantProvisionService {
             Scanner scanner = new Scanner(in, StandardCharsets.UTF_8.name()).useDelimiter("\\A");
             return scanner.hasNext() ? scanner.next() : "";
         }
+    }
+
+    /**
+     * 插入 tbsettingmenu 子菜单（依赖根菜单 f_id，需动态获取）
+     * 根菜单已在 seed-data.sql 中插入，这里只插入子菜单
+     */
+    private void insertSettingMenuChildren(Connection conn, String tenantDb) throws Exception {
+        // 查询根菜单 f_id，按 sn 排序（考勤设置=1, 薪资设置=3, 钉钉数据=6, 个税相关=8, 奖金=12, 社保设置=14, 员工/部门=16）
+        Map<String, Integer> rootMenuIds = new HashMap<>();
+        String queryRoot = "SELECT f_id, sn FROM `" + tenantDb + "`.tbsettingmenu WHERE p_id = 0";
+        try (Statement st = conn.createStatement();
+             ResultSet rs = st.executeQuery(queryRoot)) {
+            while (rs.next()) {
+                rootMenuIds.put(rs.getString("sn"), rs.getInt("f_id"));
+            }
+        }
+
+        if (rootMenuIds.isEmpty()) {
+            log.warn("【租户开通】tbsettingmenu 根菜单为空，跳过子菜单插入");
+            return;
+        }
+
+        // 定义子菜单：parentSn -> (sn, title, url, pageName)
+        List<Object[]> children = new ArrayList<>();
+        // 考勤设置 子菜单
+        if (rootMenuIds.containsKey("1")) {
+            int pid = rootMenuIds.get("1");
+            children.add(new Object[]{pid, "2", "打卡异常", "/attendance/index", "attendance"});
+            children.add(new Object[]{pid, "5", "上传考勤", "/produceAttendance/index", "produceAttendance"});
+        }
+        // 薪资设置 子菜单
+        if (rootMenuIds.containsKey("3")) {
+            int pid = rootMenuIds.get("3");
+            children.add(new Object[]{pid, "4", "上传定薪/调薪", "/salaryFixing/index", "salaryFixing"});
+        }
+        // 钉钉数据 子菜单
+        if (rootMenuIds.containsKey("6")) {
+            int pid = rootMenuIds.get("6");
+            children.add(new Object[]{pid, "7", "钉钉数据差异", "/salaryMonthRecord/index", "salaryMonthRecord"});
+        }
+        // 个税相关 子菜单
+        if (rootMenuIds.containsKey("8")) {
+            int pid = rootMenuIds.get("8");
+            children.add(new Object[]{pid, "9", "个税累计", "/personalIncomeTax/index", "personalIncomeTax"});
+            children.add(new Object[]{pid, "10", "附加扣除累计", "/additional/index", "additional"});
+            children.add(new Object[]{pid, "11", "附加扣除值", "/employeeAdditional/index", "additional"});
+        }
+        // 奖金 子菜单
+        if (rootMenuIds.containsKey("12")) {
+            int pid = rootMenuIds.get("12");
+            children.add(new Object[]{pid, "13", "上传奖金", "/bonus/index", "bonus"});
+        }
+        // 社保设置 子菜单
+        if (rootMenuIds.containsKey("14")) {
+            int pid = rootMenuIds.get("14");
+            children.add(new Object[]{pid, "15", "上传社保方案", "", "insuranceScheme"});
+        }
+        // 员工/部门 子菜单
+        if (rootMenuIds.containsKey("16")) {
+            int pid = rootMenuIds.get("16");
+            children.add(new Object[]{pid, "17", "员工设置", "/employee/index", "employee"});
+            children.add(new Object[]{pid, "18", "部门配置", "/dept/index", "dept"});
+        }
+
+        // 批量插入子菜单
+        String insertSql = "INSERT INTO `" + tenantDb + "`.tbsettingmenu (p_id, sn, title, url, icon, short_cut, can_use, page_name) VALUES (?,?,?,?,NULL,0,1,?)";
+        try (PreparedStatement ps = conn.prepareStatement(insertSql)) {
+            for (Object[] row : children) {
+                ps.setInt(1, (int) row[0]);
+                ps.setString(2, (String) row[1]);
+                ps.setString(3, (String) row[2]);
+                ps.setString(4, (String) row[3]);
+                ps.setString(5, (String) row[4]);
+                ps.addBatch();
+            }
+            ps.executeBatch();
+        }
+        log.info("【租户开通】插入 tbsettingmenu 子菜单 {} 条", children.size());
     }
 }

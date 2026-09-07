@@ -16,6 +16,7 @@ import com.alibaba.fastjson.JSON;
 import com.alibaba.fastjson.JSONObject;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
+import com.baomidou.mybatisplus.core.toolkit.support.SFunction;
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import com.tianye.hrsystem.base.BaseServiceImpl;
 import com.tianye.hrsystem.common.*;
@@ -23,6 +24,7 @@ import com.tianye.hrsystem.config.ApplicationContextHolder;
 import com.tianye.hrsystem.config.CompanyContext;
 import com.tianye.hrsystem.entity.bo.*;
 import com.tianye.hrsystem.entity.po.*;
+import com.tianye.hrsystem.exception.HrmException;
 import com.tianye.hrsystem.entity.vo.*;
 import com.tianye.hrsystem.enums.*;
 import com.tianye.hrsystem.imple.CandidateActionRecordServiceImpl;
@@ -41,7 +43,7 @@ import com.tianye.hrsystem.modules.salary.service.HrmSalaryBasicService;
 import com.tianye.hrsystem.modules.salary.vo.QuerySalaryBasicVO;
 import com.tianye.hrsystem.repository.hrmDeptRepository;
 import com.tianye.hrsystem.repository.hrmEmployeeEducationExperienceRepository;
-import com.tianye.hrsystem.repository.hrmFieldExtendRepository;
+import com.tianye.hrsystem.mapper.HrmFieldExtendMapper;
 import com.tianye.hrsystem.repository.hrmEmployeeQuitInfoRepository;
 import com.tianye.hrsystem.repository.hrmEmployeeRepository;
 import com.tianye.hrsystem.service.AdminFileService;
@@ -98,6 +100,10 @@ import java.util.stream.Stream;
  */
 @Service
 public class HrmEmployeeServiceImpl extends BaseServiceImpl<HrmEmployeeMapper, HrmEmployee> implements IHrmEmployeeService {
+
+    /** 钉钉映射前置保证：在职员工保存时必须能按姓名+手机号映射到钉钉 userId（查无此人拒绝保存） */
+    @Autowired
+    private com.tianye.hrsystem.service.IHrmAttendanceApprovalSyncService approvalSyncService;
 
     @Autowired
     private HrmEmployeeMapper employeeMapper;
@@ -182,7 +188,7 @@ public class HrmEmployeeServiceImpl extends BaseServiceImpl<HrmEmployeeMapper, H
     private IHrmFieldExtendService hrmFieldExtendService;
 
     @Autowired
-    private hrmFieldExtendRepository fieldExtendRepository;
+    private HrmFieldExtendMapper fieldExtendMapper;
 
     @Autowired
     private AdminFileService adminFileService;
@@ -242,6 +248,8 @@ public class HrmEmployeeServiceImpl extends BaseServiceImpl<HrmEmployeeMapper, H
         }
         employee.setIsDel(0);
         prepareEmployeeForAdd(employee);
+        // 未手动选择直属上级时，默认取部门的分管领导
+        fillParentIdFromDeptLeader(employee);
         transferEmployee(employee);
         if(employee.getCreateUserId()==null){
             LoginUserInfo Info= CompanyContext.get();
@@ -249,6 +257,18 @@ public class HrmEmployeeServiceImpl extends BaseServiceImpl<HrmEmployeeMapper, H
         }
         if(employee.getCreateTime()==null){
             employee.setCreateTime(LocalDateTime.now());
+        }
+
+        // 钉钉映射前置保证：在职员工必须能在钉钉中按姓名+手机号匹配（查无此人拒绝保存；钉钉服务异常放行为待映射）
+        if (employee.getEntryStatus() != null && employee.getEntryStatus() == EmployeeEntryStatus.IN.getValue()) {
+            try {
+                employee.setDingtalkUserId(approvalSyncService.ensureDingTalkUserId(toMappingProbe(employee.getEmployeeId(),
+                        employee.getEmployeeName(), employee.getMobile(), employee.getDingtalkUserId())));
+            } catch (com.tianye.hrsystem.common.EmployeeNotInDingTalkException ex) {
+                throw new RuntimeException(ex.getMessage(), ex);
+            } catch (Exception mappingEx) {
+                // 钉钉服务暂不可用：放行保存，dingtalk_user_id 留空，由每日重试任务补齐
+            }
         }
 
         save(employee);
@@ -453,13 +473,45 @@ public class HrmEmployeeServiceImpl extends BaseServiceImpl<HrmEmployeeMapper, H
     }
 
     @Override
-    public List<SimpleHrmEmployeeVO> queryAllEmployeeList(String employeeName) {
-        LambdaQueryWrapper<HrmEmployee> wrapper = new QueryWrapper<HrmEmployee>().lambda().select(HrmEmployee::getEmployeeId, HrmEmployee::getEmployeeName, HrmEmployee::getPost,
-                HrmEmployee::getEntryStatus, HrmEmployee::getIsDel, HrmEmployee::getDeptId).eq(HrmEmployee::getIsDel, 0).like(StrUtil.isNotEmpty(employeeName), HrmEmployee::getEmployeeName, employeeName);
-        List<HrmEmployee> hrmEmployeeList = this.list(wrapper);
+    public List<SimpleHrmEmployeeVO> queryAllEmployeeList(String employeeName, String month) {
+        // 使用Mapper方法进行关联查询
+        HrmEmployeeMapper mapper = (HrmEmployeeMapper) getBaseMapper();
+        List<Map<String, Object>> resultMapList = mapper.queryEmployeeListForTransfer(employeeName, month);
+        
         List<SimpleHrmEmployeeVO> simpleHrmEmployeeVOList = new ArrayList<>();
-        for (HrmEmployee employee : hrmEmployeeList) {
-            simpleHrmEmployeeVOList.add(transferSimpleEmp(employee));
+        for (Map<String, Object> resultMap : resultMapList) {
+            SimpleHrmEmployeeVO vo = new SimpleHrmEmployeeVO();
+            vo.setEmployeeId(Convert.toLong(resultMap.get("employeeId")));
+            vo.setEmployeeName(Convert.toStr(resultMap.get("employeeName"), ""));
+            vo.setMobile(Convert.toStr(resultMap.get("mobile"), ""));
+            vo.setDeptId(Convert.toLong(resultMap.get("deptId")));
+            vo.setDeptName(Convert.toStr(resultMap.get("deptName"), ""));
+            vo.setPost(Convert.toStr(resultMap.get("post"), ""));
+            
+            // 设置员工状态
+            Integer entryStatus = resultMap.get("entryStatus") != null ? Convert.toInt(resultMap.get("entryStatus")) : null;
+            int status = 1;
+            if (entryStatus != null) {
+                if (entryStatus.equals(EmployeeEntryStatus.IN.getValue())) {
+                    status = 1;  // 在职
+                } else if (entryStatus.equals(EmployeeEntryStatus.ALREADY_LEAVE.getValue()) || 
+                           entryStatus.equals(EmployeeEntryStatus.TO_IN.getValue())) {
+                    status = 2;  // 离职
+                }
+            }
+            vo.setStatus(status);
+            
+            // 设置计划离职时间
+            Object planQuitTimeObj = resultMap.get("planQuitTime");
+            if (planQuitTimeObj != null) {
+                if (planQuitTimeObj instanceof java.sql.Date) {
+                    vo.setPlanQuitTime(((java.sql.Date) planQuitTimeObj).toLocalDate());
+                } else if (planQuitTimeObj instanceof java.util.Date) {
+                    vo.setPlanQuitTime(new java.sql.Date(((java.util.Date) planQuitTimeObj).getTime()).toLocalDate());
+                }
+            }
+            
+            simpleHrmEmployeeVOList.add(vo);
         }
         return simpleHrmEmployeeVOList;
     }
@@ -621,7 +673,7 @@ public class HrmEmployeeServiceImpl extends BaseServiceImpl<HrmEmployeeMapper, H
         if (fieldId == null || fieldId > Integer.MAX_VALUE) {
             return;
         }
-        List<HrmFieldExtend> existingExtends = fieldExtendRepository.findAllByParentFieldId(Math.toIntExact(fieldId));
+        List<HrmFieldExtend> existingExtends = fieldExtendMapper.findAllByParentFieldId(Math.toIntExact(fieldId));
         Set<String> existingFieldNames = existingExtends.stream()
                 .map(HrmFieldExtend::getFieldName)
                 .filter(StrUtil::isNotEmpty)
@@ -630,7 +682,7 @@ public class HrmEmployeeServiceImpl extends BaseServiceImpl<HrmEmployeeMapper, H
                 .filter(fieldExtend -> !existingFieldNames.contains(fieldExtend.getFieldName()))
                 .collect(Collectors.toList());
         if (CollectionUtil.isNotEmpty(missingExtends)) {
-            fieldExtendRepository.saveAll(missingExtends);
+            missingExtends.forEach(fieldExtendMapper::insert);
         }
     }
 
@@ -1145,6 +1197,17 @@ public class HrmEmployeeServiceImpl extends BaseServiceImpl<HrmEmployeeMapper, H
         return employee;
     }
 
+    /** 转换为考勤域映射所需的 model.HrmEmployee 探针（仅含 employeeId/姓名/手机号/钉钉userId） */
+    private com.tianye.hrsystem.model.HrmEmployee toMappingProbe(Long employeeId, String employeeName,
+                                                                 String mobile, String dingTalkUserId) {
+        com.tianye.hrsystem.model.HrmEmployee probe = new com.tianye.hrsystem.model.HrmEmployee();
+        probe.setEmployeeId(employeeId);
+        probe.setEmployeeName(employeeName);
+        probe.setMobile(mobile);
+        probe.setDingtalkUserId(dingTalkUserId);
+        return probe;
+    }
+
     @Override
     @Transactional(rollbackFor = Exception.class)
     public OperationLog updateInformation(UpdateInformationBO updateInformationBO) {
@@ -1178,6 +1241,20 @@ public class HrmEmployeeServiceImpl extends BaseServiceImpl<HrmEmployeeMapper, H
         }
         normalizeEmployeeUniqueFields(employee);
         validateEmployeeUniqueFields(employee, employeeId);
+        // 钉钉映射前置保证：姓名变更时重新校验（查无此人拒绝保存；钉钉服务异常放行）
+        if (oldEmployee != null && oldEmployee.getEntryStatus() != null
+                && oldEmployee.getEntryStatus() == EmployeeEntryStatus.IN.getValue()
+                && StrUtil.isNotBlank(employee.getEmployeeName())
+                && !employee.getEmployeeName().equals(oldEmployee.getEmployeeName())) {
+            try {
+                approvalSyncService.ensureDingTalkUserId(toMappingProbe(employeeId,
+                        employee.getEmployeeName(), oldEmployee.getMobile(), oldEmployee.getDingtalkUserId()));
+            } catch (com.tianye.hrsystem.common.EmployeeNotInDingTalkException ex) {
+                throw new RuntimeException(ex.getMessage(), ex);
+            } catch (Exception mappingEx) {
+                // 钉钉服务暂不可用：放行本次修改，待映射状态由每日重试任务处理
+            }
+        }
         List<UpdateInformationBO.InformationFieldBO> informationFieldBOS = isFixedMap.get(FiledIsFixedEnum.NO_FIXED);
         List<HrmEmployeeData> hrmEmployeeData = informationFieldBOS.stream()
                 .map(field -> {
@@ -1252,6 +1329,20 @@ public class HrmEmployeeServiceImpl extends BaseServiceImpl<HrmEmployeeMapper, H
         employee.setEmployeeId(employeeId);
         normalizeEmployeeUniqueFields(employee);
         validateEmployeeUniqueFields(employee, employeeId);
+        // 钉钉映射前置保证：手机号变更时重新校验（查无此人拒绝保存；钉钉服务异常放行）
+        if (oldEmployee != null && oldEmployee.getEntryStatus() != null
+                && oldEmployee.getEntryStatus() == EmployeeEntryStatus.IN.getValue()
+                && StrUtil.isNotBlank(employee.getMobile())
+                && !employee.getMobile().equals(oldEmployee.getMobile())) {
+            try {
+                approvalSyncService.ensureDingTalkUserId(toMappingProbe(employeeId,
+                        oldEmployee.getEmployeeName(), employee.getMobile(), oldEmployee.getDingtalkUserId()));
+            } catch (com.tianye.hrsystem.common.EmployeeNotInDingTalkException ex) {
+                throw new RuntimeException(ex.getMessage(), ex);
+            } catch (Exception mappingEx) {
+                // 钉钉服务暂不可用：放行本次修改，待映射状态由每日重试任务处理
+            }
+        }
         updateById(employee);
         List<UpdateInformationBO.InformationFieldBO> informationFieldBOS = isFixedMap.get(FiledIsFixedEnum.NO_FIXED);
         List<HrmEmployeeData> hrmEmployeeData = informationFieldBOS.stream()
@@ -3404,6 +3495,8 @@ public class HrmEmployeeServiceImpl extends BaseServiceImpl<HrmEmployeeMapper, H
                     if (employee.getCompanyAgeStartTime() == null) {
                         employee.setCompanyAgeStartTime(employee.getEntryTime());
                     }
+                    // 导入未填直属上级时，默认取部门的分管领导
+                    fillParentIdFromDeptLeader(employee);
                     save(employee);
                 } else {
                     employee.setUpdateTime(LocalDateTime.now());
@@ -3414,6 +3507,23 @@ public class HrmEmployeeServiceImpl extends BaseServiceImpl<HrmEmployeeMapper, H
                 saveRosterDynamicData(employee.getEmployeeId(), rowValues, fieldMap, headerRepeatCount);
             }
         }
+    }
+
+    /**
+     * 员工未手动指定直属上级时，默认取其部门的分管领导；分管领导是本人时不设置（自己不能是自己的上级）
+     */
+    private void fillParentIdFromDeptLeader(HrmEmployee employee) {
+        if (employee == null || employee.getParentId() != null || employee.getDeptId() == null) {
+            return;
+        }
+        HrmDept dept = hrmDeptService.getById(employee.getDeptId());
+        if (dept == null || dept.getLeaderEmployeeId() == null) {
+            return;
+        }
+        if (employee.getEmployeeId() != null && employee.getEmployeeId().equals(dept.getLeaderEmployeeId())) {
+            return;
+        }
+        employee.setParentId(dept.getLeaderEmployeeId());
     }
 
     private Sheet findRosterImportSheet(Workbook workbook) {
@@ -4281,5 +4391,65 @@ public class HrmEmployeeServiceImpl extends BaseServiceImpl<HrmEmployeeMapper, H
                 break;
         }
         return pro;
+    }
+
+    @Override
+    public List<SimpleHrmEmployeeVO> listForBatchSetting(List<Long> deptIds) {
+        List<HrmEmployee> employees = lambdaQuery()
+                .select(HrmEmployee::getEmployeeId, HrmEmployee::getEmployeeName, HrmEmployee::getMobile,
+                        HrmEmployee::getDeptId, HrmEmployee::getPost, HrmEmployee::getJobNumber)
+                .eq(HrmEmployee::getIsDel, 0)
+                .in(CollectionUtil.isNotEmpty(deptIds), HrmEmployee::getDeptId, deptIds)
+                .list();
+        return employees.stream().map(e -> {
+            SimpleHrmEmployeeVO vo = new SimpleHrmEmployeeVO();
+            vo.setEmployeeId(e.getEmployeeId());
+            vo.setEmployeeName(e.getEmployeeName());
+            vo.setMobile(e.getMobile());
+            vo.setDeptId(e.getDeptId());
+            vo.setPost(e.getPost());
+            return vo;
+        }).collect(Collectors.toList());
+    }
+
+    /**
+     * 批量设置字段白名单(与前端批量设置弹窗配置保持一致)
+     */
+    private static final Set<String> BATCH_SETTING_FIELDS = new HashSet<>(Arrays.asList(
+            "fullAttendance", "expandProduction", "isDisabled", "isContinuousShift", "isRetiredSoldier",
+            "isPartyMember", "personnelCategory", "isRemark", "affiliationSystem", "restType"));
+
+    @Override
+    public Integer batchUpdateEmployeeField(String fieldName, Integer fieldValue, List<Long> employeeIds) {
+        if (!BATCH_SETTING_FIELDS.contains(fieldName)) {
+            throw new HrmException(500, "不支持批量设置的字段: " + fieldName);
+        }
+        if (CollectionUtil.isEmpty(employeeIds) || fieldValue == null) {
+            throw new HrmException(500, "参数不完整");
+        }
+        List<Long> distinctIds = employeeIds.stream().filter(id -> id != null && id > 0).distinct().collect(Collectors.toList());
+        if (distinctIds.isEmpty()) {
+            return 0;
+        }
+        return lambdaUpdate()
+                .set(getFieldSetter(fieldName), fieldValue)
+                .in(HrmEmployee::getEmployeeId, distinctIds)
+                .update() ? distinctIds.size() : 0;
+    }
+
+    private SFunction<HrmEmployee, ?> getFieldSetter(String fieldName) {
+        switch (fieldName) {
+            case "fullAttendance": return HrmEmployee::getFullAttendance;
+            case "expandProduction": return HrmEmployee::getExpandProduction;
+            case "isDisabled": return HrmEmployee::getIsDisabled;
+            case "isContinuousShift": return HrmEmployee::getIsContinuousShift;
+            case "isRetiredSoldier": return HrmEmployee::getIsRetiredSoldier;
+            case "isPartyMember": return HrmEmployee::getIsPartyMember;
+            case "personnelCategory": return HrmEmployee::getPersonnelCategory;
+            case "isRemark": return HrmEmployee::getIsRemark;
+            case "affiliationSystem": return HrmEmployee::getAffiliationSystem;
+            case "restType": return HrmEmployee::getRestType;
+            default: throw new HrmException(500, "不支持批量设置的字段: " + fieldName);
+        }
     }
 }

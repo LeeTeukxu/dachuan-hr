@@ -34,6 +34,9 @@ public class QueryOvertimeNightStatisticsPageVO {
     @ApiModelProperty("夜班次数")
     private Integer nightShiftCount;
 
+    /** 加班/夜班计算过程说明（悬浮展示） */
+    private String calcProcess;
+
     @ApiModelProperty("应出勤天数")
     private Integer expectedAttendanceDays;
 
@@ -51,4 +54,12 @@ public class QueryOvertimeNightStatisticsPageVO {
 
     @ApiModelProperty("实际出勤备注")
     private String actualAttendanceRemark;
+
+    public String getCalcProcess() {
+        return calcProcess;
+    }
+
+    public void setCalcProcess(String calcProcess) {
+        this.calcProcess = calcProcess;
+    }
 }

@@ -45,6 +45,17 @@ public class GlobalExceptionHandler {
         }
 
         successResult result = new successResult();
+        result.setSuccess(false);
+        if (e instanceof com.tianye.hrsystem.common.EmployeeNotInDingTalkException) {
+            // 业务规则拒绝：新建在职员工必须存在于钉钉，直接给出原因
+            result.setMessage(e.getMessage());
+            try {
+                writeJson(response, result);
+            } catch (Exception ex) {
+                log.error("【全局异常】写出 JSON 失败", ex);
+            }
+            return null;
+        }
         if (e instanceof MaxUploadSizeExceededException) {
             result.setMessage("上传文件过大，请压缩后重试");
         } else if (e instanceof NoHandlerFoundException) {

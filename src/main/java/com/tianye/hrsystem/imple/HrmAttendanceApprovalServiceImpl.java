@@ -1,7 +1,10 @@
 package com.tianye.hrsystem.imple;
 
 import com.tianye.hrsystem.common.BasePage;
+import com.tianye.hrsystem.common.ProgressTracker;
+import com.tianye.hrsystem.common.Redis;
 import com.tianye.hrsystem.config.CompanyContext;
+import com.tianye.hrsystem.entity.po.AdminMessage;
 import com.tianye.hrsystem.entity.bo.AddAttendanceApprovalBO;
 import com.tianye.hrsystem.entity.bo.AttendanceApprovalMonthBO;
 import com.tianye.hrsystem.entity.bo.DeleteAttendanceApprovalBO;
@@ -9,10 +12,15 @@ import com.tianye.hrsystem.entity.bo.QueryAttendanceApprovalPageBO;
 import com.tianye.hrsystem.entity.bo.UpdateAttendanceApprovalDurationBO;
 import com.tianye.hrsystem.entity.bo.UpdateAttendanceApprovalStatisticsStatusBO;
 import com.tianye.hrsystem.entity.bo.UpdateAttendanceApprovalSubtypeBO;
+import com.tianye.hrsystem.entity.vo.AttendanceApprovalMonthPortionVO;
 import com.tianye.hrsystem.entity.vo.QueryAttendanceApprovalPageVO;
 import com.tianye.hrsystem.mapper.HrmAttendanceApprovalMapper;
+import com.tianye.hrsystem.model.HrmEmployee;
 import com.tianye.hrsystem.model.tbattendanceapprove;
+import com.tianye.hrsystem.model.tbplanlist;
 import com.tianye.hrsystem.repository.hrmAttendanceApprovalFetchMarkRepository;
+import com.tianye.hrsystem.repository.hrmEmployeeRepository;
+import com.tianye.hrsystem.repository.tbPlanListRepository;
 import com.tianye.hrsystem.model.tbattendanceuser;
 import com.tianye.hrsystem.repository.tbattendanceapproveRepository;
 import com.tianye.hrsystem.repository.tbattendanceuserRepository;
@@ -25,6 +33,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
+import java.time.LocalDateTime;
 import java.time.YearMonth;
 import java.time.format.DateTimeFormatter;
 import java.time.format.DateTimeParseException;
@@ -56,8 +65,9 @@ public class HrmAttendanceApprovalServiceImpl implements IHrmAttendanceApprovalS
     private static final String FETCH_STATUS_RUNNING = "RUNNING";
     private static final String FETCH_STATUS_SUCCESS = "SUCCESS";
     private static final String FETCH_STATUS_FAILED = "FAILED";
-    private static final Map<String, ApprovalFetchProgressState> FETCH_PROGRESS_MAP = new ConcurrentHashMap<>();
-    // 按公司运行标记：同一公司同时只允许一个“获取审批数据”任务；超过 2 小时视为异常残留自动放行
+    // ProgressTracker 前缀
+    private static final String FETCH_KEY_PREFIX = "attendance:fetch";
+    // 按公司运行标记：同一公司同时只允许一个"获取审批数据"任务；超过 2 小时视为异常残留自动放行
     private static final Map<String, java.util.concurrent.atomic.AtomicReference<Long>> FETCH_RUNNING_MAP = new ConcurrentHashMap<>();
     private static final long STALE_FETCH_RUNNING_MILLIS = 2L * HOUR_MILLIS;
     // 审批获取失败自动重试：次数与退避基数可配（默认 2 次自动重试、60s 起步指数退避、封顶 5 分钟）
@@ -65,9 +75,6 @@ public class HrmAttendanceApprovalServiceImpl implements IHrmAttendanceApprovalS
     private int fetchAutoRetryAttempts = 2;
     @Value("${hrm.approval-fetch.auto-retry.backoff-ms:60000}")
     private long fetchAutoRetryBackoffMs = 60000L;
-    // 进度条状态保留期：终态 2 小时后清理，运行态 24 小时（视为异常残留）后清理
-    private static final long FETCH_PROGRESS_TTL_MILLIS = 2L * HOUR_MILLIS;
-    private static final long FETCH_RUNNING_PROGRESS_TTL_MILLIS = 24L * HOUR_MILLIS;
     private static final List<String> DURATION_UNIT_OPTIONS = Arrays.asList("小时", "分钟", "天");
     private static final List<String> DEFAULT_SUBTYPE_OPTIONS = Arrays.asList(
             "事假", "调休", "病假", "婚假", "丧假", "产假", "陪产假", "年假", "补休"
@@ -88,9 +95,228 @@ public class HrmAttendanceApprovalServiceImpl implements IHrmAttendanceApprovalS
     @Autowired
     private hrmAttendanceApprovalFetchMarkRepository fetchMarkRepository;
 
+    @Autowired
+    private com.tianye.hrsystem.modules.workweek.service.HrmWorkweekSettingService workweekSettingService;
+
+    @Autowired
+    private hrmEmployeeRepository hrmEmployeeRepository;
+
+    @Autowired
+    private tbPlanListRepository tbPlanListRepository;
+
+    @Autowired
+    private ProgressTracker progressTracker;
+
+    @Autowired
+    private Redis redis;
+
+    @Autowired
+    private AdminMessageServiceImpl adminMessageService;
+
     @Override
     public BasePage<QueryAttendanceApprovalPageVO> queryPageList(QueryAttendanceApprovalPageBO queryBO) {
-        return attendanceApprovalMapper.queryPageList(queryBO.parse(), queryBO);
+        BasePage<QueryAttendanceApprovalPageVO> page = attendanceApprovalMapper.queryPageList(queryBO.parse(), queryBO);
+        clampCrossMonthRowsForDisplay(page, queryBO);
+        return page;
+    }
+
+    /**
+     * 跨月单按月拆分显示：审批区间与所选月部分相交时，把展示的 beginTime/endTime 截断为该月内区间，
+     * 时长按工作日占比折算（工作日判定复用单双休/节假日日历）。仅改展示值，库内记录与统计不受影响。
+     */
+    private void clampCrossMonthRowsForDisplay(BasePage<QueryAttendanceApprovalPageVO> page,
+                                               QueryAttendanceApprovalPageBO queryBO) {
+        if (page == null || page.getList() == null || page.getList().isEmpty()
+                || queryBO.getTimes() == null || queryBO.getTimes().size() < 2
+                || queryBO.getTimes().get(0) == null || queryBO.getTimes().get(1) == null) {
+            return;
+        }
+        java.time.LocalDate monthStart = queryBO.getTimes().get(0);
+        java.time.LocalDate monthEnd = queryBO.getTimes().get(1);
+        Date monthStartDay = Date.from(monthStart.atStartOfDay(java.time.ZoneId.systemDefault()).toInstant());
+        Date monthEndDay = Date.from(monthEnd.atTime(23, 59, 59).atZone(java.time.ZoneId.systemDefault()).toInstant());
+        java.time.YearMonth month = java.time.YearMonth.from(monthStart);
+        for (QueryAttendanceApprovalPageVO vo : page.getList()) {
+            AttendanceApprovalMonthPortionVO portion = calculateMonthPortion(vo.getEmployeeId(),
+                    vo.getBeginTime(), vo.getEndTime(), vo.getDuration(), vo.getDurationDay(), month);
+            if (portion == null) {
+                continue;
+            }
+            vo.setBeginTime(portion.getDisplayBeginTime());
+            vo.setEndTime(portion.getDisplayEndTime());
+            vo.setDuration(portion.getDuration());
+            vo.setDurationDay(portion.getDurationDay());
+        }
+    }
+
+    @Override
+    public AttendanceApprovalMonthPortionVO calculateMonthPortion(Long employeeId,
+                                                                  Date beginTime,
+                                                                  Date endTime,
+                                                                  String duration,
+                                                                  String durationDay,
+                                                                  java.time.YearMonth month) {
+        if (month == null || beginTime == null || endTime == null || !beginTime.before(endTime)) {
+            return null;
+        }
+        Date monthStartDay = Date.from(month.atDay(1).atStartOfDay(java.time.ZoneId.systemDefault()).toInstant());
+        Date monthEndDay = Date.from(month.atEndOfMonth().atTime(23, 59, 59)
+                .atZone(java.time.ZoneId.systemDefault()).toInstant());
+        if (endTime.before(monthStartDay) || beginTime.after(monthEndDay)) {
+            return null;
+        }
+        HrmEmployee employee = resolveEmployee(employeeId);
+        long totalDays = workdaySpanDays(employee, beginTime, endTime);
+        if (totalDays <= 0) {
+            return null;
+        }
+        Date clampedBegin = beginTime.before(monthStartDay) ? monthStartDay : beginTime;
+        Date clampedEnd = endTime.after(monthEndDay) ? monthEndDay : endTime;
+        long monthDays = workdaySpanDays(employee, clampedBegin, clampedEnd);
+        AttendanceApprovalMonthPortionVO portion = new AttendanceApprovalMonthPortionVO();
+        portion.setDisplayBeginTime(clampedBegin);
+        portion.setDisplayEndTime(clampedEnd);
+        portion.setTotalWorkDays(totalDays);
+        portion.setMonthWorkDays(monthDays);
+        applyProratedDuration(portion, duration, durationDay, monthDays, totalDays);
+        return portion;
+    }
+
+    private HrmEmployee resolveEmployee(Long employeeId) {
+        return employeeId == null ? null : hrmEmployeeRepository.findById(employeeId).orElse(null);
+    }
+
+    /** 员工区间内工作日数：行政单双休（固定工时）直接走日历；其他员工先剔除排班休息，再回落日历；日历不可用时退化为自然天数。 */
+    private long workdaySpanDays(HrmEmployee employee, Date begin, Date end) {
+        java.time.LocalDate beginDate = toLocalDateSafe(begin);
+        java.time.LocalDate endDate = toLocalDateSafe(end);
+        if (beginDate == null || endDate == null || endDate.isBefore(beginDate)) {
+            return 0;
+        }
+        int workDays = workweekSettingService.countWorkDays(beginDate, endDate,
+                queryEmployeeScheduledDayStatus(employee, beginDate, endDate));
+        if (workDays > 0) {
+            return workDays;
+        }
+        return daysInclusive(begin, end);
+    }
+
+    /**
+     * 员工排班覆盖（TRUE=排班上班、FALSE=排班休息；未覆盖日期由日历判定）。
+     * 判定顺序：先看员工属性——行政体系(1)且休息制度为行政单双休(1)的固定工时员工不查排班，
+     * 休息完全由单双休设置/节假日决定；其余员工（固定月休4天、生产体系等）查 tbplanlist 排班，
+     * 排班标"休"且 UserID 含该员工钉钉ID的日期剔除，排了班次的日期计为工作日。
+     */
+    private Map<java.time.LocalDate, Boolean> queryEmployeeScheduledDayStatus(HrmEmployee employee,
+                                                                              java.time.LocalDate beginDate,
+                                                                              java.time.LocalDate endDate) {
+        Map<java.time.LocalDate, Boolean> status = new java.util.HashMap<>();
+        if (employee == null
+                || (Integer.valueOf(1).equals(employee.getAffiliationSystem())
+                    && Integer.valueOf(1).equals(employee.getRestType()))) {
+            return status;
+        }
+        String dingUserId = employee.getDingtalkUserId();
+        if (dingUserId == null || dingUserId.trim().isEmpty()) {
+            return status;
+        }
+        Date begin = Date.from(beginDate.atStartOfDay(java.time.ZoneId.systemDefault()).toInstant());
+        Date endExclusive = Date.from(endDate.plusDays(1).atStartOfDay(java.time.ZoneId.systemDefault()).toInstant());
+        Set<java.time.LocalDate> scheduledRest = new java.util.HashSet<>();
+        Set<java.time.LocalDate> scheduledWork = new java.util.HashSet<>();
+        List<tbplanlist> planRows = tbPlanListRepository.findAllByWorkDateBetweenOrderByIdDesc(begin, endExclusive);
+        for (tbplanlist row : planRows) {
+            if (row == null || row.getWorkDate() == null || row.getUserId() == null) {
+                continue;
+            }
+            boolean belongsToEmployee = false;
+            for (String userId : row.getUserId().split(",")) {
+                if (dingUserId.equals(userId.trim())) {
+                    belongsToEmployee = true;
+                    break;
+                }
+            }
+            if (!belongsToEmployee) {
+                continue;
+            }
+            java.time.LocalDate day = toLocalDateSafe(row.getWorkDate());
+            if ("rest".equals(row.getShiftType())) {
+                scheduledRest.add(day);
+            } else {
+                scheduledWork.add(day);
+            }
+        }
+        for (java.time.LocalDate day : scheduledRest) {
+            status.put(day, Boolean.FALSE);
+        }
+        for (java.time.LocalDate day : scheduledWork) {
+            status.putIfAbsent(day, Boolean.TRUE);
+        }
+        return status;
+    }
+
+    /**
+     * 按天填的请假（总时长为 8 小时整数倍）：月部分 = 该月工作日数 × 8 小时，封顶不超过原单总时长，
+     * 保证跨月显示的是"整天"；按小时填的请假退化为工作日占比折算（0.5 小时粒度）。
+     */
+    private void applyProratedDuration(AttendanceApprovalMonthPortionVO portion, String duration, String durationDay,
+                                       long monthDays, long totalDays) {
+        BigDecimal totalHours = parsePositiveDecimal(duration);
+        if (totalHours != null && totalHours.remainder(BigDecimal.valueOf(8)).compareTo(BigDecimal.ZERO) == 0) {
+            BigDecimal monthHours = BigDecimal.valueOf(monthDays)
+                    .multiply(BigDecimal.valueOf(8))
+                    .min(totalHours);
+            portion.setDuration(monthHours.stripTrailingZeros().toPlainString());
+            portion.setDurationDay(monthHours.divide(BigDecimal.valueOf(8), 1, java.math.RoundingMode.DOWN)
+                    .stripTrailingZeros().toPlainString());
+            return;
+        }
+        portion.setDuration(prorateDuration(duration, monthDays, totalDays));
+        portion.setDurationDay(prorateDuration(durationDay, monthDays, totalDays));
+    }
+
+    private BigDecimal parsePositiveDecimal(String value) {
+        if (value == null || value.trim().isEmpty()) {
+            return null;
+        }
+        try {
+            BigDecimal decimal = new BigDecimal(value.trim());
+            return decimal.compareTo(BigDecimal.ZERO) > 0 ? decimal : null;
+        } catch (NumberFormatException ex) {
+            return null;
+        }
+    }
+
+    private java.time.LocalDate toLocalDateSafe(Date date) {
+        if (date == null) {
+            return null;
+        }
+        return date.toInstant().atZone(java.time.ZoneId.systemDefault()).toLocalDate();
+    }
+
+    private long daysInclusive(Date begin, Date end) {
+        long millis = end.getTime() - begin.getTime();
+        if (millis < 0) {
+            return 0;
+        }
+        return millis / 86400000L + 1;
+    }
+
+    private String prorateDuration(String durationText, long monthDays, long totalDays) {
+        if (durationText == null || durationText.trim().isEmpty()) {
+            return durationText;
+        }
+        try {
+            BigDecimal total = new BigDecimal(durationText.trim());
+            BigDecimal portion = total.multiply(BigDecimal.valueOf(monthDays))
+                    .divide(BigDecimal.valueOf(totalDays), 2, RoundingMode.HALF_UP);
+            // 0.5 小时粒度
+            portion = portion.multiply(BigDecimal.valueOf(2)).setScale(0, RoundingMode.HALF_UP)
+                    .divide(BigDecimal.valueOf(2), 1, RoundingMode.HALF_UP).stripTrailingZeros();
+            return portion.toPlainString();
+        } catch (NumberFormatException ex) {
+            return durationText;
+        }
     }
 
     @Override
@@ -114,18 +340,61 @@ public class HrmAttendanceApprovalServiceImpl implements IHrmAttendanceApprovalS
         if (approvalTypes.isEmpty()) {
             throw new IllegalArgumentException("请选择审批类型");
         }
-        clearExpiredFetchProgress();
         String progressKey = buildFetchProgressKey();
         updateFetchProgress(progressKey, 5, FETCH_STATUS_RUNNING, "正在准备获取审批数据", false, false, 0L, null);
+        
+        // 写入通知：获取审批数据开始
+        try {
+            AdminMessage startMsg = new AdminMessage();
+            startMsg.setTitle("获取审批数据中");
+            startMsg.setContent("准备中... 0%");
+            startMsg.setLabel(8);
+            startMsg.setType(203); // HRM_APPROVAL_FETCH_RUNNING
+            startMsg.setLinkUrl("/hrm/attendance/approval");
+            startMsg.setCreateUser(0L);
+            startMsg.setRecipientUser(0L);
+            startMsg.setCreateTime(LocalDateTime.now());
+            startMsg.setIsRead(0);
+            adminMessageService.save(startMsg);
+            // 保存通知ID到Redis，用于进度更新时同步通知内容
+            redis.setex("attendance:notification:fetch:" + progressKey, 7200, String.valueOf(startMsg.getMessageId()));
+            logger.info("[审批获取进度] 已写入开始通知, messageId={}", startMsg.getMessageId());
+        } catch (Exception e) {
+            logger.error("[审批获取进度] 写入开始通知失败", e);
+        }
+        
         try {
             updateFetchProgress(progressKey, 35, FETCH_STATUS_RUNNING, "正在从钉钉获取审批数据", false, false, 0L, null);
-            long insertedCount = approvalSyncService.fetchMonthData(month, employeeIds, approvalTypes);
+            // 透传前端发起的"审批发起时间窗口"(fetchStartTime/fetchEndTime, Long 毫秒)；
+            // 未传(老调用方/定时任务)时由 sync 回退到目标业务月窗口。
+            Long fetchStartTime = queryBO != null ? queryBO.getFetchStartTime() : null;
+            Long fetchEndTime = queryBO != null ? queryBO.getFetchEndTime() : null;
+            long insertedCount = approvalSyncService.fetchMonthData(month, fetchStartTime, fetchEndTime, employeeIds, approvalTypes);
             Map<String, Object> result = new LinkedHashMap<>();
             result.put("success", true);
             result.put("month", month.format(MONTH_FORMATTER));
             result.put("insertedCount", insertedCount);
             updateFetchProgress(progressKey, 100, FETCH_STATUS_SUCCESS,
                     "审批数据获取完成，请确认后关闭进度条", true, true, insertedCount, null);
+            
+            // 写入通知：获取审批数据完成
+            try {
+                AdminMessage completeMsg = new AdminMessage();
+                completeMsg.setTitle("获取审批数据完成");
+                completeMsg.setContent("点击查看");
+                completeMsg.setLabel(8); // 人资
+                completeMsg.setType(204); // HRM_APPROVAL_FETCH_COMPLETE
+                completeMsg.setLinkUrl("/hrm/attendance/approval");
+                completeMsg.setCreateUser(0L); // 系统
+                completeMsg.setRecipientUser(0L); // 系统级通知
+                completeMsg.setCreateTime(LocalDateTime.now());
+                completeMsg.setIsRead(0);
+                adminMessageService.save(completeMsg);
+                logger.info("[审批获取进度] 已写入完成通知");
+            } catch (Exception e) {
+                logger.error("[审批获取进度] 写入完成通知失败", e);
+            }
+            
             return result;
         } catch (Exception ex) {
             String message = toFriendlyApprovalFetchMessage(ex);
@@ -137,32 +406,37 @@ public class HrmAttendanceApprovalServiceImpl implements IHrmAttendanceApprovalS
 
     @Override
     public Map<String, Object> queryFetchProgress() {
-        clearExpiredFetchProgress();
-        ApprovalFetchProgressState state = FETCH_PROGRESS_MAP.get(buildFetchProgressKey());
+        String companyId = getCompanyId();
+        ProgressTracker.ProgressState state = progressTracker.queryProgress(FETCH_KEY_PREFIX, companyId);
         Map<String, Object> result = new LinkedHashMap<>();
-        if (state == null) {
-            result.put("progress", 0);
-            result.put("status", FETCH_STATUS_IDLE);
-            result.put("message", "等待获取审批数据");
-            result.put("done", Boolean.FALSE);
-            result.put("success", Boolean.FALSE);
-            result.put("error", Boolean.FALSE);
-            result.put("insertedCount", 0L);
-            result.put("errors", Collections.emptyList());
-            return result;
-        }
         result.put("progress", state.progress);
         result.put("status", state.status);
         result.put("message", state.message);
         result.put("done", state.done);
         result.put("success", state.success);
-        result.put("error", FETCH_STATUS_FAILED.equals(state.status));
-        result.put("insertedCount", state.insertedCount);
-        result.put("errors", state.errors == null ? Collections.emptyList() : state.errors);
+        result.put("error", ProgressTracker.STATUS_FAILED.equals(state.status));
+        // 读取 insertedCount（审批获取特有字段）
+        String insertedCountStr = redis.get(FETCH_KEY_PREFIX + ":inserted:" + companyId);
+        long insertedCount = 0;
+        try {
+            insertedCount = insertedCountStr != null ? Long.parseLong(insertedCountStr) : 0;
+        } catch (NumberFormatException e) {
+            // ignore
+        }
+        result.put("insertedCount", insertedCount);
+        result.put("errors", state.errors);
         return result;
     }
 
     private String buildFetchProgressKey() {
+        if (CompanyContext.get() != null && CompanyContext.get().getCompanyId() != null) {
+            return CompanyContext.get().getCompanyId();
+        }
+        return "default";
+    }
+
+    /** 获取当前公司 ID */
+    private String getCompanyId() {
         if (CompanyContext.get() != null && CompanyContext.get().getCompanyId() != null) {
             return CompanyContext.get().getCompanyId();
         }
@@ -177,17 +451,48 @@ public class HrmAttendanceApprovalServiceImpl implements IHrmAttendanceApprovalS
                                      boolean success,
                                      long insertedCount,
                                      List<String> errors) {
-        ApprovalFetchProgressState state = FETCH_PROGRESS_MAP.computeIfAbsent(key, ignored -> new ApprovalFetchProgressState());
-        if (progress != null) {
-            state.progress = Math.max(0, Math.min(100, progress));
-        }
-        state.lastUpdatedMillis = System.currentTimeMillis();
+        ProgressTracker.ProgressState state = new ProgressTracker.ProgressState();
+        state.progress = progress != null ? Math.max(0, Math.min(100, progress)) : 0;
         state.status = status;
         state.message = message;
         state.done = done;
         state.success = success;
-        state.insertedCount = insertedCount;
         state.errors = errors == null ? Collections.emptyList() : new ArrayList<>(errors);
+        if (progressTracker != null) {
+            progressTracker.saveProgress(FETCH_KEY_PREFIX, key, state);
+        }
+        // 保留 insertedCount（审批获取特有字段）
+        if (insertedCount > 0 && redis != null) {
+            redis.setex(FETCH_KEY_PREFIX + ":inserted:" + key, 7200, String.valueOf(insertedCount));
+        }
+        // 同步更新通知中心的进度内容
+        updateNotificationProgress("attendance:notification:fetch:" + key, progress, done, success);
+    }
+
+    /**
+     * 更新通知中心的进度内容（实时百分比）
+     */
+    private void updateNotificationProgress(String redisKey, Integer progress, boolean done, boolean success) {
+        try {
+            String messageIdStr = redis.get(redisKey);
+            if (messageIdStr == null || messageIdStr.isEmpty()) {
+                return;
+            }
+            Long messageId = Long.parseLong(messageIdStr);
+            String content;
+            if (done) {
+                content = success ? "已完成" : "获取失败";
+                // 完成后删除Redis中的通知ID标记
+                redis.del(redisKey);
+            } else if (progress != null) {
+                content = "进度 " + progress + "%";
+            } else {
+                return;
+            }
+            adminMessageService.updateContent(messageId, content);
+        } catch (Exception e) {
+            logger.warn("[审批获取进度] 更新通知内容失败", e);
+        }
     }
 
     private String toFriendlyApprovalFetchMessage(Throwable throwable) {
@@ -248,10 +553,37 @@ public class HrmAttendanceApprovalServiceImpl implements IHrmAttendanceApprovalS
 
     /** 后台任务结束（成功/失败/提交失败）后归还可公司运行标记 */
     public void finishFetch(String companyId) {
-        java.util.concurrent.atomic.AtomicReference<Long> flag = FETCH_RUNNING_MAP.get(companyId);
-        if (flag != null) {
-            flag.set(null);
+        // 重试释放：最多3次，间隔递增
+        for (int i = 0; i < 3; i++) {
+            java.util.concurrent.atomic.AtomicReference<Long> flag = FETCH_RUNNING_MAP.get(companyId);
+            if (flag != null) {
+                Long current = flag.get();
+                if (current != null) {
+                    flag.set(null);
+                    logger.info("[审批获取锁] 公司{} 释放锁成功（第{}次尝试）", companyId, i + 1);
+                    return;
+                }
+            }
+            logger.warn("[审批获取锁] 公司{} 锁已释放或不存在（第{}次尝试）", companyId, i + 1);
+            try {
+                Thread.sleep(100L * (i + 1));
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return;
+            }
         }
+    }
+
+    /** 检查并清理残留的锁（超过2小时视为异常） */
+    public void checkAndCleanupStaleLocks() {
+        long now = System.currentTimeMillis();
+        FETCH_RUNNING_MAP.forEach((companyId, flag) -> {
+            Long timestamp = flag.get();
+            if (timestamp != null && now - timestamp > STALE_FETCH_RUNNING_MILLIS) {
+                logger.warn("[审批获取锁] 清理公司{} 残留锁，锁龄={}ms", companyId, now - timestamp);
+                flag.set(null);
+            }
+        });
     }
 
     /**
@@ -292,34 +624,10 @@ public class HrmAttendanceApprovalServiceImpl implements IHrmAttendanceApprovalS
 
     /** 提交后、后台任务启动前同步写入 RUNNING 进度，覆盖上一次运行的旧完成状态，避免前端轮询瞬间假完成 */
     public void beginFetchProgress() {
-        clearExpiredFetchProgress();
-        updateFetchProgress(buildFetchProgressKey(), 2, FETCH_STATUS_RUNNING,
+        String companyId = getCompanyId();
+        // 清理旧进度（ProgressTracker 会自动覆盖）
+        updateFetchProgress(companyId, 2, FETCH_STATUS_RUNNING,
                 "已提交获取审批数据请求，正在排队执行", false, false, 0L, null);
-    }
-
-    private void clearExpiredFetchProgress() {
-        long now = System.currentTimeMillis();
-        FETCH_PROGRESS_MAP.entrySet().removeIf(entry -> {
-            ApprovalFetchProgressState state = entry.getValue();
-            if (state == null) {
-                return true;
-            }
-            boolean terminal = FETCH_STATUS_SUCCESS.equals(state.status) || FETCH_STATUS_FAILED.equals(state.status)
-                    || FETCH_STATUS_IDLE.equals(state.status);
-            long age = now - state.lastUpdatedMillis;
-            return terminal ? age > FETCH_PROGRESS_TTL_MILLIS : age > FETCH_RUNNING_PROGRESS_TTL_MILLIS;
-        });
-    }
-
-    private static class ApprovalFetchProgressState {
-        private volatile long lastUpdatedMillis;
-        private volatile int progress;
-        private volatile String status = FETCH_STATUS_IDLE;
-        private volatile String message = "等待获取审批数据";
-        private volatile boolean done;
-        private volatile boolean success;
-        private long insertedCount;
-        private List<String> errors = Collections.emptyList();
     }
 
     @Override
@@ -371,12 +679,14 @@ public class HrmAttendanceApprovalServiceImpl implements IHrmAttendanceApprovalS
                 .orElseThrow(() -> new IllegalArgumentException("审批数据不存在"));
         approval.setDuration(duration);
         approval.setDurationUnit(durationUnit);
+        approval.setDurationDay(toStoredDurationDay(duration, durationUnit));
         approvalRepository.save(approval);
 
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("approvalId", approval.getId());
         result.put("duration", approval.getDuration());
         result.put("durationUnit", approval.getDurationUnit());
+        result.put("durationDay", approval.getDurationDay());
         return result;
     }
 
@@ -437,6 +747,7 @@ public class HrmAttendanceApprovalServiceImpl implements IHrmAttendanceApprovalS
                 approval.setEndTime(approvalRange.endTime);
                 approval.setDuration(approvalRange.duration);
                 approval.setDurationUnit("小时");
+                approval.setDurationDay(toStoredDurationDay(approvalRange.duration, "小时"));
                 approval.setUserId(attendanceUser.getUserId());
                 approval.setGroupId(attendanceUser.getGroupId());
                 approval.setCreateTime(createTime);
@@ -529,6 +840,35 @@ public class HrmAttendanceApprovalServiceImpl implements IHrmAttendanceApprovalS
             throw new IllegalArgumentException("审批时长单位不合法");
         }
         return normalized;
+    }
+
+    /**
+     * 由存储的 (时长, 单位) 推导一致的"天"口径（durationDay 派生列），供手动新增/修改写入。
+     * 口径：小时→/8、分钟→/60/8、天→原值，保留 2 位小数。
+     */
+    private String toStoredDurationDay(String duration, String unit) {
+        if (duration == null || duration.trim().isEmpty()) {
+            return "";
+        }
+        BigDecimal value;
+        try {
+            value = new BigDecimal(normalizeDuration(duration));
+        } catch (IllegalArgumentException ex) {
+            return "";
+        }
+        if (value.compareTo(BigDecimal.ZERO) <= 0) {
+            return "";
+        }
+        BigDecimal days;
+        if ("分钟".equals(unit)) {
+            days = value.divide(BigDecimal.valueOf(60), 6, RoundingMode.HALF_UP)
+                    .divide(BigDecimal.valueOf(8), 6, RoundingMode.HALF_UP);
+        } else if ("天".equals(unit)) {
+            days = value;
+        } else {
+            days = value.divide(BigDecimal.valueOf(8), 6, RoundingMode.HALF_UP);
+        }
+        return days.setScale(2, RoundingMode.HALF_UP).stripTrailingZeros().toPlainString();
     }
 
     private String normalizeStatisticsStatus(String value) {

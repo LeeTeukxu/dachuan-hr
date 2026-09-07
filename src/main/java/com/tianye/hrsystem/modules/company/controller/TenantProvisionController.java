@@ -39,7 +39,6 @@ public class TenantProvisionController {
     public successResult list() {
         successResult result = new successResult();
         try {
-            tenantProvisionService.checkProvisionPermission(CompanyContext.get());
             result.setData(tenantProvisionService.listTenants());
         } catch (Exception ax) {
             result.raiseException(ax);
@@ -55,7 +54,6 @@ public class TenantProvisionController {
     public successResult reloadApiPermission() {
         successResult result = new successResult();
         try {
-            tenantProvisionService.checkProvisionPermission(CompanyContext.get());
             apiPermissionPathSupport.refresh();
             result.setMessage("权限映射已刷新");
         } catch (Exception ax) {
@@ -65,17 +63,18 @@ public class TenantProvisionController {
     }
 
     /**
-     * 一键开通新租户（仅超管所在公司可调用，见 hrm.tenant.provision-admin-companies）
+     * 一键开通新租户
      */
     @PostMapping("/provision")
     @ApiOperation("开通新租户")
     public successResult provision(String companyId, String companyName,
-                                   String adminAccount, String adminPassword, String adminName) {
+                                   String adminAccount, String adminPassword, String adminName,
+                                   String ddAppKey, String ddAppsecret, String ddAgentId) {
         successResult result = new successResult();
         try {
-            tenantProvisionService.checkProvisionPermission(CompanyContext.get());
-            String message =             tenantProvisionService.provision(companyId, companyName,
-                    adminAccount, adminPassword, adminName);
+            String message = tenantProvisionService.provision(companyId, companyName,
+                    adminAccount, adminPassword, adminName,
+                    ddAppKey, ddAppsecret, ddAgentId);
             result.setMessage(message);
         } catch (Exception ax) {
             result.raiseException(ax);
@@ -127,8 +126,37 @@ public class TenantProvisionController {
     public successResult tables(String companyId) {
         successResult result = new successResult();
         try {
-            tenantProvisionService.checkProvisionPermission(CompanyContext.get());
             result.setData(tenantProvisionService.listTenantTables(companyId));
+        } catch (Exception ax) {
+            result.raiseException(ax);
+        }
+        return result;
+    }
+
+    /**
+     * 获取已有租户的钉钉配置列表（用于开户时绑定）
+     */
+    @GetMapping("/ddAccountList")
+    @ApiOperation("获取已有租户的钉钉配置")
+    public successResult ddAccountList() {
+        successResult result = new successResult();
+        try {
+            result.setData(tenantProvisionService.listDdAccounts());
+        } catch (Exception ax) {
+            result.raiseException(ax);
+        }
+        return result;
+    }
+
+    /**
+     * 对比两个租户库的表结构差异（表名、行数、字段数量）
+     */
+    @GetMapping("/compare")
+    @ApiOperation("对比两个租户库的表结构差异")
+    public successResult compare(String sourceCompanyId, String targetCompanyId) {
+        successResult result = new successResult();
+        try {
+            result.setData(tenantProvisionService.compareTenantTables(sourceCompanyId, targetCompanyId));
         } catch (Exception ax) {
             result.raiseException(ax);
         }

@@ -61,7 +61,16 @@ public class HrmEmployeeController {
     private IHrmEmployeeService employeeService;
 
     @Autowired
+    private com.tianye.hrsystem.imple.employee.HrmEmployeeDingTalkSyncService employeeDingTalkSyncService;
+
+    @Autowired
     private IHrmEmployeeEmploymentRecordService employmentRecordService;
+
+    @Autowired
+    private com.tianye.hrsystem.autoTask.RetirementReminderTask retirementReminderTask;
+
+    @Autowired
+    private com.tianye.hrsystem.autoTask.DingTalkUserMappingRetryTask dingTalkUserMappingRetryTask;
 
     Logger logger= LoggerFactory.getLogger(HrmEmployeeController.class);
 
@@ -84,11 +93,25 @@ public class HrmEmployeeController {
 
     @PostMapping("/confirmEntry")
     @ApiOperation("确认入职")
-    @OperateLog(apply = ApplyEnum.HRM, object = OperateObjectEnum.HRM_EMPLOYEE, behavior = BehaviorEnum.DETERMINE_ENTRY)
+    @OperateLog(apply = ApplyEnum.HRM, object = OperateObjectEnum.HRM_EMPLOYEE, behavior = BehaviorEnum.SAVE)
     public Result confirmEntry(@RequestBody AddEmployeeFieldManageBO employeeBO) {
         OperationLog operationLog = employeeService.confirmEntry(employeeBO);
         return OperationResult.ok(operationLog);
     }
+
+    @PostMapping("/retirementRemind")
+    @ApiOperation("手动触发到龄退休提醒（遍历全部租户，本月到龄的员工发站内信）")
+    public Result retirementRemind() {
+        retirementReminderTask.remind();
+        return Result.ok("已执行到龄退休提醒检查");
+    }
+
+    @PostMapping("/remapDingTalkUser")
+    @ApiOperation("手动映射钉钉用户（员工管理「重新映射」按钮，支持批量）")
+    public Result remapDingTalkUser(@org.springframework.web.bind.annotation.RequestBody java.util.List<Long> employeeIds) {
+        return Result.ok(dingTalkUserMappingRetryTask.remapEmployees(employeeIds));
+    }
+
 
 
     @PostMapping("/queryEmployeeStatusNum")
@@ -383,8 +406,10 @@ public class HrmEmployeeController {
 
     @PostMapping("/queryAllEmployeeList")
     @ApiOperation("查询所用员工(表单选择使用)")
-    public Result<List<SimpleHrmEmployeeVO>> queryAllEmployeeList(@RequestParam(name = "employeeName", required = false) String employeeName) {
-        List<SimpleHrmEmployeeVO> list = employeeService.queryAllEmployeeList(employeeName);
+    public Result<List<SimpleHrmEmployeeVO>> queryAllEmployeeList(
+            @RequestParam(name = "employeeName", required = false) String employeeName,
+            @RequestParam(name = "month", required = false) String month) {
+        List<SimpleHrmEmployeeVO> list = employeeService.queryAllEmployeeList(employeeName, month);
         return Result.ok(list);
     }
 
@@ -699,5 +724,34 @@ public class HrmEmployeeController {
             return Result.error(500, ax.getMessage());
         }
         return Result.ok();
+    }
+
+    @PostMapping("/listForBatchSetting")
+    @ApiOperation("批量设置-按部门查询候选员工")
+    public Result<List<SimpleHrmEmployeeVO>> listForBatchSetting(@RequestBody(required = false) List<Long> deptIds) {
+        return Result.ok(employeeService.listForBatchSetting(deptIds));
+    }
+
+    @PostMapping("/batchSetting/save")
+    @ApiOperation("批量设置-更新员工指定字段")
+    public Result<Integer> batchSettingSave(@RequestBody EmployeeBatchSettingBO batchSettingBO) {
+        try {
+            return Result.ok(employeeService.batchUpdateEmployeeField(
+                    batchSettingBO.getFieldName(), batchSettingBO.getFieldValue(), batchSettingBO.getEmployeeIds()));
+        } catch (Exception ax) {
+            logger.error("员工批量设置失败", ax);
+            return Result.error(500, ax.getMessage());
+        }
+    }
+
+    @PostMapping("/syncDingTalkRoster")
+    @ApiOperation("同步钉钉员工(dryRun=true时仅预检不落库)")
+    public Result<Map<String, Object>> syncDingTalkRoster(@RequestParam(name = "dryRun", required = false, defaultValue = "false") Boolean dryRun) {
+        try {
+            return Result.ok(employeeDingTalkSyncService.syncRoster(Boolean.TRUE.equals(dryRun)));
+        } catch (Exception ax) {
+            logger.error("同步钉钉员工失败", ax);
+            return Result.error(500, ax.getMessage());
+        }
     }
 }

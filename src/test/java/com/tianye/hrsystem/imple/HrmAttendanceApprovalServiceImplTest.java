@@ -335,7 +335,7 @@ public class HrmAttendanceApprovalServiceImplTest {
                     }
                     if ("fetchMonthData".equals(method.getName())) {
                         syncInvoke.incrementAndGet();
-                        Assert.assertEquals(Arrays.asList("overtime"), args[2]);
+                        Assert.assertEquals(Arrays.asList("overtime"), args[4]);
                         return 12L;
                     }
                     return defaultValue(method.getReturnType());
@@ -429,8 +429,8 @@ public class HrmAttendanceApprovalServiceImplTest {
                     if ("fetchMonthData".equals(method.getName())) {
                         syncInvoke.incrementAndGet();
                         Assert.assertEquals("2026-05", String.valueOf(args[0]));
-                        Assert.assertEquals(Arrays.asList(301L, 302L), args[1]);
-                        Assert.assertEquals(Arrays.asList("leave", "travel"), args[2]);
+                        Assert.assertEquals(Arrays.asList(301L, 302L), args[3]);
+                        Assert.assertEquals(Arrays.asList("leave", "travel"), args[4]);
                         return 6L;
                     }
                     return defaultValue(method.getReturnType());
@@ -641,7 +641,7 @@ public class HrmAttendanceApprovalServiceImplTest {
                 (proxy, method, args) -> {
                     if ("fetchMonthData".equals(method.getName())) {
                         syncInvoke.incrementAndGet();
-                        Assert.assertEquals(Arrays.asList("misscard"), args[2]);
+                        Assert.assertEquals(Arrays.asList("misscard"), args[4]);
                         return 4L;
                     }
                     if ("resolveFetchTargetEmployeeIds".equals(method.getName())) {
@@ -1347,6 +1347,179 @@ public class HrmAttendanceApprovalServiceImplTest {
                 "审批重抓前删旧数据的方法必须声明事务边界，否则JPA delete会在无事务线程下报错",
                 deleteMethod.isAnnotationPresent(Transactional.class)
         );
+    }
+
+    @Test
+    public void queryPageList_shouldExcludeEmployeeScheduledRestDaysWhenProratingCrossMonthLeave() throws Exception {
+        // 客户需求：固定月休4天等按排班走的员工（非行政单双休），折算跨月时长时剔除排班休息日，
+        // 按天请假以"整天累加"折算。场景：调休单 7/24~8/4 共 64 小时；排班 7/27、8/3（共享行 ding-101,ding-102）为休息。
+        // 8 月部分(8/1~8/4) = 4 天 - 排班休息 8/3 = 3 个工作日 ⇒ 8 月显示 3×8=24 小时（3 天）。
+        Class<?> serviceClass = loadClass("com.tianye.hrsystem.imple.HrmAttendanceApprovalServiceImpl");
+        Assert.assertNotNull("审批数据服务实现未创建", serviceClass);
+
+        Class<?> mapperClass = loadClass("com.tianye.hrsystem.mapper.HrmAttendanceApprovalMapper");
+        Class<?> queryBOClass = loadClass("com.tianye.hrsystem.entity.bo.QueryAttendanceApprovalPageBO");
+        Class<?> voClass = loadClass("com.tianye.hrsystem.entity.vo.QueryAttendanceApprovalPageVO");
+        Class<?> employeeRepoClass = loadClass("com.tianye.hrsystem.repository.hrmEmployeeRepository");
+        Class<?> employeeClass = loadClass("com.tianye.hrsystem.model.HrmEmployee");
+        Class<?> planRepoClass = loadClass("com.tianye.hrsystem.repository.tbPlanListRepository");
+        Class<?> planClass = loadClass("com.tianye.hrsystem.model.tbplanlist");
+        Assert.assertNotNull("审批数据Mapper未创建", mapperClass);
+        Assert.assertNotNull("审批数据分页查询BO未创建", queryBOClass);
+        Assert.assertNotNull("审批数据分页VO未创建", voClass);
+        Assert.assertNotNull("员工仓库未创建", employeeRepoClass);
+        Assert.assertNotNull("员工模型未创建", employeeClass);
+        Assert.assertNotNull("排班仓库未创建", planRepoClass);
+        Assert.assertNotNull("排班模型未创建", planClass);
+
+        java.text.SimpleDateFormat format = new java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss");
+        java.util.Date beginTime = format.parse("2026-07-24 09:00:00");
+        java.util.Date endTime = format.parse("2026-08-04 18:00:00");
+
+        Object approvalVO = voClass.getDeclaredConstructor().newInstance();
+        invokeSetter(approvalVO, "setEmployeeId", Long.class, 101L);
+        invokeSetter(approvalVO, "setBeginTime", java.util.Date.class, beginTime);
+        invokeSetter(approvalVO, "setEndTime", java.util.Date.class, endTime);
+        invokeSetter(approvalVO, "setDuration", String.class, "64");
+        invokeSetter(approvalVO, "setDurationDay", String.class, "8");
+        BasePage<Object> page = new BasePage<>(1L, 15L, 1L, Arrays.asList(approvalVO));
+
+        Object service = serviceClass.getDeclaredConstructor().newInstance();
+
+        Object mapperProxy = Proxy.newProxyInstance(mapperClass.getClassLoader(), new Class<?>[]{mapperClass},
+                (proxy, method, args) -> "queryPageList".equals(method.getName()) ? page : null);
+        setField(service, "attendanceApprovalMapper", mapperProxy);
+
+        Object employee = employeeClass.getDeclaredConstructor().newInstance();
+        invokeSetter(employee, "setDingtalkUserId", String.class, "ding-101");
+        Object employeeRepoProxy = Proxy.newProxyInstance(employeeRepoClass.getClassLoader(), new Class<?>[]{employeeRepoClass},
+                (proxy, method, args) -> "findById".equals(method.getName())
+                        ? java.util.Optional.of(employee) : defaultValue(method.getReturnType()));
+        setField(service, "hrmEmployeeRepository", employeeRepoProxy);
+
+        Object restRowJuly = planClass.getDeclaredConstructor().newInstance();
+        invokeSetter(restRowJuly, "setWorkDate", java.util.Date.class, format.parse("2026-07-27 00:00:00"));
+        invokeSetter(restRowJuly, "setShiftType", String.class, "rest");
+        invokeSetter(restRowJuly, "setUserId", String.class, "ding-101");
+        Object restRowAugust = planClass.getDeclaredConstructor().newInstance();
+        invokeSetter(restRowAugust, "setWorkDate", java.util.Date.class, format.parse("2026-08-03 00:00:00"));
+        invokeSetter(restRowAugust, "setShiftType", String.class, "rest");
+        invokeSetter(restRowAugust, "setUserId", String.class, "ding-101,ding-102");
+        Object planRepoProxy = Proxy.newProxyInstance(planRepoClass.getClassLoader(), new Class<?>[]{planRepoClass},
+                (proxy, method, args) -> "findAllByWorkDateBetweenOrderByIdDesc".equals(method.getName())
+                        ? Arrays.asList(restRowJuly, restRowAugust) : defaultValue(method.getReturnType()));
+        setField(service, "tbPlanListRepository", planRepoProxy);
+
+        Object workweekService = new com.tianye.hrsystem.modules.workweek.service.HrmWorkweekSettingService() {
+            @Override
+            public int countWorkDays(java.time.LocalDate start, java.time.LocalDate end,
+                                     java.util.Map<java.time.LocalDate, Boolean> scheduledDayStatus) {
+                long days = java.time.temporal.ChronoUnit.DAYS.between(start, end) + 1;
+                long restInRange = scheduledDayStatus == null ? 0 : scheduledDayStatus.entrySet().stream()
+                        .filter(e -> Boolean.FALSE.equals(e.getValue()))
+                        .filter(e -> !e.getKey().isBefore(start) && !e.getKey().isAfter(end)).count();
+                return (int) (days - restInRange);
+            }
+        };
+        setField(service, "workweekSettingService", workweekService);
+
+        Object queryBO = queryBOClass.getDeclaredConstructor().newInstance();
+        invokeSetter(queryBO, "setPage", Long.class, 1L);
+        invokeSetter(queryBO, "setLimit", Long.class, 15L);
+        invokeSetter(queryBO, "setTimes", List.class,
+                Arrays.asList(java.time.LocalDate.of(2026, 8, 1), java.time.LocalDate.of(2026, 8, 31)));
+
+        Method queryMethod = serviceClass.getMethod("queryPageList", queryBOClass);
+        queryMethod.invoke(service, queryBO);
+
+        Assert.assertEquals("8月展示开始时间应截断为月初", "2026-08-01 00:00:00",
+                format.format((java.util.Date) voClass.getMethod("getBeginTime").invoke(approvalVO)));
+        Assert.assertEquals("8月展示结束时间应保留单的真实结束日（8/4）", "2026-08-04 18:00:00",
+                format.format((java.util.Date) voClass.getMethod("getEndTime").invoke(approvalVO)));
+        Assert.assertEquals("按天请假必须整天累加：8月4天-排班休息8/3=3个工作日 ⇒ 24小时",
+                "24", voClass.getMethod("getDuration").invoke(approvalVO));
+        Assert.assertEquals("按天请假折算天数必须为整数天", "3", voClass.getMethod("getDurationDay").invoke(approvalVO));
+    }
+
+    @Test
+    public void queryPageList_shouldUseWorkweekCalendarOnlyForAdministrativeFixedHoursEmployee() throws Exception {
+        // 客户需求：行政体系(1)且行政单双休(1)的固定工时员工不查排班表，休息完全由单双休设置/节假日决定。
+        // 场景：调休单 7/24~8/4 共 64 小时；8月部分(8/1~8/4)=4个工作日 ⇒ 4×8=32 小时（4 天）。
+        Class<?> serviceClass = loadClass("com.tianye.hrsystem.imple.HrmAttendanceApprovalServiceImpl");
+        Class<?> mapperClass = loadClass("com.tianye.hrsystem.mapper.HrmAttendanceApprovalMapper");
+        Class<?> queryBOClass = loadClass("com.tianye.hrsystem.entity.bo.QueryAttendanceApprovalPageBO");
+        Class<?> voClass = loadClass("com.tianye.hrsystem.entity.vo.QueryAttendanceApprovalPageVO");
+        Class<?> employeeRepoClass = loadClass("com.tianye.hrsystem.repository.hrmEmployeeRepository");
+        Class<?> employeeClass = loadClass("com.tianye.hrsystem.model.HrmEmployee");
+        Class<?> planRepoClass = loadClass("com.tianye.hrsystem.repository.tbPlanListRepository");
+        Class<?> planClass = loadClass("com.tianye.hrsystem.model.tbplanlist");
+        Assert.assertNotNull(serviceClass);
+        Assert.assertNotNull(mapperClass);
+        Assert.assertNotNull(queryBOClass);
+        Assert.assertNotNull(voClass);
+        Assert.assertNotNull(employeeRepoClass);
+        Assert.assertNotNull(employeeClass);
+        Assert.assertNotNull(planRepoClass);
+        Assert.assertNotNull(planClass);
+
+        java.text.SimpleDateFormat format = new java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss");
+
+        Object approvalVO = voClass.getDeclaredConstructor().newInstance();
+        invokeSetter(approvalVO, "setEmployeeId", Long.class, 101L);
+        invokeSetter(approvalVO, "setBeginTime", java.util.Date.class, format.parse("2026-07-24 09:00:00"));
+        invokeSetter(approvalVO, "setEndTime", java.util.Date.class, format.parse("2026-08-04 18:00:00"));
+        invokeSetter(approvalVO, "setDuration", String.class, "64");
+        invokeSetter(approvalVO, "setDurationDay", String.class, "8");
+        BasePage<Object> page = new BasePage<>(1L, 15L, 1L, Arrays.asList(approvalVO));
+
+        Object service = serviceClass.getDeclaredConstructor().newInstance();
+
+        Object mapperProxy = Proxy.newProxyInstance(mapperClass.getClassLoader(), new Class<?>[]{mapperClass},
+                (proxy, method, args) -> "queryPageList".equals(method.getName()) ? page : null);
+        setField(service, "attendanceApprovalMapper", mapperProxy);
+
+        Object employee = employeeClass.getDeclaredConstructor().newInstance();
+        invokeSetter(employee, "setDingtalkUserId", String.class, "ding-101");
+        invokeSetter(employee, "setAffiliationSystem", Integer.class, 1);
+        invokeSetter(employee, "setRestType", Integer.class, 1);
+        Object employeeRepoProxy = Proxy.newProxyInstance(employeeRepoClass.getClassLoader(), new Class<?>[]{employeeRepoClass},
+                (proxy, method, args) -> "findById".equals(method.getName())
+                        ? java.util.Optional.of(employee) : defaultValue(method.getReturnType()));
+        setField(service, "hrmEmployeeRepository", employeeRepoProxy);
+
+        AtomicInteger planRepoCalls = new AtomicInteger();
+        Object planRepoProxy = Proxy.newProxyInstance(planRepoClass.getClassLoader(), new Class<?>[]{planRepoClass},
+                (proxy, method, args) -> {
+                    planRepoCalls.incrementAndGet();
+                    return defaultValue(method.getReturnType());
+                });
+        setField(service, "tbPlanListRepository", planRepoProxy);
+
+        Object workweekService = new com.tianye.hrsystem.modules.workweek.service.HrmWorkweekSettingService() {
+            @Override
+            public int countWorkDays(java.time.LocalDate start, java.time.LocalDate end,
+                                     java.util.Map<java.time.LocalDate, Boolean> scheduledDayStatus) {
+                Assert.assertTrue("行政单双休员工不得携带排班覆盖",
+                        scheduledDayStatus == null || scheduledDayStatus.isEmpty());
+                return (int) (java.time.temporal.ChronoUnit.DAYS.between(start, end) + 1);
+            }
+        };
+        setField(service, "workweekSettingService", workweekService);
+
+        Object queryBO = queryBOClass.getDeclaredConstructor().newInstance();
+        invokeSetter(queryBO, "setPage", Long.class, 1L);
+        invokeSetter(queryBO, "setLimit", Long.class, 15L);
+        invokeSetter(queryBO, "setTimes", List.class,
+                Arrays.asList(java.time.LocalDate.of(2026, 8, 1), java.time.LocalDate.of(2026, 8, 31)));
+
+        Method queryMethod = serviceClass.getMethod("queryPageList", queryBOClass);
+        queryMethod.invoke(service, queryBO);
+
+        Assert.assertEquals("行政单双休员工不应查询排班表", 0, planRepoCalls.get());
+        Assert.assertEquals("8月4个工作日按整天累加应为32小时", "32",
+                voClass.getMethod("getDuration").invoke(approvalVO));
+        Assert.assertEquals("8月折算天数应为整数4天", "4",
+                voClass.getMethod("getDurationDay").invoke(approvalVO));
     }
 
     private Class<?> loadClass(String className) {

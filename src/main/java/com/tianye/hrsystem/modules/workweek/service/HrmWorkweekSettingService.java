@@ -64,6 +64,90 @@ public class HrmWorkweekSettingService {
         return toYearVO(year, repository.findAllBySettingYearOrderByWeekNoAsc(year));
     }
 
+    /**
+     * 统计闭区间 [start, end] 内的工作日天数，判定优先级与月度日历一致：
+     * 已保存日级设置 > 调休上班 > 法定休息 > 周休。单双休年度未初始化时按周一至周五默认上班，
+     * 但调休上班/法定休息/已保存日级设置仍然生效。
+     */
+    public int countWorkDays(LocalDate start, LocalDate end) {
+        return countWorkDays(start, end, null);
+    }
+
+    /**
+     * 带员工排班覆盖的工作日统计：scheduledDayStatus 中显式 TRUE=排班上班（即使日历是休息也计为工作日）、
+     * FALSE=排班休息（优先级最高，直接剔除）；未覆盖的日期按单双休/节假日日历判定。
+     */
+    public int countWorkDays(LocalDate start, LocalDate end, Map<LocalDate, Boolean> scheduledDayStatus) {
+        if (start == null || end == null || end.isBefore(start)) {
+            return 0;
+        }
+        Map<LocalDate, HrmWorkweekSetting> settingByDate = new HashMap<>();
+        for (int year = start.getYear(); year <= end.getYear(); year++) {
+            List<HrmWorkweekSetting> rows = repository.findAllBySettingYearOrderByWeekNoAsc(year);
+            if (rows != null && !rows.isEmpty()) {
+                settingByDate.putAll(buildSettingByDate(year, rows));
+            }
+        }
+        Map<LocalDate, HolidayOverride> holidayOverrides = new HashMap<>();
+        for (int year = start.getYear(); year <= end.getYear(); year++) {
+            holidayOverrides.putAll(queryHolidayOverrides(year));
+        }
+        Map<LocalDate, HrmWorkweekDaySetting> savedSettingByDate = querySavedDaySettingsByDate(start, end);
+        int workDays = 0;
+        for (LocalDate cursor = start; !cursor.isAfter(end); cursor = cursor.plusDays(1)) {
+            Boolean scheduled = scheduledDayStatus != null ? scheduledDayStatus.get(cursor) : null;
+            if (scheduled != null) {
+                if (scheduled) {
+                    workDays++;
+                }
+                continue;
+            }
+            if (isWorkDay(cursor, settingByDate.get(cursor), holidayOverrides.get(cursor), savedSettingByDate.get(cursor))) {
+                workDays++;
+            }
+        }
+        return workDays;
+    }
+
+    private Map<LocalDate, HrmWorkweekDaySetting> querySavedDaySettingsByDate(LocalDate start, LocalDate end) {
+        Map<LocalDate, HrmWorkweekDaySetting> savedSettingByDate = new HashMap<>();
+        if (daySettingRepository == null) {
+            return savedSettingByDate;
+        }
+        LocalDate monthCursor = start.withDayOfMonth(1);
+        while (!monthCursor.isAfter(end)) {
+            for (HrmWorkweekDaySetting row : querySavedDaySettings(monthCursor.getYear(), monthCursor.getMonthValue())) {
+                LocalDate date = toLocalDate(row.getWorkDate());
+                if (date != null) {
+                    savedSettingByDate.put(date, row);
+                }
+            }
+            monthCursor = monthCursor.plusMonths(1);
+        }
+        return savedSettingByDate;
+    }
+
+    private boolean isWorkDay(LocalDate date,
+                              HrmWorkweekSetting weekSetting,
+                              HolidayOverride holidayOverride,
+                              HrmWorkweekDaySetting savedDaySetting) {
+        if (savedDaySetting != null && savedDaySetting.getDayType() != null) {
+            return savedDaySetting.getDayType() == WORK_DAY;
+        }
+        if (holidayOverride != null && holidayOverride.isAdjustedWorkDay()) {
+            return true;
+        }
+        if (holidayOverride != null && holidayOverride.isLegalRestDay()) {
+            return false;
+        }
+        if (weekSetting == null) {
+            // 年度单双休未初始化：按周一至周五默认上班
+            DayOfWeek dayOfWeek = date.getDayOfWeek();
+            return dayOfWeek != DayOfWeek.SATURDAY && dayOfWeek != DayOfWeek.SUNDAY;
+        }
+        return !isWeeklyRestDay(date, weekSetting);
+    }
+
     public WorkweekMonthCalendarVO queryMonthCalendar(QueryWorkweekMonthCalendarBO queryBO) {
         Integer year = requireYear(queryBO != null ? queryBO.getYear() : null);
         Integer month = requireMonth(queryBO != null ? queryBO.getMonth() : null);

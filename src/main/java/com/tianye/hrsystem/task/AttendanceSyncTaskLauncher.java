@@ -87,14 +87,27 @@ public class AttendanceSyncTaskLauncher {
         lockInfo.put("acquiredAt", System.currentTimeMillis());
         lockInfo.put("token", UUID.randomUUID().toString());
         String payload = JSON.toJSONString(lockInfo);
+        
+        // 检查锁是否存在
+        Object existingLock = redis.get(key);
+        if (existingLock != null) {
+            logger.info("尝试获取锁: 锁已存在, companyId={}, existingLock={}", companyId, existingLock);
+        }
+        
         boolean acquired = redis.setNx(key, (long) RUNNING_LOCK_TTL_SECONDS, payload);
         if (!acquired && isRecoverableStaleLock(companyId)) {
             // 已终态或由上一个进程遗留的锁可自愈；当前进程建立的 RUNNING 锁仍保持互斥。
+            logger.info("尝试获取锁: 检测到可恢复的残留锁, 正在回收, companyId={}", companyId);
             finish(companyId);
             acquired = redis.setNx(key, (long) RUNNING_LOCK_TTL_SECONDS, payload);
+            if (acquired) {
+                logger.info("尝试获取锁: 成功回收残留锁并重新获取, companyId={}", companyId);
+            }
         }
         if (!acquired) {
-            logger.warn("拒绝重复发起同步：该公司已有同步任务在运行");
+            logger.warn("拒绝重复发起同步：该公司已有同步任务在运行, companyId={}, owner={}", companyId, owner);
+        } else {
+            logger.info("成功获取同步锁: companyId={}, owner={}", companyId, owner);
         }
         return acquired;
     }
@@ -119,6 +132,7 @@ public class AttendanceSyncTaskLauncher {
         Map<String, Object> owner = getRunningOwner(companyId);
         long acquiredAt = parseLong(owner.get("acquiredAt"));
         if (acquiredAt <= 0) {
+            logger.warn("残留锁检查: 无法获取锁创建时间, companyId={}, owner={}", companyId, owner);
             return false;
         }
         String normalizedId = normalizeCompanyId(companyId);
@@ -126,17 +140,40 @@ public class AttendanceSyncTaskLauncher {
         String statusNew = String.valueOf((Object) redis.get("attendance:sync:" + normalizedId + ":status"));
         String statusOld = String.valueOf((Object) redis.get("attendance:sync:status:" + normalizedId));
         String status = (statusNew != null && !statusNew.isEmpty() && !"null".equals(statusNew)) ? statusNew : statusOld;
-        if (!("SUCCESS".equalsIgnoreCase(status) || "FAILED".equalsIgnoreCase(status))) {
-            // 单机 systemd 服务重启会中断后台线程；重启前的 RUNNING 锁绝不能继续阻塞 2 小时。
-            return acquiredAt < processStartedAt;
-        }
+        
         // 兼容新旧两种 key 格式
         String updateTimeNew = String.valueOf((Object) redis.get("attendance:sync:" + normalizedId + ":update_time"));
         String updateTimeOld = String.valueOf((Object) redis.get("attendance:sync:update_time:" + normalizedId));
         String updateTimeStr = (updateTimeNew != null && !updateTimeNew.isEmpty() && !"null".equals(updateTimeNew)) ? updateTimeNew : updateTimeOld;
         long updateTime = parseLong(updateTimeStr);
+        
+        // 详细日志：记录锁检查的完整信息
+        long timeDiff = updateTime - acquiredAt;
+        long lockAge = System.currentTimeMillis() - acquiredAt;
+        logger.info("残留锁检查: companyId={}, status={}, acquiredAt={}, updateTime={}, processStartedAt={}, timeDiff={}ms, lockAge={}ms", 
+                    companyId, status, acquiredAt, updateTime, processStartedAt, timeDiff, lockAge);
+        
+        if (!("SUCCESS".equalsIgnoreCase(status) || "FAILED".equalsIgnoreCase(status))) {
+            // 单机 systemd 服务重启会中断后台线程；重启前的 RUNNING 锁绝不能继续阻塞 2 小时。
+            boolean recoverable = acquiredAt < processStartedAt;
+            logger.info("非终态锁检查: acquiredAt < processStartedAt = {} (diff={}ms)", 
+                        recoverable, processStartedAt - acquiredAt);
+            return recoverable;
+        }
+        
         // 终态写入必须晚于本锁建立，才能确认不是上一轮任务遗留的进度。
-        return updateTime > acquiredAt;
+        // 使用 >= 而不是 >，避免同一毫秒内完成的任务无法自愈
+        boolean recoverable = updateTime >= acquiredAt;
+        
+        // 兜底条件：如果进度状态是SUCCESS/FAILED，且锁存在时间超过5分钟，允许回收
+        if (!recoverable && lockAge > 5 * 60 * 1000) {
+            logger.info("兜底自愈: 锁存在超过5分钟且进度已终态, companyId={}, lockAge={}ms", companyId, lockAge);
+            recoverable = true;
+        }
+        
+        logger.info("终态锁检查: updateTime >= acquiredAt = {} (diff={}ms), recoverable={}", 
+                    recoverable, timeDiff, recoverable);
+        return recoverable;
     }
 
     private long parseLong(Object value) {
@@ -151,13 +188,28 @@ public class AttendanceSyncTaskLauncher {
         return companyId == null ? "unknown" : companyId;
     }
 
-    /** 归还指定公司的同步运行锁 */
+    /** 归还指定公司的同步运行锁（带重试机制） */
     public void finish(String companyId) {
-        try {
-            redis.del(RUNNING_LOCK_PREFIX + (companyId == null ? "unknown" : companyId));
-        } catch (Exception e) {
-            logger.warn("释放同步运行锁失败（等待 TTL 自动过期）: {}", companyId, e);
+        String key = RUNNING_LOCK_PREFIX + (companyId == null ? "unknown" : companyId);
+        int maxRetries = 3;
+        for (int i = 0; i < maxRetries; i++) {
+            try {
+                redis.del(key);
+                logger.info("成功释放同步运行锁: companyId={}, key={}, attempt={}", companyId, key, i + 1);
+                return;
+            } catch (Exception e) {
+                logger.warn("释放同步运行锁失败(第{}次): companyId={}, key={}", i + 1, companyId, key, e);
+                if (i < maxRetries - 1) {
+                    try {
+                        Thread.sleep(100 * (i + 1)); // 递增延迟：100ms, 200ms
+                    } catch (InterruptedException ie) {
+                        Thread.currentThread().interrupt();
+                        break;
+                    }
+                }
+            }
         }
+        logger.error("释放同步运行锁最终失败（已重试{}次），锁将等待TTL过期: companyId={}, key={}", maxRetries, companyId, key);
     }
 
     /**
@@ -166,23 +218,29 @@ public class AttendanceSyncTaskLauncher {
      * @return false = 线程池与队列已满，调用方必须 finish(companyId) 并返回"系统繁忙"
      */
     public boolean submit(String companyId, LoginUserInfo requestContext, Runnable task) {
+        logger.info("提交后台同步任务: companyId={}, queueSize={}, activeCount={}", 
+                    companyId, executor.getQueue().size(), executor.getActiveCount());
         try {
             executor.submit(() -> {
+                logger.info("后台同步任务开始执行: companyId={}", companyId);
                 CompanyDataSourceProvider.markActive(companyId);
                 CompanyContext.set(requestContext);
                 try {
                     task.run();
+                    logger.info("后台同步任务执行完成: companyId={}", companyId);
                 } catch (Exception e) {
                     logger.error("公司{}后台同步任务执行异常", companyId, e);
                 } finally {
                     CompanyContext.clear();
                     CompanyDataSourceProvider.markInactive(companyId);
+                    logger.info("后台同步任务释放锁: companyId={}", companyId);
                     finish(companyId);
                 }
             });
             return true;
         } catch (RejectedExecutionException e) {
-            logger.warn("同步任务队列已满，公司{}提交被拒绝", companyId);
+            logger.warn("同步任务队列已满，公司{}提交被拒绝, queueSize={}, activeCount={}", 
+                        companyId, executor.getQueue().size(), executor.getActiveCount());
             return false;
         }
     }

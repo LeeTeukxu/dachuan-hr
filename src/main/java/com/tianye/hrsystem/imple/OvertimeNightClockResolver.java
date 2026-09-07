@@ -73,6 +73,27 @@ public final class OvertimeNightClockResolver {
                 && !actualOffTime.toLocalTime().isBefore(NIGHT_SHIFT_MIN_END_TIME);
     }
 
+    /**
+     * 夜班判定（2026-09-06 口径）：排班为夜班别或排班结束越过次日凌晨3点，
+     * 且实际下班时间（缺卡回退排班结束时间）达到次日凌晨3点及之后，计1个夜班。
+     */
+    public static boolean isNightShift(LocalDate workDate, boolean scheduledNight, LocalDateTime effectiveOffTime) {
+        if (workDate == null || !scheduledNight || effectiveOffTime == null) {
+            return false;
+        }
+        return !effectiveOffTime.isBefore(workDate.plusDays(1).atTime(NIGHT_SHIFT_MIN_END_TIME));
+    }
+
+    public static boolean isScheduledNight(LocalDate workDate, String shiftPeriod, LocalDateTime scheduledEndTime) {
+        if (shiftPeriod != null && "night".equalsIgnoreCase(shiftPeriod.trim())) {
+            return true;
+        }
+        if (workDate == null || scheduledEndTime == null) {
+            return false;
+        }
+        return !scheduledEndTime.isBefore(workDate.plusDays(1).atTime(NIGHT_SHIFT_MIN_END_TIME));
+    }
+
     private static LocalDateTime resolveShiftEndTime(LocalDate workDate, HrmAttendanceShift shift) {
         if (workDate == null || shift == null) {
             return null;

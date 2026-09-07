@@ -47,7 +47,6 @@ import java.util.Collection;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
-import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.stream.Collectors;
@@ -97,7 +96,10 @@ public class HrmInsuranceMonthRecordService extends BaseServiceImpl<HrmInsurance
     @Autowired
     private HrmInsuranceProjectService insuranceProjectService;
 
-    public JSONObject computeInsuranceData() throws Exception {
+    @Autowired
+    private IAdminMessageService adminMessageService;
+
+    public JSONObject computeInsuranceData(Integer reqYear, Integer reqMonth) throws Exception {
         LoginUserInfo lockOwner = CompanyContext.get();
         String lockCompanyId = lockOwner != null && lockOwner.getCompanyId() != null ? lockOwner.getCompanyId() : "unknown";
         ReentrantLock computeLock = INSURANCE_COMPUTE_LOCK_MAP.computeIfAbsent(lockCompanyId, key -> new ReentrantLock());
@@ -105,107 +107,163 @@ public class HrmInsuranceMonthRecordService extends BaseServiceImpl<HrmInsurance
             logger.warn("拒绝重复生成社保报表：本公司已有生成任务在运行");
             throw new Exception("社保报表正在生成中，请勿重复点击，可稍后刷新查看进度");
         }
-        clearExpiredComputeProgress();
-        updateComputeProgress(1, COMPUTE_STATUS_RUNNING, "PREPARE", "正在准备生成社保报表", 0, 0);
         int processedCount = 0;
         int totalCount = 0;
         try {
-        LoginUserInfo info = CompanyContext.get();
-        HrmSalaryConfig salaryConfig = salaryConfigService.getOne(Wrappers.emptyWrapper());
-        if (salaryConfig == null) {
-            throw new Exception("没有初始化配置");
-        }
-        updateComputeProgress(8, COMPUTE_STATUS_RUNNING, "PREPARE", "已读取社保薪资配置", 0, 0);
-        String socialSecurityMonth = salaryConfig.getSocialSecurityStartMonth();
-        DateTime dateTime = DateUtil.parse(socialSecurityMonth, "yyyy-MM");
-        int month = dateTime.month() + 1;
-        int year = dateTime.year();
-        //查询社保上月记录,如果有就往后推一个月,如果没有就去薪资配置计薪月
-        Optional<HrmInsuranceMonthRecord> lastMonthRecord = lambdaQuery().orderByDesc(HrmInsuranceMonthRecord::getCreateTime).last("limit 1").oneOpt();
-        if (lastMonthRecord.isPresent()) {
-            updateComputeProgress(12, COMPUTE_STATUS_RUNNING, "PREPARE", "正在结转上一月社保记录", 0, 0);
-            HrmInsuranceMonthRecord insuranceMonthRecord = lastMonthRecord.get();
-            DateTime date = DateUtil.offsetMonth(DateUtil.parse(insuranceMonthRecord.getYear() + "-" + insuranceMonthRecord.getMonth(), "yy-MM"), 1);
-            month = date.month() + 1;
-            year = date.year();
-            List<Long> empRecordIds = insuranceMonthRecordMapper.queryDeleteEmpRecordIds(insuranceMonthRecord.getIRecordId());
-            if (CollUtil.isNotEmpty(empRecordIds)) {
-                monthEmpProjectRecordService.lambdaUpdate().in(HrmInsuranceMonthEmpProjectRecord::getIEmpRecordId, empRecordIds).remove();
-                monthEmpRecordService.lambdaUpdate().in(HrmInsuranceMonthEmpRecord::getIEmpRecordId, empRecordIds).remove();
+            clearExpiredComputeProgress();
+            updateComputeProgress(1, COMPUTE_STATUS_RUNNING, "PREPARE", "正在准备生成社保报表", 0, 0);
+            
+            // 写入通知：社保计算开始
+            try {
+                AdminMessage startMsg = new AdminMessage();
+                startMsg.setTitle("社保报表生成中");
+                startMsg.setContent("点击查看");
+                startMsg.setLabel(8);
+                startMsg.setType(205); // HRM_INSURANCE_COMPUTE_RUNNING
+                startMsg.setLinkUrl("/hrm/insurance-scheme");
+                startMsg.setCreateUser(0L);
+                startMsg.setRecipientUser(0L);
+                startMsg.setCreateTime(LocalDateTime.now());
+                startMsg.setIsRead(0);
+                adminMessageService.save(startMsg);
+                logger.info("[社保报表生成] 已写入开始通知");
+            } catch (Exception e) {
+                logger.error("[社保报表生成] 写入开始通知失败", e);
             }
-            insuranceMonthRecord.setStatus(IsEnum.YES.getValue());
-            updateById(insuranceMonthRecord);
-        }
-        List<Map<String, Long>> employeeIds = insuranceMonthRecordMapper.queryInsuranceEmployee();
-        totalCount = employeeIds.size();
-        updateComputeProgress(18, COMPUTE_STATUS_RUNNING, "LOAD_EMPLOYEE",
-                "已加载参保员工，共" + totalCount + "人", 0, totalCount);
-        HrmInsuranceMonthRecord hrmInsuranceMonthRecord = new HrmInsuranceMonthRecord();
-        hrmInsuranceMonthRecord.setTitle(month + "月社保报表");
-        hrmInsuranceMonthRecord.setYear(year);
-        hrmInsuranceMonthRecord.setMonth(month);
-        hrmInsuranceMonthRecord.setNum(employeeIds.size());
-        hrmInsuranceMonthRecord.setCreateTime(LocalDateTime.now());
-        hrmInsuranceMonthRecord.setCreateUserId(info.getUserIdValueL());
-        //保存每月社保记录
-        save(hrmInsuranceMonthRecord);
-        updateComputeProgress(25, COMPUTE_STATUS_RUNNING, "PERSIST",
-                "已创建" + month + "月社保报表", 0, totalCount);
+            
+            LoginUserInfo info = CompanyContext.get();
+            HrmSalaryConfig salaryConfig = salaryConfigService.getOne(Wrappers.emptyWrapper());
+            if (salaryConfig == null) {
+                throw new Exception("尚未初始化计薪设置，请先到【系统设置-计薪设置】完成配置后再生成社保报表");
+            }
+            updateComputeProgress(8, COMPUTE_STATUS_RUNNING, "PREPARE", "已读取计薪设置", 0, 0);
+            // 社保开始月是社保报表的首期锚点；历史数据存在 2020.05 / 2026-09-01 等多种写法，解析需容错
+            int[] startYearMonth = parseYearMonth(salaryConfig.getSocialSecurityStartMonth(), "社保开始月");
+            // 上一期按 (年*12+月) 取最大，补录历史月份时不会因创建时间倒挂而取错
+            HrmInsuranceMonthRecord lastMonthRecord = queryLatestMonthRecord();
+            int year;
+            int month;
+            if (reqYear != null && reqMonth != null) {
+                // 前端在弹窗里手动指定了目标月份
+                year = reqYear;
+                month = reqMonth;
+            } else if (lastMonthRecord == null) {
+                year = startYearMonth[0];
+                month = startYearMonth[1];
+            } else {
+                int[] nextYearMonth = nextMonth(lastMonthRecord.getYear(), lastMonthRecord.getMonth());
+                // 社保开始月晚于"上一期+1"时以社保开始月为准，保证在计薪设置中调整后立即生效
+                if (toMonthKey(startYearMonth[0], startYearMonth[1]) > toMonthKey(nextYearMonth[0], nextYearMonth[1])) {
+                    year = startYearMonth[0];
+                    month = startYearMonth[1];
+                } else {
+                    year = nextYearMonth[0];
+                    month = nextYearMonth[1];
+                }
+            }
+            logger.info("[社保报表生成] 社保开始月={}-{}，上一期={}，本期生成={}-{}",
+                    startYearMonth[0], startYearMonth[1],
+                    lastMonthRecord == null ? "无" : (lastMonthRecord.getYear() + "-" + lastMonthRecord.getMonth()),
+                    year, month);
+            if (year < 2000 || year > 2999 || month < 1 || month > 12) {
+                throw new Exception("生成的社保报表月份不合法：" + year + "年" + month + "月");
+            }
+            boolean duplicated = lambdaQuery().eq(HrmInsuranceMonthRecord::getYear, year)
+                    .eq(HrmInsuranceMonthRecord::getMonth, month).exists();
+            if (duplicated) {
+                throw new Exception(year + "年" + month + "月社保报表已存在，无需重复生成");
+            }
+            // 仅在“生成上一期的下一个月”时才结转上一月（标记已结算、清理其员工明细）；
+            // 手动指定历史/其他月份时不触动已有报表，避免误删或误结算。
+            if (lastMonthRecord != null) {
+                int[] nextYearMonth = nextMonth(lastMonthRecord.getYear(), lastMonthRecord.getMonth());
+                boolean isImmediateNext = (nextYearMonth[0] == year && nextYearMonth[1] == month);
+                if (isImmediateNext) {
+                    updateComputeProgress(12, COMPUTE_STATUS_RUNNING, "PREPARE", "正在结转上一月社保记录", 0, 0);
+                    List<Long> empRecordIds = insuranceMonthRecordMapper.queryDeleteEmpRecordIds(lastMonthRecord.getIRecordId());
+                    if (CollUtil.isNotEmpty(empRecordIds)) {
+                        monthEmpProjectRecordService.lambdaUpdate().in(HrmInsuranceMonthEmpProjectRecord::getIEmpRecordId, empRecordIds).remove();
+                        monthEmpRecordService.lambdaUpdate().in(HrmInsuranceMonthEmpRecord::getIEmpRecordId, empRecordIds).remove();
+                    }
+                    lastMonthRecord.setStatus(IsEnum.YES.getValue());
+                    updateById(lastMonthRecord);
+                }
+            }
+            List<Map<String, Long>> employeeIds = insuranceMonthRecordMapper.queryInsuranceEmployee();
+            totalCount = employeeIds.size();
+            updateComputeProgress(18, COMPUTE_STATUS_RUNNING, "LOAD_EMPLOYEE",
+                    "已加载参保员工，共" + totalCount + "人", 0, totalCount);
+            HrmInsuranceMonthRecord hrmInsuranceMonthRecord = new HrmInsuranceMonthRecord();
+            hrmInsuranceMonthRecord.setTitle(month + "月社保报表");
+            hrmInsuranceMonthRecord.setYear(year);
+            hrmInsuranceMonthRecord.setMonth(month);
+            hrmInsuranceMonthRecord.setNum(employeeIds.size());
+            hrmInsuranceMonthRecord.setCreateTime(LocalDateTime.now());
+            hrmInsuranceMonthRecord.setCreateUserId(info.getUserIdValueL());
+            //保存每月社保记录
+            save(hrmInsuranceMonthRecord);
+            updateComputeProgress(25, COMPUTE_STATUS_RUNNING, "PERSIST",
+                    "已创建" + month + "月社保报表", 0, totalCount);
 
-//        OperationLog operationLog = new OperationLog();
-//        operationLog.setOperationObject(hrmInsuranceMonthRecord.getIRecordId(), hrmInsuranceMonthRecord.getTitle());
-//        operationLog.setOperationInfo("新建" + hrmInsuranceMonthRecord.getTitle());
+            int finalYear = year;
+            int finalMonth = month;
 
-//        insuranceActionRecordService.computeInsuranceDataLog(hrmInsuranceMonthRecord);
+            for (Map<String, Long> employeeMap : employeeIds) {
+                Long employeeId = employeeMap.get("employee_id");
+                Long schemeId = employeeMap.get("scheme_id");
+                Map<String, Object> stringObjectMap = insuranceSchemeMapper.queryInsuranceSchemeCountById(schemeId);
+                HrmInsuranceMonthEmpRecord insuranceMonthEmpRecord = new HrmInsuranceMonthEmpRecord();
+                BeanUtil.fillBeanWithMap(stringObjectMap, insuranceMonthEmpRecord, true);
+                insuranceMonthEmpRecord.setIRecordId(hrmInsuranceMonthRecord.getIRecordId());
+                insuranceMonthEmpRecord.setEmployeeId(employeeId);
+                insuranceMonthEmpRecord.setSchemeId(schemeId);
+                insuranceMonthEmpRecord.setYear(finalYear);
+                insuranceMonthEmpRecord.setMonth(finalMonth);
+                monthEmpRecordService.save(insuranceMonthEmpRecord);
 
-        int finalYear = year;
-        int finalMonth = month;
-
-        for (Map<String, Long> employeeMap : employeeIds) {
-            Long employeeId = employeeMap.get("employee_id");
-            Long schemeId = employeeMap.get("scheme_id");
-            Map<String, Object> stringObjectMap = insuranceSchemeMapper.queryInsuranceSchemeCountById(schemeId);
-            HrmInsuranceMonthEmpRecord insuranceMonthEmpRecord = new HrmInsuranceMonthEmpRecord();
-            BeanUtil.fillBeanWithMap(stringObjectMap, insuranceMonthEmpRecord, true);
-            insuranceMonthEmpRecord.setIRecordId(hrmInsuranceMonthRecord.getIRecordId());
-            insuranceMonthEmpRecord.setEmployeeId(employeeId);
-            insuranceMonthEmpRecord.setSchemeId(schemeId);
-            insuranceMonthEmpRecord.setYear(finalYear);
-            insuranceMonthEmpRecord.setMonth(finalMonth);
-            monthEmpRecordService.save(insuranceMonthEmpRecord);
-
-            //发送通知
-            AdminMessage adminMessage = new AdminMessage();
-            adminMessage.setCreateUser(Long.valueOf(info.getUserId()));
-            adminMessage.setCreateTime(LocalDateTime.now());
-            adminMessage.setRecipientUser(Long.valueOf(info.getUserId()));
-            adminMessage.setLabel(8);
-            adminMessage.setType(AdminMessageEnum.HRM_EMPLOYEE_INSURANCE.getType());
-            adminMessage.setTitle(finalYear + "-" + finalMonth + "{admin.hrm.9e06b58abc0ca454d6f1463aa168010c}");
-//            ApplicationContextHolder.getBean(IAdminMessageService.class).save(adminMessage);
-            List<HrmInsuranceProject> insuranceProjectList = insuranceProjectService.lambdaQuery().eq(HrmInsuranceProject::getSchemeId, schemeId).list();
-            List<HrmInsuranceMonthEmpProjectRecord> monthEmpProjectRecordList = TransferUtil.transferList(insuranceProjectList, HrmInsuranceMonthEmpProjectRecord.class);
-            monthEmpProjectRecordList.forEach(monthEmpProjectRecord -> {
-                monthEmpProjectRecord.setIEmpRecordId(insuranceMonthEmpRecord.getIEmpRecordId());
-            });
-            monthEmpProjectRecordService.saveBatch(monthEmpProjectRecordList);
-            processedCount++;
-            int progress = totalCount <= 0 ? 95 : 25 + (int) Math.floor((processedCount * 70.0d) / totalCount);
-            updateComputeProgress(Math.min(progress, 95), COMPUTE_STATUS_RUNNING, "GENERATE_EMP",
-                    "正在生成员工社保 " + processedCount + "/" + totalCount, processedCount, totalCount);
-        }
-        if (totalCount == 0) {
-            updateComputeProgress(95, COMPUTE_STATUS_RUNNING, "GENERATE_EMP",
-                    "暂无可生成参保员工", 0, 0);
-        }
-        updateComputeProgress(98, COMPUTE_STATUS_RUNNING, "PERSIST",
-                "正在完成社保报表生成", processedCount, totalCount);
-        JSONObject data = new JSONObject();
-        data.put("year", year);
-//        data.put("operationLog", operationLog);
-        updateComputeProgress(100, COMPUTE_STATUS_SUCCESS, "FINISH",
-                "社保报表生成完成", processedCount, totalCount);
-        return data;
+                List<HrmInsuranceProject> insuranceProjectList = insuranceProjectService.lambdaQuery().eq(HrmInsuranceProject::getSchemeId, schemeId).list();
+                List<HrmInsuranceMonthEmpProjectRecord> monthEmpProjectRecordList = TransferUtil.transferList(insuranceProjectList, HrmInsuranceMonthEmpProjectRecord.class);
+                monthEmpProjectRecordList.forEach(monthEmpProjectRecord -> {
+                    monthEmpProjectRecord.setIEmpRecordId(insuranceMonthEmpRecord.getIEmpRecordId());
+                });
+                monthEmpProjectRecordService.saveBatch(monthEmpProjectRecordList);
+                processedCount++;
+                int progress = totalCount <= 0 ? 95 : 25 + (int) Math.floor((processedCount * 70.0d) / totalCount);
+                updateComputeProgress(Math.min(progress, 95), COMPUTE_STATUS_RUNNING, "GENERATE_EMP",
+                        "正在生成员工社保 " + processedCount + "/" + totalCount, processedCount, totalCount);
+            }
+            if (totalCount == 0) {
+                updateComputeProgress(95, COMPUTE_STATUS_RUNNING, "GENERATE_EMP",
+                        "暂无可生成参保员工", 0, 0);
+            }
+            updateComputeProgress(98, COMPUTE_STATUS_RUNNING, "PERSIST",
+                    "正在完成社保报表生成", processedCount, totalCount);
+            JSONObject data = new JSONObject();
+            data.put("year", year);
+            data.put("month", month);
+            data.put("title", year + "年" + month + "月社保报表");
+            updateComputeProgress(100, COMPUTE_STATUS_SUCCESS, "FINISH",
+                    "社保报表生成完成", processedCount, totalCount);
+            
+            // 写入通知：社保报表生成完成
+            try {
+                AdminMessage completeMsg = new AdminMessage();
+                completeMsg.setTitle("社保报表生成完成");
+                completeMsg.setContent("点击查看");
+                completeMsg.setLabel(8); // 人资
+                completeMsg.setType(206); // HRM_INSURANCE_COMPUTE_COMPLETE
+                completeMsg.setLinkUrl("/hrm/insurance-scheme");
+                completeMsg.setCreateUser(0L); // 系统
+                completeMsg.setRecipientUser(0L); // 系统级通知
+                completeMsg.setCreateTime(LocalDateTime.now());
+                completeMsg.setIsRead(0);
+                adminMessageService.save(completeMsg);
+                logger.info("[社保报表生成] 已写入完成通知");
+            } catch (Exception e) {
+                logger.error("[社保报表生成] 写入完成通知失败", e);
+            }
+            
+            return data;
         } catch (Exception ex) {
             updateComputeProgress(null, COMPUTE_STATUS_FAILED, "ERROR",
                     resolveComputeErrorMessage(ex), processedCount, totalCount);
@@ -213,6 +271,105 @@ public class HrmInsuranceMonthRecordService extends BaseServiceImpl<HrmInsurance
         } finally {
             computeLock.unlock();
         }
+    }
+
+    /**
+     * 返回建议生成的社保报表年月：有历史则上一期+1，首期用社保开始月；
+     * 社保开始月晚于"上一期+1"时以社保开始月为准。供前端弹窗预填默认月份。
+     */
+    public JSONObject getSuggestMonth() throws Exception {
+        HrmSalaryConfig salaryConfig = salaryConfigService.getOne(Wrappers.emptyWrapper());
+        if (salaryConfig == null) {
+            throw new Exception("尚未初始化计薪设置，请先到【系统设置-计薪设置】完成配置");
+        }
+        int[] startYearMonth = parseYearMonth(salaryConfig.getSocialSecurityStartMonth(), "社保开始月");
+        HrmInsuranceMonthRecord lastMonthRecord = queryLatestMonthRecord();
+        int year;
+        int month;
+        if (lastMonthRecord == null) {
+            year = startYearMonth[0];
+            month = startYearMonth[1];
+        } else {
+            int[] nextYearMonth = nextMonth(lastMonthRecord.getYear(), lastMonthRecord.getMonth());
+            if (toMonthKey(startYearMonth[0], startYearMonth[1]) > toMonthKey(nextYearMonth[0], nextYearMonth[1])) {
+                year = startYearMonth[0];
+                month = startYearMonth[1];
+            } else {
+                year = nextYearMonth[0];
+                month = nextYearMonth[1];
+            }
+        }
+        JSONObject data = new JSONObject();
+        data.put("year", year);
+        data.put("month", month);
+        data.put("socialSecurityStartMonth", salaryConfig.getSocialSecurityStartMonth());
+        data.put("hasRecord", lastMonthRecord != null);
+        if (lastMonthRecord != null) {
+            data.put("lastYear", lastMonthRecord.getYear());
+            data.put("lastMonth", lastMonthRecord.getMonth());
+        }
+        return data;
+    }
+
+    /**
+     * 按 (年*12+月) 取最新一期社保报表。
+     * 不用 create_time 排序：补录/回补历史月份时创建时间会倒挂，导致"上一期"取错、生成出重复或跳跃的月份。
+     */
+    private HrmInsuranceMonthRecord queryLatestMonthRecord() {
+        List<HrmInsuranceMonthRecord> records = lambdaQuery().list();
+        if (CollUtil.isEmpty(records)) {
+            return null;
+        }
+        HrmInsuranceMonthRecord latest = null;
+        int latestKey = Integer.MIN_VALUE;
+        for (HrmInsuranceMonthRecord record : records) {
+            if (record.getYear() == null || record.getMonth() == null) {
+                continue;
+            }
+            int key = toMonthKey(record.getYear(), record.getMonth());
+            if (key > latestKey) {
+                latestKey = key;
+                latest = record;
+            }
+        }
+        return latest;
+    }
+
+    private static int toMonthKey(int year, int month) {
+        return year * 12 + month;
+    }
+
+    private static int[] nextMonth(int year, int month) {
+        int nextMonth = month + 1;
+        int nextYear = year;
+        if (nextMonth > 12) {
+            nextMonth = 1;
+            nextYear = year + 1;
+        }
+        return new int[]{nextYear, nextMonth};
+    }
+
+    /**
+     * 解析"年月"配置值。历史数据存在 2020.05 / 2026-09-01 / 2026/09 等写法，逐格式尝试；
+     * 全部失败或值为空时给出中文提示（旧实现直接抛 hutool 的 "Date String must be not blank !" 英文异常）。
+     *
+     * @return {年, 月(1-12)}
+     */
+    private int[] parseYearMonth(String value, String fieldName) throws Exception {
+        if (value == null || value.trim().isEmpty()) {
+            throw new Exception("未配置" + fieldName + "，请先到【系统设置-计薪设置】设置后再生成社保报表");
+        }
+        String text = value.trim();
+        String[] patterns = new String[]{"yyyy-MM-dd", "yyyy-MM", "yyyy.MM", "yyyy/MM", "yyyy年MM月"};
+        for (String pattern : patterns) {
+            try {
+                DateTime dateTime = DateUtil.parse(text, pattern);
+                return new int[]{dateTime.year(), dateTime.month() + 1};
+            } catch (Exception ignored) {
+                // 继续尝试下一种格式
+            }
+        }
+        throw new Exception(fieldName + "格式不正确（当前值：" + text + "），请到【系统设置-计薪设置】重新选择月份");
     }
 
     public InsuranceComputeProgressVO queryComputeInsuranceProgress() {

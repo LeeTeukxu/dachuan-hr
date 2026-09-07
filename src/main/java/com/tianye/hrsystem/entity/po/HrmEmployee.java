@@ -42,6 +42,9 @@ public class HrmEmployee implements Serializable {
     @ApiModelProperty(value = "手机")
     private String mobile;
 
+    @ApiModelProperty(value = "微信小程序openid")
+    private String openid;
+
     @ApiModelProperty(value = "国家地区")
     private String country;
 
@@ -164,6 +167,26 @@ public class HrmEmployee implements Serializable {
     @ApiModelProperty(value = "是否个税优惠标识 2 且上年度+本年度累计收入<6万时不计算个税")
     @TableField("is_remark")
     private Integer isRemark;
+
+    @ApiModelProperty("是否残疾 1、是 2、否")
+    @TableField("is_disabled")
+    private Integer isDisabled;
+
+    @ApiModelProperty("是否退役军人 1、是 2、否")
+    @TableField("is_retired_soldier")
+    private Integer isRetiredSoldier;
+
+    @ApiModelProperty("是否党员 1、是 2、否")
+    @TableField("is_party_member")
+    private Integer isPartyMember;
+
+    @ApiModelProperty("人员分类 1财务 2管理 3技术 4生产 5行政")
+    @TableField("personnel_category")
+    private Integer personnelCategory;
+
+    @ApiModelProperty("钉钉userId")
+    @TableField("dingtalk_user_id")
+    private String dingtalkUserId;
 
     @ApiModelProperty(value = "0 未删除 1 删除")
     private Integer isDel;

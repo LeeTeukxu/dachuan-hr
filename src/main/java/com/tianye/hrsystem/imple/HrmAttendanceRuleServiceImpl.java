@@ -60,6 +60,15 @@ public class HrmAttendanceRuleServiceImpl extends BaseServiceImpl<HrmAttendanceR
     public void setAttendanceRule(SetAttendanceRuleBO attendanceRule) {
         HrmAttendanceRule hrmAttendanceRule = BeanUtil.copyProperties(attendanceRule, HrmAttendanceRule.class);
         LoginUserInfo info = CompanyContext.get();
+        // 默认规则全局唯一：本条设为默认时，清掉其他规则的默认标记
+        if (hrmAttendanceRule.getIsDefaultSetting() != null
+                && hrmAttendanceRule.getIsDefaultSetting() == IsEnum.YES.getValue()) {
+            lambdaUpdate()
+                    .ne(hrmAttendanceRule.getAttendanceRuleId() != null,
+                            HrmAttendanceRule::getAttendanceRuleId, hrmAttendanceRule.getAttendanceRuleId())
+                    .set(HrmAttendanceRule::getIsDefaultSetting, IsEnum.NO.getValue())
+                    .update();
+        }
         if (attendanceRule.getAttendanceRuleId() == null) {
             hrmAttendanceRule.setCreateUserId(info.getUserIdValueL());
             hrmAttendanceRule.setCreateTime(LocalDateTime.now());

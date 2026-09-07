@@ -40,4 +40,18 @@ public interface hrmWorkplanApplicationRepository extends JpaRepository<HrmWorkp
     @Query("SELECT a FROM HrmWorkplanApplication a WHERE a.approverEmployeeId = :approverEmployeeId " +
             "AND a.status <> 'pending' ORDER BY a.approveTime DESC")
     List<HrmWorkplanApplication> findApprovedByApprover(@Param("approverEmployeeId") Long approverEmployeeId);
+
+    /** 可见范围=指定员工集合时：待审批列表（申请人 ∈ ids） */
+    @Query("SELECT a FROM HrmWorkplanApplication a WHERE a.status = :status " +
+            "AND a.employeeId IN :employeeIds ORDER BY a.createTime DESC")
+    List<HrmWorkplanApplication> findToApproveByStatusAndEmployeeIdIn(@Param("status") String status,
+                                                                      @Param("employeeIds") List<Long> employeeIds);
+
+    /** 可见范围=指定员工集合时：已处理列表（申请人 ∈ ids 且状态为通过/驳回） */
+    @Query("SELECT a FROM HrmWorkplanApplication a WHERE a.status <> 'pending' " +
+            "AND a.employeeId IN :employeeIds ORDER BY a.approveTime DESC")
+    List<HrmWorkplanApplication> findProcessedByEmployeeIdIn(@Param("employeeIds") List<Long> employeeIds);
+
+    /** 可见范围=全部员工：全部已处理申请 */
+    List<HrmWorkplanApplication> findByStatusNotOrderByApproveTimeDesc(String status);
 }

@@ -18,4 +18,15 @@ public class DailyOvertimeNightDetailVO {
 
     @ApiModelProperty("夜班次数")
     private Integer nightShiftCount;
+
+    /** 加班/夜班计算过程说明（悬浮展示） */
+    private String calcProcess;
+
+    public String getCalcProcess() {
+        return calcProcess;
+    }
+
+    public void setCalcProcess(String calcProcess) {
+        this.calcProcess = calcProcess;
+    }
 }

@@ -120,7 +120,8 @@ public class tbDictDataServiceImpl implements IDictDataService {
                     tbdictdata.setCanUse(1);
                 }
                 if (Info != null && tbdictdata.getCreateMan() == null) {
-                    tbdictdata.setCreateMan(Info.getUserIdValue());
+                    Long userIdVal = Info.getUserIdValue();
+                    tbdictdata.setCreateMan(userIdVal == null ? null : userIdVal.intValue());
                 }
                 if (tbdictdata.getCreateTime() == null) {
                     tbdictdata.setCreateTime(DateTime.now());

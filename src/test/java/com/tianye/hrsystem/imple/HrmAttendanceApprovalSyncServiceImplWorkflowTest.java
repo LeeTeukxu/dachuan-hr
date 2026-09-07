@@ -329,6 +329,476 @@ public class HrmAttendanceApprovalSyncServiceImplWorkflowTest {
     }
 
     @Test
+    public void fetchMonthData_shouldDeleteRevokedStaleApprovalWhenReFetched() throws Exception {
+        // 回归：某审批此前以"通过(COMPLETED+agree)"入库，钉钉侧随后被撤销(status=TERMINATED)。
+        // 重新抓取复核到该实例非同意完成时，必须删除其本地旧快照，保证"只同步通过未撤销的审批"。
+        InstanceStateWorkflowSyncService service = new InstanceStateWorkflowSyncService();
+        AtomicInteger saveCount = new AtomicInteger();
+        java.util.List<String> savedApprovalIds = new java.util.ArrayList<>();
+        AtomicReference<String> deletedApprovalId = new AtomicReference<>();
+
+        tbattendanceuser user = new tbattendanceuser();
+        user.setEmpId(101L);
+        user.setUserId("ding-101");
+        user.setUserName("张三");
+
+        setField(service, "tokenCreator", new StubAccessToken());
+        setField(service, "processInstanceParser", new HrmAttendanceApprovalProcessInstanceParser());
+        setField(service, "attendanceUserRepository", attendanceUserRepository(Collections.singletonList(user), new AtomicReference<>()));
+
+        // 模拟库里已存在该审批的旧"通过"快照
+        tbattendanceapprove staleApproved = new tbattendanceapprove();
+        staleApproved.setId("PROC-REVOKED");
+        staleApproved.setUserId("ding-101");
+        staleApproved.setTagName("加班");
+
+        setField(service, "approvalRepository", Proxy.newProxyInstance(
+                tbattendanceapproveRepository.class.getClassLoader(),
+                new Class<?>[]{tbattendanceapproveRepository.class},
+                (proxy, method, args) -> {
+                    if ("findById".equals(method.getName())) {
+                        if ("PROC-REVOKED".equals(args[0])) {
+                            return Optional.of(staleApproved);
+                        }
+                        return Optional.empty();
+                    }
+                    if ("save".equals(method.getName())) {
+                        tbattendanceapprove approval = (tbattendanceapprove) args[0];
+                        savedApprovalIds.add(approval.getId());
+                        saveCount.incrementAndGet();
+                        return approval;
+                    }
+                    if ("deleteById".equals(method.getName())) {
+                        deletedApprovalId.set((String) args[0]);
+                        return defaultValue(method.getReturnType());
+                    }
+                    return defaultValue(method.getReturnType());
+                }));
+        setField(service, "fetchMarkRepository", fetchMarkRepository());
+
+        service.processIds = Arrays.asList("PROC-VALID", "PROC-REVOKED");
+        service.processDetails.put("PROC-VALID", processWithState("加班审批", "ding-101", "COMPLETED", "agree",
+                component("加班日期", "2026-06-15 18:00"),
+                component("结束日期", "2026-06-15 19:00"),
+                component("预计加班时长", "1")));
+        service.processDetails.put("PROC-REVOKED", processWithState("加班审批", "ding-101", "TERMINATED", "",
+                component("加班日期", "2026-06-16 18:00"),
+                component("结束日期", "2026-06-16 19:00"),
+                component("预计加班时长", "1")));
+
+        long insertedCount = service.fetchMonthData(YearMonth.of(2026, 6), Collections.singletonList(101L), Collections.singletonList("overtime"));
+
+        Assert.assertEquals("只有同意完成的审批实例应写入本地快照", 1L, insertedCount);
+        Assert.assertEquals("有效审批应保存一次", 1, saveCount.get());
+        Assert.assertEquals(Collections.singletonList("PROC-VALID"), savedApprovalIds);
+        Assert.assertEquals("已撤销的审批旧快照应被删除", "PROC-REVOKED", deletedApprovalId.get());
+    }
+
+    @Test
+    public void fetchMonthData_windowMode_shouldDeleteRevokedStaleApproval() throws Exception {
+        // 手工"获取审批数据"走窗口模式（发起时间窗口，不做整段 stale 清理）。
+        // 已入库的审批被撤销后，重抓复核为非同意完成时仍须按 id 删除其旧快照，不能残留在列表。
+        InstanceStateWorkflowSyncService service = new InstanceStateWorkflowSyncService();
+        AtomicInteger saveCount = new AtomicInteger();
+        java.util.List<String> savedApprovalIds = new java.util.ArrayList<>();
+        AtomicReference<String> deletedApprovalId = new AtomicReference<>();
+
+        tbattendanceuser user = new tbattendanceuser();
+        user.setEmpId(101L);
+        user.setUserId("ding-101");
+        user.setUserName("张三");
+
+        setField(service, "tokenCreator", new StubAccessToken());
+        setField(service, "processInstanceParser", new HrmAttendanceApprovalProcessInstanceParser());
+        setField(service, "attendanceUserRepository", attendanceUserRepository(Collections.singletonList(user), new AtomicReference<>()));
+
+        tbattendanceapprove staleApproved = new tbattendanceapprove();
+        staleApproved.setId("PROC-REVOKED");
+        staleApproved.setUserId("ding-101");
+        staleApproved.setTagName("加班");
+
+        setField(service, "approvalRepository", Proxy.newProxyInstance(
+                tbattendanceapproveRepository.class.getClassLoader(),
+                new Class<?>[]{tbattendanceapproveRepository.class},
+                (proxy, method, args) -> {
+                    if ("findById".equals(method.getName())) {
+                        if ("PROC-REVOKED".equals(args[0])) {
+                            return Optional.of(staleApproved);
+                        }
+                        return Optional.empty();
+                    }
+                    if ("save".equals(method.getName())) {
+                        tbattendanceapprove approval = (tbattendanceapprove) args[0];
+                        savedApprovalIds.add(approval.getId());
+                        saveCount.incrementAndGet();
+                        return approval;
+                    }
+                    if ("deleteById".equals(method.getName())) {
+                        deletedApprovalId.set((String) args[0]);
+                        return defaultValue(method.getReturnType());
+                    }
+                    return defaultValue(method.getReturnType());
+                }));
+        setField(service, "fetchMarkRepository", fetchMarkRepository());
+
+        service.processIds = Arrays.asList("PROC-VALID", "PROC-REVOKED");
+        service.processDetails.put("PROC-VALID", processWithState("加班审批", "ding-101", "COMPLETED", "agree",
+                component("加班日期", "2026-06-15 18:00"),
+                component("结束日期", "2026-06-15 19:00"),
+                component("预计加班时长", "1")));
+        service.processDetails.put("PROC-REVOKED", processWithState("加班审批", "ding-101", "TERMINATED", "",
+                component("加班日期", "2026-06-16 18:00"),
+                component("结束日期", "2026-06-16 19:00"),
+                component("预计加班时长", "1")));
+
+        java.time.ZoneId zone = java.time.ZoneId.of("Asia/Shanghai");
+        long start = java.time.LocalDate.of(2026, 5, 1).atStartOfDay(zone).toInstant().toEpochMilli();
+        long end = java.time.LocalDate.of(2026, 7, 31).atTime(23, 59, 59).atZone(zone).toInstant().toEpochMilli();
+
+        long insertedCount = service.fetchMonthData(YearMonth.of(2026, 6), start, end,
+                Collections.singletonList(101L), Collections.singletonList("overtime"));
+
+        Assert.assertEquals("窗口模式只应写入同意完成的审批实例", 1L, insertedCount);
+        Assert.assertEquals("有效审批应保存一次", 1, saveCount.get());
+        Assert.assertEquals(Collections.singletonList("PROC-VALID"), savedApprovalIds);
+        Assert.assertEquals("窗口模式下已撤销的审批旧快照也应被删除", "PROC-REVOKED", deletedApprovalId.get());
+    }
+
+    @Test
+    public void fetchMonthData_shouldSkipRevokedApprovalWhenReportedCompletedAgreeWithTerminateOperation() throws Exception {
+        // 关键回归：钉钉对"通过后又被撤销"的审批，processinstance/get 仍返回 status=COMPLETED + result=agree，
+        // 单看状态/结果无法识别。其操作记录必含 TERMINATE_PROCESS_INSTANCE(=终止(撤销)流程实例)。
+        // 该实例必须视为已撤销：不得新入库；若此前已有本地"通过"快照，重抓时必须删除。
+        InstanceStateWorkflowSyncService service = new InstanceStateWorkflowSyncService();
+        AtomicInteger saveCount = new AtomicInteger();
+        java.util.List<String> savedApprovalIds = new java.util.ArrayList<>();
+        AtomicReference<String> deletedApprovalId = new AtomicReference<>();
+
+        tbattendanceuser user = new tbattendanceuser();
+        user.setEmpId(101L);
+        user.setUserId("ding-101");
+        user.setUserName("张三");
+
+        setField(service, "tokenCreator", new StubAccessToken());
+        setField(service, "processInstanceParser", new HrmAttendanceApprovalProcessInstanceParser());
+        setField(service, "attendanceUserRepository", attendanceUserRepository(Collections.singletonList(user), new AtomicReference<>()));
+
+        tbattendanceapprove staleApproved = new tbattendanceapprove();
+        staleApproved.setId("PROC-REVOKED-BY-OP");
+        staleApproved.setUserId("ding-101");
+        staleApproved.setTagName("加班");
+
+        setField(service, "approvalRepository", Proxy.newProxyInstance(
+                tbattendanceapproveRepository.class.getClassLoader(),
+                new Class<?>[]{tbattendanceapproveRepository.class},
+                (proxy, method, args) -> {
+                    if ("findById".equals(method.getName())) {
+                        if ("PROC-REVOKED-BY-OP".equals(args[0])) {
+                            return Optional.of(staleApproved);
+                        }
+                        return Optional.empty();
+                    }
+                    if ("save".equals(method.getName())) {
+                        tbattendanceapprove approval = (tbattendanceapprove) args[0];
+                        savedApprovalIds.add(approval.getId());
+                        saveCount.incrementAndGet();
+                        return approval;
+                    }
+                    if ("deleteById".equals(method.getName())) {
+                        deletedApprovalId.set((String) args[0]);
+                        return defaultValue(method.getReturnType());
+                    }
+                    return defaultValue(method.getReturnType());
+                }));
+        setField(service, "fetchMarkRepository", fetchMarkRepository());
+
+        service.processIds = Arrays.asList("PROC-VALID", "PROC-REVOKED-BY-OP");
+        service.processDetails.put("PROC-VALID", processWithStateAndOperations("加班审批", "ding-101", "COMPLETED", "agree",
+                java.util.Arrays.asList(
+                        operationRecord("EXECUTE_TASK_NORMAL"),
+                        operationRecord("FINISH_PROCESS_INSTANCE")),
+                component("加班日期", "2026-06-15 18:00"),
+                component("结束日期", "2026-06-15 19:00"),
+                component("预计加班时长", "1")));
+        // status=COMPLETED、result=agree 表面通过，但操作记录含 TERMINATE_PROCESS_INSTANCE，即已被撤销
+        service.processDetails.put("PROC-REVOKED-BY-OP", processWithStateAndOperations("加班审批", "ding-101", "COMPLETED", "agree",
+                java.util.Arrays.asList(
+                        operationRecord("EXECUTE_TASK_NORMAL"),
+                        operationRecord("FINISH_PROCESS_INSTANCE"),
+                        operationRecord("TERMINATE_PROCESS_INSTANCE")),
+                component("加班日期", "2026-06-16 18:00"),
+                component("结束日期", "2026-06-16 19:00"),
+                component("预计加班时长", "1")));
+
+        long insertedCount = service.fetchMonthData(YearMonth.of(2026, 6), Collections.singletonList(101L), Collections.singletonList("overtime"));
+
+        Assert.assertEquals("仅无撤销操作记录的真实通过实例应写入", 1L, insertedCount);
+        Assert.assertEquals(Collections.singletonList("PROC-VALID"), savedApprovalIds);
+        Assert.assertEquals("表面 COMPLETED+agree 但被撤销的实例其旧快照应被删除", "PROC-REVOKED-BY-OP", deletedApprovalId.get());
+    }
+
+    @Test
+    public void fetchMonthData_windowMode_shouldSkipRevokedApprovalWhenReportedCompletedAgreeWithTerminateOperation() throws Exception {
+        // 手工"获取审批数据"窗口模式：撤销单被钉钉报成 COMPLETED+agree、但操作记录含 TERMINATE_PROCESS_INSTANCE，
+        // 必须同样视为非通过：不写入、并删除其既有本地快照，保证列表/统计不再出现撤销审批。
+        InstanceStateWorkflowSyncService service = new InstanceStateWorkflowSyncService();
+        AtomicInteger saveCount = new AtomicInteger();
+        java.util.List<String> savedApprovalIds = new java.util.ArrayList<>();
+        AtomicReference<String> deletedApprovalId = new AtomicReference<>();
+
+        tbattendanceuser user = new tbattendanceuser();
+        user.setEmpId(101L);
+        user.setUserId("ding-101");
+        user.setUserName("张三");
+
+        setField(service, "tokenCreator", new StubAccessToken());
+        setField(service, "processInstanceParser", new HrmAttendanceApprovalProcessInstanceParser());
+        setField(service, "attendanceUserRepository", attendanceUserRepository(Collections.singletonList(user), new AtomicReference<>()));
+
+        tbattendanceapprove staleApproved = new tbattendanceapprove();
+        staleApproved.setId("PROC-REVOKED-BY-OP");
+        staleApproved.setUserId("ding-101");
+        staleApproved.setTagName("加班");
+
+        setField(service, "approvalRepository", Proxy.newProxyInstance(
+                tbattendanceapproveRepository.class.getClassLoader(),
+                new Class<?>[]{tbattendanceapproveRepository.class},
+                (proxy, method, args) -> {
+                    if ("findById".equals(method.getName())) {
+                        if ("PROC-REVOKED-BY-OP".equals(args[0])) {
+                            return Optional.of(staleApproved);
+                        }
+                        return Optional.empty();
+                    }
+                    if ("save".equals(method.getName())) {
+                        tbattendanceapprove approval = (tbattendanceapprove) args[0];
+                        savedApprovalIds.add(approval.getId());
+                        saveCount.incrementAndGet();
+                        return approval;
+                    }
+                    if ("deleteById".equals(method.getName())) {
+                        deletedApprovalId.set((String) args[0]);
+                        return defaultValue(method.getReturnType());
+                    }
+                    return defaultValue(method.getReturnType());
+                }));
+        setField(service, "fetchMarkRepository", fetchMarkRepository());
+
+        service.processIds = Arrays.asList("PROC-VALID", "PROC-REVOKED-BY-OP");
+        service.processDetails.put("PROC-VALID", processWithStateAndOperations("加班审批", "ding-101", "COMPLETED", "agree",
+                java.util.Arrays.asList(
+                        operationRecord("EXECUTE_TASK_NORMAL"),
+                        operationRecord("FINISH_PROCESS_INSTANCE")),
+                component("加班日期", "2026-06-15 18:00"),
+                component("结束日期", "2026-06-15 19:00"),
+                component("预计加班时长", "1")));
+        service.processDetails.put("PROC-REVOKED-BY-OP", processWithStateAndOperations("加班审批", "ding-101", "COMPLETED", "agree",
+                java.util.Arrays.asList(
+                        operationRecord("EXECUTE_TASK_NORMAL"),
+                        operationRecord("FINISH_PROCESS_INSTANCE"),
+                        operationRecord("TERMINATE_PROCESS_INSTANCE")),
+                component("加班日期", "2026-06-16 18:00"),
+                component("结束日期", "2026-06-16 19:00"),
+                component("预计加班时长", "1")));
+
+        java.time.ZoneId zone = java.time.ZoneId.of("Asia/Shanghai");
+        long start = java.time.LocalDate.of(2026, 5, 1).atStartOfDay(zone).toInstant().toEpochMilli();
+        long end = java.time.LocalDate.of(2026, 7, 31).atTime(23, 59, 59).atZone(zone).toInstant().toEpochMilli();
+
+        long insertedCount = service.fetchMonthData(YearMonth.of(2026, 6), start, end,
+                Collections.singletonList(101L), Collections.singletonList("overtime"));
+
+        Assert.assertEquals("窗口模式仅应写入无撤销操作记录的真实通过实例", 1L, insertedCount);
+        Assert.assertEquals(Collections.singletonList("PROC-VALID"), savedApprovalIds);
+        Assert.assertEquals("窗口模式下被撤销(表面 COMPLETED+agree)实例旧快照也应删除", "PROC-REVOKED-BY-OP", deletedApprovalId.get());
+    }
+
+    @Test
+    public void fetchMonthData_shouldDropBothRevokedOriginalAndRevokeReissuedDerivative() throws Exception {
+        // 决定性回归（2026-09-05 用户定稿规则）：本地只保留"右上角(业务级)与审批结果都为通过/同意"的最终有效单。
+        // 钉钉对"通过后被撤销替代的作废原单"(Do4xK4 型)与"撤销后重发的派生单"(CfyM0j 型)都仍返回 COMPLETED+agree 且无 TERMINATE：
+        //  - 作废原单通过 attachedProcessInstanceIds 非空暴露被顶替；
+        //  - 撤销后重发替身通过 bizAction=REVOKE / mainProcessInstanceId 非空暴露（即使 attached 为空、单条接口报 agree）。
+        // 二者在钉钉 App 端业务维度均属"已撤销"（右上角标已撤销、收进"撤销流程"），一律视为非通过：不写入并删除既有本地快照。
+        InstanceStateWorkflowSyncService service = new InstanceStateWorkflowSyncService();
+        AtomicInteger saveCount = new AtomicInteger();
+        java.util.List<String> savedApprovalIds = new java.util.ArrayList<>();
+        java.util.List<String> deletedApprovalIds = new java.util.ArrayList<>();
+
+        tbattendanceuser user = new tbattendanceuser();
+        user.setEmpId(101L);
+        user.setUserId("ding-101");
+        user.setUserName("张三");
+
+        setField(service, "tokenCreator", new StubAccessToken());
+        setField(service, "processInstanceParser", new HrmAttendanceApprovalProcessInstanceParser());
+        setField(service, "attendanceUserRepository", attendanceUserRepository(Collections.singletonList(user), new AtomicReference<>()));
+
+        tbattendanceapprove staleOriginal = new tbattendanceapprove();
+        staleOriginal.setId("PROC-REVOKED-ORIGINAL");
+        staleOriginal.setUserId("ding-101");
+        staleOriginal.setTagName("加班");
+        tbattendanceapprove staleReissued = new tbattendanceapprove();
+        staleReissued.setId("PROC-REISSUED");
+        staleReissued.setUserId("ding-101");
+        staleReissued.setTagName("加班");
+
+        setField(service, "approvalRepository", Proxy.newProxyInstance(
+                tbattendanceapproveRepository.class.getClassLoader(),
+                new Class<?>[]{tbattendanceapproveRepository.class},
+                (proxy, method, args) -> {
+                    if ("findById".equals(method.getName())) {
+                        if ("PROC-REVOKED-ORIGINAL".equals(args[0])) {
+                            return Optional.of(staleOriginal);
+                        }
+                        if ("PROC-REISSUED".equals(args[0])) {
+                            return Optional.of(staleReissued);
+                        }
+                        return Optional.empty();
+                    }
+                    if ("save".equals(method.getName())) {
+                        tbattendanceapprove approval = (tbattendanceapprove) args[0];
+                        savedApprovalIds.add(approval.getId());
+                        saveCount.incrementAndGet();
+                        return approval;
+                    }
+                    if ("deleteById".equals(method.getName())) {
+                        deletedApprovalIds.add((String) args[0]);
+                        return defaultValue(method.getReturnType());
+                    }
+                    return defaultValue(method.getReturnType());
+                }));
+        setField(service, "fetchMarkRepository", fetchMarkRepository());
+
+        service.processIds = Arrays.asList("PROC-VALID", "PROC-REVOKED-ORIGINAL", "PROC-REISSUED");
+        service.processDetails.put("PROC-VALID", processWithStateAndOperations("加班审批", "ding-101", "COMPLETED", "agree",
+                java.util.Arrays.asList(
+                        operationRecord("EXECUTE_TASK_NORMAL"),
+                        operationRecord("FINISH_PROCESS_INSTANCE")),
+                component("加班日期", "2026-06-15 18:00"),
+                component("结束日期", "2026-06-15 19:00"),
+                component("预计加班时长", "1")));
+        // 作废原单：COMPLETED+agree、无 TERMINATE，但 attached 含撤销动作单与重发新单 → 被撤销替代，作废
+        service.processDetails.put("PROC-REVOKED-ORIGINAL",
+                revokedOriginalWithAttached("加班审批", "ding-101", "COMPLETED", "agree",
+                        java.util.Arrays.asList(
+                                operationRecord("EXECUTE_TASK_NORMAL"),
+                                operationRecord("FINISH_PROCESS_INSTANCE")),
+                        java.util.Arrays.asList("PROC-REVOKE-ACTION", "PROC-REISSUED"),
+                        component("加班日期", "2026-06-16 18:00"),
+                        component("结束日期", "2026-06-16 19:00"),
+                        component("预计加班时长", "1")));
+        // 撤销后重发的派生替身：attached 为空、单条接口报 agree，但 bizAction=REVOKE+mainProcessInstanceId 指回原单
+        // → 在钉钉 App 业务维度属"已撤销/撤销流程"，即便单条审核结果同意，也不构成最终有效通过单 → 作废
+        service.processDetails.put("PROC-REISSUED",
+                reissuedAfterRevoke("加班审批", "ding-101", "PROC-REVOKED-ORIGINAL",
+                        component("加班日期", "2026-06-16 18:00"),
+                        component("结束日期", "2026-06-16 19:00"),
+                        component("预计加班时长", "1")));
+
+        long insertedCount = service.fetchMonthData(YearMonth.of(2026, 6), Collections.singletonList(101L), Collections.singletonList("overtime"));
+
+        Assert.assertEquals("仅正常单写入，被撤销作废原单与 REVOKE 重发派生单均不写入", 1L, insertedCount);
+        Assert.assertTrue("应写入正常单", savedApprovalIds.contains("PROC-VALID"));
+        Assert.assertFalse("被撤销替代的作废原单不应写入", savedApprovalIds.contains("PROC-REVOKED-ORIGINAL"));
+        Assert.assertFalse("撤销后重发的 REVOKE 派生单不应写入", savedApprovalIds.contains("PROC-REISSUED"));
+        Assert.assertTrue("作废原单(attached非空)既有本地快照应被删除", deletedApprovalIds.contains("PROC-REVOKED-ORIGINAL"));
+        Assert.assertTrue("REVOKE 重发派生单(main非空)既有本地快照也应被删除", deletedApprovalIds.contains("PROC-REISSUED"));
+    }
+
+    @Test
+    public void fetchMonthData_windowMode_shouldDropBothRevokedOriginalAndRevokeReissuedDerivative() throws Exception {
+        // 手工窗口模式同样适用（用户定稿规则）：被撤销替代的作废原单(attached 非空)与撤销后重发的派生替身
+        // (bizAction=REVOKE / mainProcessInstanceId 非空，即使单条接口报 COMPLETED+agree)均为业务级"已撤销"，一律删除且不写入。
+        InstanceStateWorkflowSyncService service = new InstanceStateWorkflowSyncService();
+        AtomicInteger saveCount = new AtomicInteger();
+        java.util.List<String> savedApprovalIds = new java.util.ArrayList<>();
+        java.util.List<String> deletedApprovalIds = new java.util.ArrayList<>();
+
+        tbattendanceuser user = new tbattendanceuser();
+        user.setEmpId(101L);
+        user.setUserId("ding-101");
+        user.setUserName("张三");
+
+        setField(service, "tokenCreator", new StubAccessToken());
+        setField(service, "processInstanceParser", new HrmAttendanceApprovalProcessInstanceParser());
+        setField(service, "attendanceUserRepository", attendanceUserRepository(Collections.singletonList(user), new AtomicReference<>()));
+
+        tbattendanceapprove staleOriginal = new tbattendanceapprove();
+        staleOriginal.setId("PROC-REVOKED-ORIGINAL");
+        staleOriginal.setUserId("ding-101");
+        staleOriginal.setTagName("加班");
+        tbattendanceapprove staleReissued = new tbattendanceapprove();
+        staleReissued.setId("PROC-REISSUED");
+        staleReissued.setUserId("ding-101");
+        staleReissued.setTagName("加班");
+
+        setField(service, "approvalRepository", Proxy.newProxyInstance(
+                tbattendanceapproveRepository.class.getClassLoader(),
+                new Class<?>[]{tbattendanceapproveRepository.class},
+                (proxy, method, args) -> {
+                    if ("findById".equals(method.getName())) {
+                        if ("PROC-REVOKED-ORIGINAL".equals(args[0])) {
+                            return Optional.of(staleOriginal);
+                        }
+                        if ("PROC-REISSUED".equals(args[0])) {
+                            return Optional.of(staleReissued);
+                        }
+                        return Optional.empty();
+                    }
+                    if ("save".equals(method.getName())) {
+                        tbattendanceapprove approval = (tbattendanceapprove) args[0];
+                        savedApprovalIds.add(approval.getId());
+                        saveCount.incrementAndGet();
+                        return approval;
+                    }
+                    if ("deleteById".equals(method.getName())) {
+                        deletedApprovalIds.add((String) args[0]);
+                        return defaultValue(method.getReturnType());
+                    }
+                    return defaultValue(method.getReturnType());
+                }));
+        setField(service, "fetchMarkRepository", fetchMarkRepository());
+
+        service.processIds = Arrays.asList("PROC-VALID", "PROC-REVOKED-ORIGINAL", "PROC-REISSUED");
+        service.processDetails.put("PROC-VALID", processWithStateAndOperations("加班审批", "ding-101", "COMPLETED", "agree",
+                java.util.Arrays.asList(
+                        operationRecord("EXECUTE_TASK_NORMAL"),
+                        operationRecord("FINISH_PROCESS_INSTANCE")),
+                component("加班日期", "2026-06-15 18:00"),
+                component("结束日期", "2026-06-15 19:00"),
+                component("预计加班时长", "1")));
+        service.processDetails.put("PROC-REVOKED-ORIGINAL",
+                revokedOriginalWithAttached("加班审批", "ding-101", "COMPLETED", "agree",
+                        java.util.Arrays.asList(
+                                operationRecord("EXECUTE_TASK_NORMAL"),
+                                operationRecord("FINISH_PROCESS_INSTANCE")),
+                        java.util.Arrays.asList("PROC-REVOKE-ACTION", "PROC-REISSUED"),
+                        component("加班日期", "2026-06-16 18:00"),
+                        component("结束日期", "2026-06-16 19:00"),
+                        component("预计加班时长", "1")));
+        service.processDetails.put("PROC-REISSUED",
+                reissuedAfterRevoke("加班审批", "ding-101", "PROC-REVOKED-ORIGINAL",
+                        component("加班日期", "2026-06-16 18:00"),
+                        component("结束日期", "2026-06-16 19:00"),
+                        component("预计加班时长", "1")));
+
+        java.time.ZoneId zone = java.time.ZoneId.of("Asia/Shanghai");
+        long start = java.time.LocalDate.of(2026, 5, 1).atStartOfDay(zone).toInstant().toEpochMilli();
+        long end = java.time.LocalDate.of(2026, 7, 31).atTime(23, 59, 59).atZone(zone).toInstant().toEpochMilli();
+
+        long insertedCount = service.fetchMonthData(YearMonth.of(2026, 6), start, end,
+                Collections.singletonList(101L), Collections.singletonList("overtime"));
+
+        Assert.assertEquals("窗口模式：仅正常单写入", 1L, insertedCount);
+        Assert.assertTrue("应写入正常单", savedApprovalIds.contains("PROC-VALID"));
+        Assert.assertFalse("被撤销替代的作废原单不应写入", savedApprovalIds.contains("PROC-REVOKED-ORIGINAL"));
+        Assert.assertFalse("撤销后重发的 REVOKE 派生单不应写入", savedApprovalIds.contains("PROC-REISSUED"));
+        Assert.assertTrue("窗口模式下作废原单既有快照应删除", deletedApprovalIds.contains("PROC-REVOKED-ORIGINAL"));
+        Assert.assertTrue("窗口模式下 REVOKE 重发派生单既有快照也应删除", deletedApprovalIds.contains("PROC-REISSUED"));
+    }
+
+    @Test
     public void fetchMonthData_shouldUpdateExistingApprovalSnapshotWhenReFetchSameProcessInstance() throws Exception {
         TestableWorkflowSyncService service = new TestableWorkflowSyncService();
         AtomicReference<tbattendanceapprove> savedApproval = new AtomicReference<>();
@@ -564,6 +1034,88 @@ public class HrmAttendanceApprovalSyncServiceImplWorkflowTest {
         Assert.assertEquals("业务日期不在所选月份内的审批不应入库", 0L, insertedCount);
         Assert.assertEquals("业务日期不在所选月份内的审批不应保存快照", 0, saveCount.get());
         Assert.assertEquals("抓取流程成功但审批业务日期全部越界时，仍应保留完成标记", 1, fetchMarkSaveCount.get());
+    }
+
+    /**
+     * 核心 bug 回归：用户选目标月 4 月获取审批数据，但某张加班审批是 3 月底发起的、业务日期落在 3 月。
+     * 发起窗口入口（带 fetchStartTime/fetchEndTime，模拟前端"选开始日期→点确定"）必须把它幂等落库，
+     * 而不是像老业务月抓取那样按"业务日期≠目标月"丢弃——否则这类跨月单会永久丢失。
+     */
+    @Test
+    public void fetchMonthData_windowMode_shouldPersistCrossMonthBusinessApproval() throws Exception {
+        TestableWorkflowSyncService service = new TestableWorkflowSyncService();
+        AtomicInteger saveCount = new AtomicInteger();
+        AtomicInteger fetchMarkSaveCount = new AtomicInteger();
+
+        tbattendanceuser user = new tbattendanceuser();
+        user.setEmpId(101L);
+        user.setUserId("ding-101");
+        user.setUserName("张三");
+
+        setField(service, "tokenCreator", new StubAccessToken());
+        setField(service, "processInstanceParser", new HrmAttendanceApprovalProcessInstanceParser());
+
+        Object userRepositoryProxy = Proxy.newProxyInstance(
+                tbattendanceuserRepository.class.getClassLoader(),
+                new Class<?>[]{tbattendanceuserRepository.class},
+                (proxy, method, args) -> {
+                    if ("findAllByEmpIdIn".equals(method.getName()) || "findAll".equals(method.getName())) {
+                        return Collections.singletonList(user);
+                    }
+                    return defaultValue(method.getReturnType());
+                });
+
+        Object approvalRepositoryProxy = Proxy.newProxyInstance(
+                tbattendanceapproveRepository.class.getClassLoader(),
+                new Class<?>[]{tbattendanceapproveRepository.class},
+                (proxy, method, args) -> {
+                    if ("findById".equals(method.getName())) {
+                        return Optional.empty();
+                    }
+                    if ("save".equals(method.getName())) {
+                        saveCount.incrementAndGet();
+                        return args[0];
+                    }
+                    return defaultValue(method.getReturnType());
+                });
+
+        Object fetchMarkRepositoryProxy = Proxy.newProxyInstance(
+                hrmAttendanceApprovalFetchMarkRepository.class.getClassLoader(),
+                new Class<?>[]{hrmAttendanceApprovalFetchMarkRepository.class},
+                (proxy, method, args) -> {
+                    if ("existsByMonthKeyAndUserIdAndFetchVersionAndApprovalType".equals(method.getName())) {
+                        return false;
+                    }
+                    if ("save".equals(method.getName())) {
+                        fetchMarkSaveCount.incrementAndGet();
+                        return args[0];
+                    }
+                    return defaultValue(method.getReturnType());
+                });
+
+        setField(service, "attendanceUserRepository", userRepositoryProxy);
+        setField(service, "approvalRepository", approvalRepositoryProxy);
+        setField(service, "fetchMarkRepository", fetchMarkRepositoryProxy);
+
+        service.processCodes = Collections.singletonList("PROC-CODE-OT");
+        // 审批单在发起窗口内被拉回，但其业务日期落在 3 月（不在目标月 4 月）
+        service.processIds = Collections.singletonList("PROC-OT-CROSS-MONTH");
+        service.processDetail = process("加班申请", "ding-101",
+                component("加班日期", "2026-03-31 13:30"),
+                component("结束日期", "2026-03-31 17:30"),
+                component("预计加班时长", "4"));
+
+        java.time.ZoneId zone = java.time.ZoneId.of("Asia/Shanghai");
+        long start = java.time.LocalDate.of(2026, 3, 1).atStartOfDay(zone).toInstant().toEpochMilli();
+        long end = java.time.LocalDate.of(2026, 4, 30).atTime(23, 59, 59).atZone(zone).toInstant().toEpochMilli();
+
+        // 窗口入口：目标展示月 4 月，发起窗口覆盖 3/1~4/30
+        long insertedCount = service.fetchMonthData(YearMonth.of(2026, 4), start, end,
+                Collections.singletonList(101L), Collections.singletonList("overtime"));
+
+        Assert.assertEquals("跨月发起窗口内的审批(业务日期落3月)必须落库，不得被目标月过滤丢弃", 1L, insertedCount);
+        Assert.assertEquals("跨月审批快照应保存一次", 1, saveCount.get());
+        Assert.assertEquals("跨月审批抓取完成仍应保留完成标记", 1, fetchMarkSaveCount.get());
     }
 
     @Test
@@ -1388,6 +1940,55 @@ public class HrmAttendanceApprovalSyncServiceImplWorkflowTest {
         process.setFinishTime(new java.util.Date());
         process.setFormComponentValues(Arrays.asList(components));
         return process;
+    }
+
+    private static OapiProcessinstanceGetResponse.ProcessInstanceTopVo processWithStateAndOperations(
+            String title,
+            String userId,
+            String status,
+            String result,
+            java.util.List<OapiProcessinstanceGetResponse.OperationRecordsVo> operationRecords,
+            OapiProcessinstanceGetResponse.FormComponentValueVo... components) {
+        OapiProcessinstanceGetResponse.ProcessInstanceTopVo process = processWithState(title, userId, status, result, components);
+        process.setOperationRecords(operationRecords);
+        return process;
+    }
+
+    /** 构造"审批通过后被撤销替代的作废原单"：COMPLETED+agree 且无 TERMINATE 操作，但带 attachedProcessInstanceIds。 */
+    private static OapiProcessinstanceGetResponse.ProcessInstanceTopVo revokedOriginalWithAttached(
+            String title,
+            String userId,
+            String status,
+            String result,
+            java.util.List<OapiProcessinstanceGetResponse.OperationRecordsVo> operationRecords,
+            java.util.List<String> attachedProcessInstanceIds,
+            OapiProcessinstanceGetResponse.FormComponentValueVo... components) {
+        OapiProcessinstanceGetResponse.ProcessInstanceTopVo process = processWithStateAndOperations(title, userId, status, result, operationRecords, components);
+        process.setAttachedProcessInstanceIds(attachedProcessInstanceIds);
+        return process;
+    }
+
+    /** 构造"撤销后重发的派生替身"(CfyM0j 型)：COMPLETED+agree、无 TERMINATE、attached 为空，仅 bizAction=REVOKE + mainProcessInstanceId 指回原单。
+     *  用户定稿规则：此类单在钉钉 App 业务维度属"已撤销/撤销流程"（右上角标已撤销），即便单条接口报 agree 也不构成最终有效通过单 → 作废删。 */
+    private static OapiProcessinstanceGetResponse.ProcessInstanceTopVo reissuedAfterRevoke(
+            String title,
+            String userId,
+            String mainProcessInstanceId,
+            OapiProcessinstanceGetResponse.FormComponentValueVo... components) {
+        OapiProcessinstanceGetResponse.ProcessInstanceTopVo process = processWithStateAndOperations(title, userId, "COMPLETED", "agree",
+                java.util.Arrays.asList(
+                        operationRecord("EXECUTE_TASK_NORMAL"),
+                        operationRecord("FINISH_PROCESS_INSTANCE")),
+                components);
+        process.setBizAction("REVOKE");
+        process.setMainProcessInstanceId(mainProcessInstanceId);
+        return process;
+    }
+
+    private static OapiProcessinstanceGetResponse.OperationRecordsVo operationRecord(String operationType) {
+        OapiProcessinstanceGetResponse.OperationRecordsVo record = new OapiProcessinstanceGetResponse.OperationRecordsVo();
+        record.setOperationType(operationType);
+        return record;
     }
 
     private static OapiProcessinstanceGetResponse.FormComponentValueVo component(String name, String value) {

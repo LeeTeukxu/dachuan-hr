@@ -10,6 +10,16 @@ public enum AdminMessageEnum {
      * 消息通知枚举类
      */
     NULL(0,0,"NULL"),
+    
+    // 人资模块通知
+    HRM_ATTENDANCE_SYNC_RUNNING(201, 8, "同步考勤中"),
+    HRM_ATTENDANCE_SYNC_COMPLETE(202, 8, "同步考勤完成"),
+    HRM_APPROVAL_FETCH_RUNNING(203, 8, "获取审批数据中"),
+    HRM_APPROVAL_FETCH_COMPLETE(204, 8, "获取审批数据完成"),
+    HRM_INSURANCE_COMPUTE_RUNNING(205, 8, "社保报表生成中"),
+    HRM_INSURANCE_COMPUTE_COMPLETE(206, 8, "社保报表生成完成"),
+    HRM_EMPLOYEE_RETIREMENT_REMIND(207, 8, "员工到龄退休提醒"),
+
     OA_TASK_ALLOCATION(1,1,"分配给我的任务"),
     OA_TASK_JOIN(2,1,"我参与的任务"),
     OA_TASK_OVER(3,1,"任务结束通知"),

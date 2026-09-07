@@ -52,6 +52,9 @@ public class QueryAttendanceApprovalPageVO {
     @ApiModelProperty("时长单位")
     private String durationUnit;
 
+    @ApiModelProperty("时长(天)：与 duration(小时) 一致派生，恒 = duration(小时)/8")
+    private String durationDay;
+
     @ApiModelProperty("申请日期")
     private Date workDate;
 

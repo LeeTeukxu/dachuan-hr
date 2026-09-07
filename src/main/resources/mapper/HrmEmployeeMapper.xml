@@ -80,6 +80,13 @@
         a.affiliation_system as affiliationSystem,
         a.rest_type as restType,
         a.is_continuous_shift as isContinuousShift,
+        a.full_attendance as fullAttendance,
+        a.expand_production as expandProduction,
+        a.is_remark as isRemark,
+        a.is_disabled as isDisabled,
+        a.is_retired_soldier as isRetiredSoldier,
+        a.is_party_member as isPartyMember,
+        a.personnel_category as personnelCategory,
         a.ordinary_full_attendance_amount as ordinaryFullAttendanceAmount,
         a.leader_full_attendance_amount as leaderFullAttendanceAmount,
         date_format(a.become_time, '%Y-%m-%d') as becomeTime,
@@ -441,5 +448,43 @@
         and a.employee_id in
         <foreach collection="employeeIds" item="empId" open="(" separator="," close=")">#{empId}</foreach>
         and (date_format(a.date_of_birth, '%m%d') = #{solarBirthday} or a.birthday = #{lunarBirthday})
+    </select>
+
+    <select id="queryEmployeeListForTransfer" resultType="java.util.Map">
+        select 
+            a.employee_id as employeeId,
+            a.employee_name as employeeName,
+            a.mobile as mobile,
+            a.dept_id as deptId,
+            b.name as deptName,
+            a.entry_status as entryStatus,
+            a.post as post,
+            c.plan_quit_time as planQuitTime
+        from hrm_employee a
+        left join hrm_dept b on a.dept_id = b.dept_id
+        left join (
+            SELECT employee_id, plan_quit_time 
+            FROM hrm_employee_quit_info 
+            WHERE quit_info_id IN (
+                SELECT MAX(quit_info_id) FROM hrm_employee_quit_info GROUP BY employee_id
+            )
+        ) c on a.employee_id = c.employee_id
+        where a.is_del = 0
+        <if test="employeeName != null and employeeName != ''">
+            and a.employee_name like concat('%', #{employeeName}, '%')
+        </if>
+        <choose>
+            <when test="month != null and month != ''">
+                and (
+                    a.entry_status = 1
+                    or (
+                        a.entry_status in (3, 4)
+                        and c.plan_quit_time >= CONCAT(#{month}, '-01')
+                        and c.plan_quit_time &lt; DATE_ADD(CONCAT(#{month}, '-01'), INTERVAL 1 MONTH)
+                    )
+                )
+            </when>
+        </choose>
+        order by a.employee_name
     </select>
 </mapper>

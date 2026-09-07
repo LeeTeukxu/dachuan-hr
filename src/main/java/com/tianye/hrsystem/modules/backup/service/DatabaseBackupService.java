@@ -102,21 +102,24 @@ public class DatabaseBackupService {
     }
 
     /**
-     * 发现所有需要备份的库：主库 + 所有 hr_ 前缀租户库
+     * 发现所有需要备份的库：主库 + tbCompanyList 中已注册的租户库。
+     * 不再使用 SHOW DATABASES，避免出现未注册的残留库（如 hr_0006）。
      */
     public List<String> discoverDatabases() {
         List<String> dbs = new ArrayList<>();
+        dbs.add(systemDatabase);
         try (Connection conn = getConnection();
              Statement stmt = conn.createStatement();
-             ResultSet rs = stmt.executeQuery("SHOW DATABASES")) {
+             ResultSet rs = stmt.executeQuery(
+                      "SELECT `database` FROM hrsystem.tbcompanylist WHERE `database` IS NOT NULL AND `database` != ''")) {
             while (rs.next()) {
-                String name = rs.getString(1);
-                if (name.equalsIgnoreCase(systemDatabase) || name.toLowerCase().startsWith("hr_")) {
-                    dbs.add(name);
+                String db = rs.getString(1).trim();
+                if (!db.isEmpty() && !db.equalsIgnoreCase(systemDatabase)) {
+                    dbs.add(db);
                 }
             }
         } catch (Exception e) {
-            log.error("发现数据库列表失败", e);
+            log.error("从 tbCompanyList 获取租户库列表失败", e);
         }
         return dbs;
     }
@@ -133,7 +136,11 @@ public class DatabaseBackupService {
         String ts = new SimpleDateFormat("yyyyMMddHHmmss").format(new Date());
         File dir = new File(backupDir, ts);
         if (!dir.exists() && !dir.mkdirs()) {
-            throw new RuntimeException("创建备份目录失败: " + dir.getAbsolutePath());
+            log.warn("配置的备份目录 {} 不可用，回退到相对目录 ./backup", backupDir);
+            dir = new File("./backup", ts);
+            if (!dir.exists() && !dir.mkdirs()) {
+                throw new RuntimeException("创建备份目录失败: " + dir.getAbsolutePath());
+            }
         }
         log.info("开始数据库备份，共 {} 个库，目录: {}", dbs.size(), dir.getAbsolutePath());
         int success = 0;
@@ -237,26 +244,30 @@ public class DatabaseBackupService {
     }
 
     /**
-     * 查询备份记录（按时间倒序）
+     * 查询备份记录（按时间倒序），仅返回有效租户库（tbCompanyList 已注册）和主库的记录
      */
     public List<Map<String, Object>> listRecords() {
         List<Map<String, Object>> list = new ArrayList<>();
         String sql = "SELECT id, date_format(backup_time,'%Y-%m-%d %H:%i:%s') AS backupTime, " +
                 "file_path AS filePath, file_size AS fileSize, database_name AS dbName, status, message " +
-                "FROM tb_backup_record ORDER BY backup_time DESC, id DESC";
+                "FROM tb_backup_record " +
+                "WHERE database_name = ? OR database_name IN (SELECT `database` FROM hrsystem.tbcompanylist WHERE `database` IS NOT NULL AND `database` != '') " +
+                "ORDER BY backup_time DESC, id DESC";
         try (Connection conn = getConnection();
-             Statement stmt = conn.createStatement();
-             ResultSet rs = stmt.executeQuery(sql)) {
-            while (rs.next()) {
-                Map<String, Object> row = new LinkedHashMap<>();
-                row.put("id", rs.getLong("id"));
-                row.put("backupTime", rs.getString("backupTime"));
-                row.put("filePath", rs.getString("filePath"));
-                row.put("fileSize", rs.getLong("fileSize"));
-                row.put("dbName", rs.getString("dbName"));
-                row.put("status", rs.getString("status"));
-                row.put("message", rs.getString("message"));
-                list.add(row);
+             PreparedStatement ps = conn.prepareStatement(sql)) {
+            ps.setString(1, systemDatabase);
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    Map<String, Object> row = new LinkedHashMap<>();
+                    row.put("id", rs.getLong("id"));
+                    row.put("backupTime", rs.getString("backupTime"));
+                    row.put("filePath", rs.getString("filePath"));
+                    row.put("fileSize", rs.getLong("fileSize"));
+                    row.put("dbName", rs.getString("dbName"));
+                    row.put("status", rs.getString("status"));
+                    row.put("message", rs.getString("message"));
+                    list.add(row);
+                }
             }
         } catch (Exception e) {
             log.error("查询备份记录失败", e);
@@ -338,8 +349,8 @@ public class DatabaseBackupService {
     }
 
      /**
-      * 清理备份：备份记录与文件始终只保留最新 N 条（默认15条），
-      * 删除最旧的超出部分对应的文件+记录。
+      * 清理备份：1) 先删除所有无效租户库（不在 tbCompanyList）的历史记录；
+      * 2) 再对有效库记录保留最新 N 条，超出部分删除文件+记录。
       * @return 清理的条数
       */
     public int cleanupExpired() {
@@ -347,7 +358,16 @@ public class DatabaseBackupService {
         int removed = 0;
         List<Long> ids = new ArrayList<>();
         try (Connection conn = getConnection()) {
-            // 找出所有需删除的（id 不属于最新 N 条）
+            // 1) 删除所有无效租户库的备份记录
+            String deleteInvalid = "DELETE FROM tb_backup_record " +
+                    "WHERE database_name != ? AND database_name NOT IN " +
+                    "(SELECT `database` FROM hrsystem.tbcompanylist WHERE `database` IS NOT NULL AND `database` != '')";
+            try (PreparedStatement ps = conn.prepareStatement(deleteInvalid)) {
+                ps.setString(1, systemDatabase);
+                removed += ps.executeUpdate();
+            }
+
+            // 2) 有效库记录保留最新 N 条，超出部分删除
             String sql = "SELECT t.id, t.file_path FROM tb_backup_record t " +
                     "WHERE t.id NOT IN (SELECT id FROM (SELECT id FROM tb_backup_record " +
                     "ORDER BY backup_time DESC, id DESC LIMIT " + retentionCount + ") keep)";

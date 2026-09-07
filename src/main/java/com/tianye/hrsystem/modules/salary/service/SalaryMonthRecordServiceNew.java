@@ -531,7 +531,7 @@ public class SalaryMonthRecordServiceNew extends BaseServiceImpl<HrmSalaryMonthR
             hasOverTimePayEmpList = Collections.emptyList();
         }
         HrmSalaryBasic salaryBasic = hrmSalaryBasicService.lambdaQuery().orderByDesc(HrmSalaryBasic::getCreateTime).last("limit 1").one();
-        HrmAttendanceRule attendanceRule = hrmAttendanceRuleService.lambdaQuery().orderByDesc(HrmAttendanceRule::getCreateTime).one();
+        HrmAttendanceRule attendanceRule = selectEffectiveAttendanceRule();
         LocalDateTime startDateTime = dateStartTime.atStartOfDay();
         LocalDateTime endDateTime = LocalDateTimeUtil.endOfDay(dateEndTime.atStartOfDay());
         Date beginDate = Date.from(startDateTime.atZone(ZoneId.systemDefault()).toInstant());
@@ -836,6 +836,25 @@ public class SalaryMonthRecordServiceNew extends BaseServiceImpl<HrmSalaryMonthR
             return null;
         }
         return attendanceHours.divide(BigDecimal.valueOf(8), 2, RoundingMode.HALF_UP);
+    }
+
+    /**
+     * 选取生效的考勤扣款规则：优先取"默认设置"标记的规则（有多条时取其中最新创建的），
+     * 没有任何默认标记时回退为最新创建的一条（兼容历史数据）。
+     */
+    private HrmAttendanceRule selectEffectiveAttendanceRule() {
+        HrmAttendanceRule defaultRule = hrmAttendanceRuleService.lambdaQuery()
+                .eq(HrmAttendanceRule::getIsDefaultSetting, IsEnum.YES.getValue())
+                .orderByDesc(HrmAttendanceRule::getCreateTime)
+                .last("limit 1")
+                .one();
+        if (defaultRule != null) {
+            return defaultRule;
+        }
+        return hrmAttendanceRuleService.lambdaQuery()
+                .orderByDesc(HrmAttendanceRule::getCreateTime)
+                .last("limit 1")
+                .one();
     }
 
     private static BigDecimal normalizeAttendanceDays(BigDecimal attendanceDays) {
@@ -2753,10 +2772,10 @@ public class SalaryMonthRecordServiceNew extends BaseServiceImpl<HrmSalaryMonthR
     //事假天数
     leaveOfAbsenceDays = sickDeductDays(isProduce, employeeSummaryDayList, workTimsMap, "1", deductionVOList);
 
-    //获取默认的扣款规则
+    //获取生效的扣款规则（默认标记优先，见 selectEffectiveAttendanceRule）
     HrmAttendanceRule hrmAttendanceRule = batchData.attendanceRule;
     if (hrmAttendanceRule == null) {
-        hrmAttendanceRule = hrmAttendanceRuleService.lambdaQuery().orderByDesc(HrmAttendanceRule::getCreateTime).one();
+        hrmAttendanceRule = selectEffectiveAttendanceRule();
     }
 
 
@@ -2882,21 +2901,11 @@ public class SalaryMonthRecordServiceNew extends BaseServiceImpl<HrmSalaryMonthR
     } else if (hrmAttendanceRule.getLateRuleMethod() == THREE) {
         lateMoney = hrmAttendanceRule.getLateDeductMoney();
     }
-    //计算早退
+    //计算早退（2026-09-06 确认：早退扣款上不封顶，原封顶分支误用迟到单价，已整体移除）
     if (hrmAttendanceRule.getEarlyRuleMethod() == ONE) {
         earlyMoney = hrmAttendanceRule.getEarlyDeductMoney().multiply(new BigDecimal(attendanceEmpRecordMap.get("earlyMinute").toString()));
-        if (isPersonal == IsEnum.YES.getValue()) {
-            if (attendanceEmpRecordMap.get("earlyMinute")!=null && (int) attendanceEmpRecordMap.get("earlyMinute") > hrmAttendanceRule.getEarlyMinutesOrCounts() && hrmAttendanceRule.getEarlyMinutesOrCounts() > 0) {
-                earlyMoney = hrmAttendanceRule.getLateDeductMoney().multiply(new BigDecimal(hrmAttendanceRule.getEarlyMinutesOrCounts().toString())).setScale(2, RoundingMode.HALF_UP);
-            }
-        }
     } else if (hrmAttendanceRule.getEarlyRuleMethod() == TWO) {
         earlyMoney = hrmAttendanceRule.getEarlyDeductMoney().multiply(new BigDecimal(attendanceEmpRecordMap.get("earlyCount").toString()));
-        if (isPersonal == IsEnum.YES.getValue()) {
-            if (attendanceEmpRecordMap.get("earlyCount")!=null && (int) attendanceEmpRecordMap.get("earlyCount") > hrmAttendanceRule.getEarlyMinutesOrCounts() && hrmAttendanceRule.getEarlyMinutesOrCounts() > 0) {
-                earlyMoney = hrmAttendanceRule.getLateDeductMoney().multiply(new BigDecimal(hrmAttendanceRule.getEarlyMinutesOrCounts().toString())).setScale(2, RoundingMode.HALF_UP);
-            }
-        }
     } else if (hrmAttendanceRule.getEarlyRuleMethod() == THREE) {
         earlyMoney = hrmAttendanceRule.getEarlyDeductMoney();
     }
@@ -3306,6 +3315,10 @@ public class SalaryMonthRecordServiceNew extends BaseServiceImpl<HrmSalaryMonthR
         {
             //如果还没有每月薪资记录，则根据薪资配置生成一条
             HrmSalaryConfig salaryConfig = hrmSalaryConfigService.getOne(Wrappers.emptyWrapper());
+            // 新租户可能未配置薪资信息，直接返回 null 避免 NPE
+            if (salaryConfig == null || salaryConfig.getSalaryStartMonth() == null) {
+                return null;
+            }
             String salaryStartMonth = salaryConfig.getSalaryStartMonth();
             DateTime date = DateUtil.parse(salaryStartMonth, "yyyy-MM");
             int month = date.month() + 1;
@@ -5149,6 +5162,8 @@ public class SalaryMonthRecordServiceNew extends BaseServiceImpl<HrmSalaryMonthR
         // 使用 Map 结构存储每行数据，以字段名为键，消除硬编码索引
         List<Map<String, String>> dataMapList = new ArrayList<>();
         List<List<String>> dataList = new ArrayList<>();
+        //按员工保存工资项明细值（键 = 部门|姓名），用于生成导出批注的具体说明
+        Map<String, Map<Integer, String>> exportCommentDetailByEmp = new HashMap<>();
 
         List<Long> employeeIds = new ArrayList<>();
         //查询出已经定薪了的人员列表
@@ -5189,6 +5204,14 @@ public class SalaryMonthRecordServiceNew extends BaseServiceImpl<HrmSalaryMonthR
 
                 vo.setMonth(year+"年"+month+"月");
                 List<ComputeSalaryDto> list = salaryMonthOptionValueService.queryEmpSalaryOptionValueList(vo.getSEmpRecordId());
+                //记录该员工全部工资项明细值，供导出批注使用
+                Map<Integer, String> empOptionValueMap = new HashMap<>();
+                for (ComputeSalaryDto optionValue : list) {
+                    if (optionValue != null && optionValue.getCode() != null && optionValue.getValue() != null) {
+                        empOptionValueMap.put(optionValue.getCode(), optionValue.getValue());
+                    }
+                }
+                exportCommentDetailByEmp.put(vo.getDeptName() + "|" + vo.getEmployeeName(), empOptionValueMap);
                 List<QuerySalaryPageListVO.SalaryValue> salaryValues = TransferUtil.transferList(list, QuerySalaryPageListVO.SalaryValue.class);
 
                 // 如果是0002公司，从 hrm_bonus 表查询奖金数据
@@ -5304,6 +5327,28 @@ public class SalaryMonthRecordServiceNew extends BaseServiceImpl<HrmSalaryMonthR
 
 
         List<HrmSalaryExport> salaryExportList = exportMapper.queryExportData(year,month);
+
+        //为每名员工生成五类批注的具体说明文本（全勤奖、超缺勤、个税、工会费、其他补贴）
+        if (!CollectionUtil.isEmpty(salaryExportList)) {
+            for (HrmSalaryExport export : salaryExportList) {
+                if ("小计".equals(export.getEmpname()) || "合计".equals(export.getEmpname())) {
+                    continue;
+                }
+                Map<Integer, String> empOptionValueMap = exportCommentDetailByEmp.get(
+                        export.getDeptname() + "|" + export.getEmpname());
+                if (empOptionValueMap == null) {
+                    empOptionValueMap = exportCommentDetailByEmp.get(export.getEmpname());
+                }
+                if (empOptionValueMap == null) {
+                    continue;
+                }
+                export.setFullAttendanceComment(buildFullAttendanceCommentText(export, empOptionValueMap));
+                export.setAbsenceComment(buildAbsenceCommentText(export, empOptionValueMap));
+                export.setTaxComment(buildTaxCommentText(empOptionValueMap));
+                export.setUnionFeesComment(buildUnionFeesCommentText(export, empOptionValueMap));
+                export.setOtherSubsidyComment(buildOtherSubsidyCommentText(empOptionValueMap));
+            }
+        }
 
         if(!CollectionUtil.isEmpty(salaryExportList))
         {
@@ -5445,6 +5490,195 @@ public class SalaryMonthRecordServiceNew extends BaseServiceImpl<HrmSalaryMonthR
 
     }
 
+
+    /**考勤扣款各项工资项编号：迟到*/
+    private static final int CODE_LATE_DEDUCTION = 190101;
+    /**早退*/
+    private static final int CODE_EARLY_DEDUCTION = 190102;
+    /**旷工*/
+    private static final int CODE_ABSENTEEISM_DEDUCTION = 190103;
+    /**病假*/
+    private static final int CODE_SICK_LEAVE_DEDUCTION = 19010401;
+    /**事假*/
+    private static final int CODE_PERSONAL_LEAVE_DEDUCTION = 19010402;
+    /**缺卡*/
+    private static final int CODE_MISS_CARD_DEDUCTION = 190105;
+    /**其他补贴*/
+    private static final int CODE_OTHER_SUBSIDY = 281;
+    /**个税累计：收入/减除费用/专项扣除/专项附加扣除/应纳税所得额/应纳税额/已缴税额*/
+    private static final int CODE_TAX_CUMULATIVE_INCOME = 270101;
+    private static final int CODE_TAX_CUMULATIVE_DEDUCTION = 270102;
+    private static final int CODE_TAX_CUMULATIVE_SPECIAL = 270103;
+    private static final int CODE_TAX_CUMULATIVE_ADDITIONAL = 270104;
+    private static final int CODE_TAX_CUMULATIVE_TAXABLE = 270105;
+    private static final int CODE_TAX_CUMULATIVE_PAYABLE = 270106;
+    private static final int CODE_TAX_CUMULATIVE_PAID = 250105;
+
+    private static String commentAmount(Map<Integer, String> empOptionValueMap, int code) {
+        String value = empOptionValueMap.get(code);
+        if (value == null || value.trim().isEmpty()) {
+            return "0";
+        }
+        try {
+            return new BigDecimal(value.trim()).setScale(2, RoundingMode.HALF_UP).toPlainString();
+        } catch (NumberFormatException e) {
+            return "0";
+        }
+    }
+
+    private static boolean commentAmountPositive(Map<Integer, String> empOptionValueMap, int code) {
+        return new BigDecimal(commentAmount(empOptionValueMap, code)).compareTo(BigDecimal.ZERO) > 0;
+    }
+
+    /**
+     * 全勤奖批注：没有全勤奖时给出该员工的具体原因线索
+     */
+    private static String buildFullAttendanceCommentText(HrmSalaryExport export, Map<Integer, String> empOptionValueMap) {
+        BigDecimal fullAttendance = export.getFullattendancesalary() == null ? BigDecimal.ZERO : export.getFullattendancesalary();
+        StringBuilder text = new StringBuilder();
+        text.append("全勤奖是员工当月满勤发放的奖励，金额在【薪资管理-基本工资设置】中按员工设定。");
+        if (fullAttendance.compareTo(BigDecimal.ZERO) > 0) {
+            text.append("该员工本月满足满勤条件（已转正、无有效病假、出勤达标），获得全勤奖 ")
+                .append(fullAttendance.toPlainString()).append(" 元。");
+        } else {
+            text.append("本月没有全勤奖，原因：");
+            boolean hasReason = false;
+            if (commentAmountPositive(empOptionValueMap, CODE_SICK_LEAVE_DEDUCTION)) {
+                text.append("本月有病假扣款（").append(commentAmount(empOptionValueMap, CODE_SICK_LEAVE_DEDUCTION))
+                    .append(" 元），按规则取消全勤；");
+                hasReason = true;
+            }
+            if (export.getAbsencehours() != null && export.getAbsencehours().compareTo(BigDecimal.ZERO) != 0) {
+                text.append("本月存在超缺勤（").append(export.getAbsencehours().toPlainString())
+                    .append(" 天），出勤不满；");
+                hasReason = true;
+            }
+            text.append("其他可能：入职后尚未转正或当月才转正、基本工资设置中未启用全勤奖");
+            if (!hasReason) {
+                text.append("——请结合该员工的转正状态和基本工资设置核对");
+            }
+            text.append("。当前满勤天数：");
+            text.append(export.getNormaldays() == null || export.getNormaldays().trim().isEmpty()
+                    ? "0" : export.getNormaldays());
+            text.append(" 天。");
+        }
+        return text.toString();
+    }
+
+    /**
+     * 超缺勤工资批注：列出各项考勤扣款明细及合计
+     */
+    private static String buildAbsenceCommentText(HrmSalaryExport export, Map<Integer, String> empOptionValueMap) {
+        StringBuilder text = new StringBuilder();
+        text.append("超缺勤工资是因迟到、早退、旷工、请事假、请病假、缺卡等从工资中扣除的部分，")
+            .append("超缺勤天数 =（应出勤天数 × 8 − 应计出勤小时）÷ 8，出勤数据来自考勤统计结果。");
+        String late = commentAmount(empOptionValueMap, CODE_LATE_DEDUCTION);
+        String early = commentAmount(empOptionValueMap, CODE_EARLY_DEDUCTION);
+        String absenteeism = commentAmount(empOptionValueMap, CODE_ABSENTEEISM_DEDUCTION);
+        String personalLeave = commentAmount(empOptionValueMap, CODE_PERSONAL_LEAVE_DEDUCTION);
+        String sickLeave = commentAmount(empOptionValueMap, CODE_SICK_LEAVE_DEDUCTION);
+        String missCard = commentAmount(empOptionValueMap, CODE_MISS_CARD_DEDUCTION);
+        if (commentAmountPositive(empOptionValueMap, CODE_LATE_DEDUCTION)
+                || commentAmountPositive(empOptionValueMap, CODE_EARLY_DEDUCTION)
+                || commentAmountPositive(empOptionValueMap, CODE_ABSENTEEISM_DEDUCTION)
+                || commentAmountPositive(empOptionValueMap, CODE_PERSONAL_LEAVE_DEDUCTION)
+                || commentAmountPositive(empOptionValueMap, CODE_SICK_LEAVE_DEDUCTION)
+                || commentAmountPositive(empOptionValueMap, CODE_MISS_CARD_DEDUCTION)) {
+            text.append("本月扣款明细：迟到扣 ").append(late).append(" 元，早退扣 ").append(early)
+                .append(" 元，旷工扣 ").append(absenteeism).append(" 元，事假扣 ").append(personalLeave)
+                .append(" 元，病假扣 ").append(sickLeave).append(" 元（每月前2天病假不扣钱，超过部分按当地最低工资折算扣除），缺卡扣 ")
+                .append(missCard).append(" 元。");
+        } else {
+            text.append("本月没有考勤扣款项");
+            if (export.getAbsencesalary() != null && export.getAbsencesalary().compareTo(BigDecimal.ZERO) == 0) {
+                text.append("，超缺勤扣款为0");
+            }
+            text.append("。");
+        }
+        text.append("当前超缺勤天数：")
+            .append(export.getAbsencehours() == null ? "0" : export.getAbsencehours().toPlainString())
+            .append(" 天，超缺勤扣款合计：")
+            .append(export.getAbsencesalary() == null ? "0" : export.getAbsencesalary().toPlainString())
+            .append(" 元。");
+        return text.toString();
+    }
+
+    /**
+     * 个人所得税批注：给出公式与该员工本月的具体计算过程
+     */
+    private static String buildTaxCommentText(Map<Integer, String> empOptionValueMap) {
+        String income = commentAmount(empOptionValueMap, CODE_TAX_CUMULATIVE_INCOME);
+        String deduction = commentAmount(empOptionValueMap, CODE_TAX_CUMULATIVE_DEDUCTION);
+        String special = commentAmount(empOptionValueMap, CODE_TAX_CUMULATIVE_SPECIAL);
+        String additional = commentAmount(empOptionValueMap, CODE_TAX_CUMULATIVE_ADDITIONAL);
+        String taxable = commentAmount(empOptionValueMap, CODE_TAX_CUMULATIVE_TAXABLE);
+        String payable = commentAmount(empOptionValueMap, CODE_TAX_CUMULATIVE_PAYABLE);
+        String paid = commentAmount(empOptionValueMap, CODE_TAX_CUMULATIVE_PAID);
+
+        StringBuilder text = new StringBuilder();
+        text.append("个人所得税按“累计预扣”方法计算：把今年1月至本月的收入累加，")
+            .append("减去每月5000元的固定减除费用、个人承担的社保和公积金、专项附加扣除，得到累计应纳税所得额；")
+            .append("再按税率表算出累计应缴税额，减去之前月份已缴的税，就是本月要扣的个税。本月计算过程：")
+            .append("累计收入 ").append(income).append(" 元 − 累计固定减除费用 ").append(deduction)
+            .append(" 元 − 累计社保公积金 ").append(special).append(" 元 − 累计专项附加扣除 ").append(additional)
+            .append(" 元 = 累计应纳税所得额 ").append(taxable).append(" 元。");
+        if (new BigDecimal(taxable).compareTo(BigDecimal.ZERO) > 0) {
+            int bracket = 6;
+            BigDecimal[] thresholds = {new BigDecimal("36000"), new BigDecimal("144000"), new BigDecimal("300000"),
+                    new BigDecimal("420000"), new BigDecimal("660000"), new BigDecimal("960000")};
+            String[] rates = {"3%", "10%", "20%", "25%", "30%", "35%", "45%"};
+            String[] quick = {"0", "2520", "16920", "31920", "52920", "85920", "181920"};
+            for (int i = 0; i < thresholds.length; i++) {
+                if (new BigDecimal(taxable).compareTo(thresholds[i]) <= 0) {
+                    bracket = i;
+                    break;
+                }
+            }
+            text.append("适用税率 ").append(rates[bracket]).append("%，速算扣除数 ").append(quick[bracket])
+                .append(" 元，累计应纳税额 ").append(payable).append(" 元 − 累计已缴税额 ").append(paid)
+                .append(" 元 = 本月个税。");
+        } else {
+            text.append("累计应纳税所得额不超过0，本月无需缴纳个税。");
+        }
+        return text.toString();
+    }
+
+    /**
+     * 工会费批注：有则给出计算式，没有则说明原因
+     */
+    private static String buildUnionFeesCommentText(HrmSalaryExport export, Map<Integer, String> empOptionValueMap) {
+        BigDecimal unionFees = export.getUnionfees() == null ? BigDecimal.ZERO : export.getUnionfees();
+        StringBuilder text = new StringBuilder();
+        text.append("工会费按应发工资的0.5%收取，并受员工状态、转正时间等规则限制。");
+        if (unionFees.compareTo(BigDecimal.ZERO) > 0) {
+            text.append("本月计算：应发工资 ")
+                .append(export.getTotalsalary() == null ? "0" : export.getTotalsalary().toPlainString())
+                .append(" 元 × 0.5% = ").append(unionFees.toPlainString()).append(" 元。");
+        } else {
+            text.append("本月没有工会费，原因：应发工资为0或员工为实习、已离职、当月才转正，或所在公司免收工会费。")
+                .append("当前应发工资：")
+                .append(export.getTotalsalary() == null ? "0" : export.getTotalsalary().toPlainString())
+                .append(" 元。");
+        }
+        return text.toString();
+    }
+
+    /**
+     * 其他补贴批注：说明数据来自考勤管理的上传考勤
+     */
+    private static String buildOtherSubsidyCommentText(Map<Integer, String> empOptionValueMap) {
+        String amount = commentAmount(empOptionValueMap, CODE_OTHER_SUBSIDY);
+        StringBuilder text = new StringBuilder();
+        text.append("其他补贴的数据来自【考勤管理】中的“每月考勤统计”（上传考勤）：")
+            .append("由考勤报表文件导入该员工当月的“其他补贴”列，也可以在考勤统计页面上直接修改单元格保存，")
+            .append("薪资核算时按该列金额发放。");
+        if (new BigDecimal(amount).compareTo(BigDecimal.ZERO) > 0) {
+            text.append("本月金额：").append(amount).append(" 元。");
+        } else {
+            text.append("本月该员工的其他补贴未填写或为0。");
+        }
+        return text.toString();
+    }
 
     /**
      * 薪资导出

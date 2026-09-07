@@ -101,4 +101,12 @@ public interface HrmEmployeeMapper extends BaseMapper<HrmEmployee> {
      */
     List<HrmEmployeeVO> queryHasOverTimePayEmpList();
 
+    /**
+     * 查询员工列表（支持月份筛选）
+     * @param employeeName 员工姓名（可选）
+     * @param month 月份（可选，格式YYYY-MM）
+     * @return
+     */
+    List<Map<String, Object>> queryEmployeeListForTransfer(@Param("employeeName") String employeeName, @Param("month") String month);
+
 }

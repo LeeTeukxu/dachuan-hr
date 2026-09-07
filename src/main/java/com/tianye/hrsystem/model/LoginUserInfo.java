@@ -55,10 +55,10 @@ public class LoginUserInfo implements Serializable {
     }
 
     public Long getUserIdValueL() {
-        return Long.parseLong(userId);
+        return userId == null ? null : Long.parseLong(userId);
     }
-    public Integer getUserIdValue(){
-        return Integer.parseInt(userId);
+    public Long getUserIdValue(){
+        return userId == null ? null : Long.parseLong(userId);
     }
 
     public Long getDepIdValue() {

@@ -12,19 +12,24 @@ import com.tianye.hrsystem.entity.bo.QueryOvertimeNightStatisticsPageBO;
 import com.tianye.hrsystem.entity.bo.SyncProduceAttendanceBO;
 import com.tianye.hrsystem.entity.bo.UpdateProduceAttendanceCellBO;
 import com.tianye.hrsystem.entity.po.HrmProduceAttendance;
+import com.tianye.hrsystem.entity.vo.AdministrativeAttendanceReportDetailVO;
 import com.tianye.hrsystem.entity.vo.AdministrativeAttendanceReportMetricVO;
 import com.tianye.hrsystem.entity.vo.QueryMonthAttendanceVO;
 import com.tianye.hrsystem.entity.vo.QueryOvertimeNightStatisticsPageVO;
 import com.tianye.hrsystem.mapper.HrmProduceAttendanceMapper;
 import com.tianye.hrsystem.model.HrmDept;
 import com.tianye.hrsystem.model.HrmEmployee;
+import com.tianye.hrsystem.model.HrmEmployeeQuitInfo;
 import com.tianye.hrsystem.model.HrmOvertimeNightStatisticsDetail;
 import com.tianye.hrsystem.model.LoginUserInfo;
 import com.tianye.hrsystem.model.tbattendanceapprove;
 import com.tianye.hrsystem.model.tbattendanceuser;
 import com.tianye.hrsystem.modules.salary.entity.HrmSalaryBasic;
+import com.tianye.hrsystem.modules.salary.entity.HrmSalaryConfig;
 import com.tianye.hrsystem.modules.salary.mapper.HrmSalaryBasicMapper;
+import com.tianye.hrsystem.modules.salary.service.HrmSalaryConfigService;
 import com.tianye.hrsystem.repository.hrmDeptRepository;
+import com.tianye.hrsystem.repository.hrmEmployeeQuitInfoRepository;
 import com.tianye.hrsystem.repository.hrmEmployeeRepository;
 import com.tianye.hrsystem.repository.hrmOvertimeNightStatisticsDetailRepository;
 import com.tianye.hrsystem.repository.tbattendanceapproveRepository;
@@ -57,6 +62,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.TreeSet;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 
@@ -100,6 +106,12 @@ public class HrmProduceAttendanceServiceImpl extends BaseServiceImpl<HrmProduceA
 
     @Autowired
     HrmSalaryBasicMapper salaryBasicMapper;
+
+    @Autowired
+    HrmSalaryConfigService salaryConfigService;
+
+    @Autowired
+    hrmEmployeeQuitInfoRepository quitInfoRepository;
 
     @Override
     @Transactional(rollbackFor = Exception.class)
@@ -196,8 +208,9 @@ public class HrmProduceAttendanceServiceImpl extends BaseServiceImpl<HrmProduceA
     public void downloadAdministrativeAttendance(QueryMonthAttendanceBO queryMonthAttendanceBO,
                                                  HttpServletResponse response) throws Exception {
         YearMonth targetMonth = resolveAdministrativeAttendanceExportMonth(queryMonthAttendanceBO);
+        int payDay = resolveAdministrativePayDay();
         List<AdministrativeAttendanceExportSupport.AdministrativeAttendanceExportRow> exportRows =
-                buildAdministrativeAttendanceExportRows(queryMonthAttendanceBO, targetMonth);
+                buildAdministrativeAttendanceExportRows(queryMonthAttendanceBO, targetMonth, payDay);
         byte[] bytes = AdministrativeAttendanceExportSupport.buildWorkbook(
                 targetMonth,
                 resolveCompanyName(),
@@ -339,27 +352,229 @@ public class HrmProduceAttendanceServiceImpl extends BaseServiceImpl<HrmProduceA
 
     private List<AdministrativeAttendanceExportSupport.AdministrativeAttendanceExportRow> buildAdministrativeAttendanceExportRows(
             QueryMonthAttendanceBO queryMonthAttendanceBO,
-            YearMonth targetMonth) {
+            YearMonth targetMonth,
+            int payDay) {
         List<HrmOvertimeNightStatisticsDetail> details = overtimeNightStatisticsDetailRepository
                 .findAllByStatYearAndStatMonthOrderByWorkDateDescEmployeeIdAsc(
                         targetMonth.getYear(),
                         targetMonth.getMonthValue()
                 );
-        if (details == null || details.isEmpty()) {
-            return Collections.emptyList();
-        }
 
         Map<Long, HrmEmployee> employeeMap = employeeRepository.findAll().stream()
                 .filter(employee -> employee != null && employee.getEmployeeId() != null)
                 .collect(Collectors.toMap(HrmEmployee::getEmployeeId, Function.identity(), (left, right) -> left, LinkedHashMap::new));
 
+        // 发薪日(payDay)是"当月是否算在职"的分界：payDay 当天(含)及之后才离职的员工，当月仍按在职导出。
+        LocalDate employmentCutoverDate = targetMonth.atDay(Math.min(payDay, targetMonth.lengthOfMonth()));
+        Map<Long, LocalDate> quitDateByEmployeeId = resolveAdministrativeQuitDateMap(employeeMap);
+
+        // 三源并集：统计明细优先，考勤汇总（department=1）与行政体系员工表补齐缺失员工，
+        // 避免“统计明细只覆盖部分员工”时导出遗漏其余行政体系员工。
+        List<AdministrativeAttendanceExportSupport.AdministrativeAttendanceExportRow> rows = new ArrayList<>();
+        Set<Long> exportedEmployeeIds = new LinkedHashSet<>();
+        if (details != null && !details.isEmpty()) {
+            appendMissingAdministrativeAttendanceRows(rows, exportedEmployeeIds,
+                    buildRowsFromStatisticsDetails(details, employeeMap, queryMonthAttendanceBO, targetMonth,
+                            quitDateByEmployeeId, employmentCutoverDate));
+        }
+        appendMissingAdministrativeAttendanceRows(rows, exportedEmployeeIds,
+                buildRowsFromProduceAttendance(employeeMap, queryMonthAttendanceBO, targetMonth,
+                        quitDateByEmployeeId, employmentCutoverDate));
+        appendMissingAdministrativeAttendanceRows(rows, exportedEmployeeIds,
+                buildRowsFromEmployeeList(employeeMap, queryMonthAttendanceBO, targetMonth,
+                        quitDateByEmployeeId, employmentCutoverDate));
+
+        if (rows.isEmpty()) {
+            return Collections.emptyList();
+        }
+        sortAdministrativeAttendanceRows(rows);
+
+        enrichAdministrativeAttendanceApprovalMetrics(rows, targetMonth);
+        refreshAdministrativeAttendanceActualHours(rows);
+        refreshAdministrativeAttendanceHoursFromStatisticsRows(rows, targetMonth);
+        enrichAdministrativeAttendanceReportMetrics(rows, targetMonth);
+        attachAdministrativeAttendanceCommentTexts(rows, targetMonth);
+        return rows;
+    }
+
+    /**
+     * 为导出行生成批注：标注每类考勤记录的发生时间与计算过程（全中文说明）
+     */
+    private void attachAdministrativeAttendanceCommentTexts(
+            List<AdministrativeAttendanceExportSupport.AdministrativeAttendanceExportRow> rows,
+            YearMonth targetMonth) {
+        if (rows == null || rows.isEmpty()) {
+            return;
+        }
+        List<Long> employeeIds = rows.stream()
+                .map(row -> row.employeeId)
+                .filter(id -> id != null)
+                .distinct()
+                .collect(Collectors.toList());
+        if (employeeIds.isEmpty()) {
+            return;
+        }
+        //审批类（事假/病假/调休/年假/出差/加班）发生日期
+        Map<Long, Map<String, Set<LocalDate>>> approvalDatesByEmployee =
+                collectAdministrativeApprovalDates(targetMonth, employeeIds);
+        //考勤报告类（旷工/迟到/早退/缺卡）发生日期
+        Map<Long, Map<String, Set<LocalDate>>> reportDatesByEmployee =
+                collectAdministrativeReportDates(targetMonth, employeeIds);
+
+        for (AdministrativeAttendanceExportSupport.AdministrativeAttendanceExportRow row : rows) {
+            if (row == null) {
+                continue;
+            }
+            Map<String, Set<LocalDate>> approvalDates = approvalDatesByEmployee.getOrDefault(
+                    row.employeeId, Collections.emptyMap());
+            Map<String, Set<LocalDate>> reportDates = reportDatesByEmployee.getOrDefault(
+                    row.employeeId, Collections.emptyMap());
+            row.columnComments.put(7, AdministrativeAttendanceExportSupport.buildLeaveCommentText(
+                    "事假", joinAdministrativeCommentDates(approvalDates.get("事假")), row.personalLeaveHours));
+            row.columnComments.put(8, AdministrativeAttendanceExportSupport.buildLeaveCommentText(
+                    "病假", joinAdministrativeCommentDates(approvalDates.get("病假")), row.sickLeaveHours));
+            row.columnComments.put(9, AdministrativeAttendanceExportSupport.buildLeaveCommentText(
+                    "调休", joinAdministrativeCommentDates(approvalDates.get("调休")), row.compensatoryLeaveHours));
+            row.columnComments.put(10, AdministrativeAttendanceExportSupport.buildLeaveCommentText(
+                    "年假", joinAdministrativeCommentDates(approvalDates.get("年假")), row.annualLeaveHours));
+            row.columnComments.put(11, AdministrativeAttendanceExportSupport.buildTravelCommentText(
+                    joinAdministrativeCommentDates(approvalDates.get("出差")), row.travelDays));
+            Set<LocalDate> absenteeismDates = new TreeSet<>();
+            if (reportDates.get("旷工天数") != null) {
+                absenteeismDates.addAll(reportDates.get("旷工天数"));
+            }
+            if (reportDates.get("旷工迟到天数") != null) {
+                absenteeismDates.addAll(reportDates.get("旷工迟到天数"));
+            }
+            row.columnComments.put(12, AdministrativeAttendanceExportSupport.buildAbsenteeismCommentText(
+                    joinAdministrativeCommentDates(absenteeismDates), row.absenteeismDays));
+            row.columnComments.put(13, AdministrativeAttendanceExportSupport.buildCountCommentText(
+                    "迟到", joinAdministrativeCommentDates(reportDates.get("迟到次数")), row.lateCount,
+                    "每天打卡迟到记 1 次，全月累计。"));
+            row.columnComments.put(14, AdministrativeAttendanceExportSupport.buildCountCommentText(
+                    "早退", joinAdministrativeCommentDates(reportDates.get("早退次数")), row.earlyCount,
+                    "每天打卡早退记 1 次，全月累计。"));
+            row.columnComments.put(15, AdministrativeAttendanceExportSupport.buildCountCommentText(
+                    "上班缺卡", joinAdministrativeCommentDates(reportDates.get("上班缺卡次数")), row.onDutyMissingCardCount,
+                    "上班时段没有打卡记录的，每次记 1 次，全月累计。"));
+            row.columnComments.put(16, AdministrativeAttendanceExportSupport.buildCountCommentText(
+                    "下班缺卡", joinAdministrativeCommentDates(reportDates.get("下班缺卡次数")), row.offDutyMissingCardCount,
+                    "下班时段没有打卡记录的，每次记 1 次，全月累计。"));
+            row.columnComments.put(17, AdministrativeAttendanceExportSupport.buildTotalMissingCardCommentText(
+                    row.onDutyMissingCardCount, row.offDutyMissingCardCount));
+            row.columnComments.put(18, AdministrativeAttendanceExportSupport.buildOvertimeCommentText(
+                    joinAdministrativeCommentDates(approvalDates.get("加班")), row.overtimeHours));
+        }
+    }
+
+    private Map<Long, Map<String, Set<LocalDate>>> collectAdministrativeApprovalDates(YearMonth targetMonth,
+                                                                                      List<Long> employeeIds) {
+        Map<Long, Map<String, Set<LocalDate>>> result = new LinkedHashMap<>();
+        List<tbattendanceuser> attendanceUsers = attendanceUserRepository.findAllByEmpIdIn(employeeIds);
+        if (attendanceUsers == null || attendanceUsers.isEmpty()) {
+            return result;
+        }
+        Map<String, Long> employeeIdByDingTalkUserId = new LinkedHashMap<>();
+        for (tbattendanceuser attendanceUser : attendanceUsers) {
+            if (attendanceUser == null || attendanceUser.getEmpId() == null || trimToEmpty(attendanceUser.getUserId()).isEmpty()) {
+                continue;
+            }
+            employeeIdByDingTalkUserId.putIfAbsent(attendanceUser.getUserId().trim(), attendanceUser.getEmpId());
+        }
+        if (employeeIdByDingTalkUserId.isEmpty()) {
+            return result;
+        }
+        Date begin = toDate(targetMonth.atDay(1).atStartOfDay());
+        Date end = toDate(targetMonth.atEndOfMonth().atTime(LocalTime.MAX));
+        List<tbattendanceapprove> approvals = attendanceApproveRepository.findAllByUserIdInAndWorkDateBetween(
+                new ArrayList<>(employeeIdByDingTalkUserId.keySet()), begin, end);
+        if (approvals == null || approvals.isEmpty()) {
+            return result;
+        }
+        for (tbattendanceapprove approval : approvals) {
+            if (approval == null || !isApprovalIncludedInAdministrativeAttendanceExport(approval)) {
+                continue;
+            }
+            Long employeeId = employeeIdByDingTalkUserId.get(trimToEmpty(approval.getUserId()));
+            if (employeeId == null) {
+                continue;
+            }
+            String type = resolveAdministrativeAttendanceApprovalType(approval);
+            if (type == null) {
+                continue;
+            }
+            BigDecimal hours = resolveAdministrativeAttendanceApprovalHours(approval);
+            if (hours.compareTo(BigDecimal.ZERO) <= 0) {
+                continue;
+            }
+            LocalDate occurredDate = resolveAdministrativeApprovalDate(approval);
+            if (occurredDate == null) {
+                continue;
+            }
+            result.computeIfAbsent(employeeId, key -> new LinkedHashMap<>())
+                    .computeIfAbsent(type, key -> new TreeSet<>())
+                    .add(occurredDate);
+        }
+        return result;
+    }
+
+    private Map<Long, Map<String, Set<LocalDate>>> collectAdministrativeReportDates(YearMonth targetMonth,
+                                                                                    List<Long> employeeIds) {
+        Map<Long, Map<String, Set<LocalDate>>> result = new LinkedHashMap<>();
+        Date begin = toDate(targetMonth.atDay(1).atStartOfDay());
+        Date end = toDate(targetMonth.atEndOfMonth().atTime(LocalTime.MAX));
+        List<AdministrativeAttendanceReportDetailVO> details = produceAttendanceMapper
+                .queryAdministrativeAttendanceReportDetail(begin, end, employeeIds);
+        if (details == null || details.isEmpty()) {
+            return result;
+        }
+        for (AdministrativeAttendanceReportDetailVO detail : details) {
+            if (detail == null || detail.getEmployeeId() == null
+                    || detail.getWorkDate() == null || trimToEmpty(detail.getFieldName()).isEmpty()) {
+                continue;
+            }
+            LocalDate occurredDate = toLocalDateTime(detail.getWorkDate()).toLocalDate();
+            result.computeIfAbsent(detail.getEmployeeId(), key -> new LinkedHashMap<>())
+                    .computeIfAbsent(trimToEmpty(detail.getFieldName()), key -> new TreeSet<>())
+                    .add(occurredDate);
+        }
+        return result;
+    }
+
+    private LocalDate resolveAdministrativeApprovalDate(tbattendanceapprove approval) {
+        if (approval.getWorkDate() != null) {
+            return toLocalDateTime(approval.getWorkDate()).toLocalDate();
+        }
+        if (approval.getBeginTime() != null) {
+            return toLocalDateTime(approval.getBeginTime()).toLocalDate();
+        }
+        return null;
+    }
+
+    private String joinAdministrativeCommentDates(Set<LocalDate> dates) {
+        if (dates == null || dates.isEmpty()) {
+            return null;
+        }
+        return dates.stream()
+                .map(date -> date.getMonthValue() + "月" + date.getDayOfMonth() + "日")
+                .collect(Collectors.joining("、"));
+    }
+
+    private List<AdministrativeAttendanceExportSupport.AdministrativeAttendanceExportRow> buildRowsFromStatisticsDetails(
+            List<HrmOvertimeNightStatisticsDetail> details,
+            Map<Long, HrmEmployee> employeeMap,
+            QueryMonthAttendanceBO queryMonthAttendanceBO,
+            YearMonth targetMonth,
+            Map<Long, LocalDate> quitDateByEmployeeId,
+            LocalDate employmentCutoverDate) {
         Map<Long, AdministrativeAttendanceAccumulator> accumulators = new LinkedHashMap<>();
         for (HrmOvertimeNightStatisticsDetail detail : details) {
             if (detail == null || detail.getEmployeeId() == null) {
                 continue;
             }
             HrmEmployee employee = employeeMap.get(detail.getEmployeeId());
-            if (!shouldExportAdministrativeAttendanceEmployee(detail, employee, queryMonthAttendanceBO)) {
+            if (!shouldExportAdministrativeAttendanceEmployee(detail, employee, queryMonthAttendanceBO,
+                    quitDateByEmployeeId, employmentCutoverDate)) {
                 continue;
             }
             accumulators
@@ -369,28 +584,213 @@ public class HrmProduceAttendanceServiceImpl extends BaseServiceImpl<HrmProduceA
         if (accumulators.isEmpty()) {
             return Collections.emptyList();
         }
-
         Map<Long, String> deptNames = resolveAdministrativeAttendanceDeptNames(accumulators.values());
-        List<AdministrativeAttendanceExportSupport.AdministrativeAttendanceExportRow> rows = accumulators.values()
+        List<AdministrativeAttendanceExportSupport.AdministrativeAttendanceExportRow> exportRows = accumulators.values()
                 .stream()
                 .map(accumulator -> accumulator.toRow(targetMonth, deptNames))
-                .sorted(Comparator
-                        .comparing((AdministrativeAttendanceExportSupport.AdministrativeAttendanceExportRow row) -> nullToEmpty(row.deptName))
-                        .thenComparing(row -> nullToEmpty(row.employeeName))
-                        .thenComparing(row -> row.employeeId, Comparator.nullsLast(Long::compareTo)))
                 .collect(Collectors.toList());
-        enrichAdministrativeAttendanceApprovalMetrics(rows, targetMonth);
-        refreshAdministrativeAttendanceActualHours(rows);
-        refreshAdministrativeAttendanceHoursFromStatisticsRows(rows, targetMonth);
-        enrichAdministrativeAttendanceReportMetrics(rows, targetMonth);
+        sortAdministrativeAttendanceRows(exportRows);
+        return exportRows;
+    }
+
+    private void appendMissingAdministrativeAttendanceRows(
+            List<AdministrativeAttendanceExportSupport.AdministrativeAttendanceExportRow> target,
+            Set<Long> exportedEmployeeIds,
+            List<AdministrativeAttendanceExportSupport.AdministrativeAttendanceExportRow> additional) {
+        if (additional == null || additional.isEmpty()) {
+            return;
+        }
+        for (AdministrativeAttendanceExportSupport.AdministrativeAttendanceExportRow row : additional) {
+            if (row == null) {
+                continue;
+            }
+            if (row.employeeId != null && !exportedEmployeeIds.add(row.employeeId)) {
+                continue;
+            }
+            target.add(row);
+        }
+    }
+
+    private static void sortAdministrativeAttendanceRows(
+            List<AdministrativeAttendanceExportSupport.AdministrativeAttendanceExportRow> rows) {
+        rows.sort(Comparator
+                .comparing((AdministrativeAttendanceExportSupport.AdministrativeAttendanceExportRow row) -> nullToEmpty(row.deptName))
+                .thenComparing(row -> nullToEmpty(row.employeeName))
+                .thenComparing(row -> row.employeeId, Comparator.nullsLast(Long::compareTo)));
+    }
+
+    private List<AdministrativeAttendanceExportSupport.AdministrativeAttendanceExportRow> buildRowsFromProduceAttendance(
+            Map<Long, HrmEmployee> employeeMap,
+            QueryMonthAttendanceBO queryMonthAttendanceBO,
+            YearMonth targetMonth,
+            Map<Long, LocalDate> quitDateByEmployeeId,
+            LocalDate employmentCutoverDate) {
+        LambdaQueryWrapper<HrmProduceAttendance> wrapper = new LambdaQueryWrapper<>();
+        wrapper.eq(HrmProduceAttendance::getYear, targetMonth.getYear())
+                .eq(HrmProduceAttendance::getMonth, targetMonth.getMonthValue())
+                .eq(HrmProduceAttendance::getDepartment, DEPARTMENT_ADMINISTRATIVE);
+        List<HrmProduceAttendance> attendanceList = produceAttendanceMapper.selectList(wrapper);
+        if (attendanceList == null || attendanceList.isEmpty()) {
+            return Collections.emptyList();
+        }
+
+        Map<Long, String> deptNames = resolveDeptNamesFromEmployees(attendanceList, employeeMap);
+        List<AdministrativeAttendanceExportSupport.AdministrativeAttendanceExportRow> rows = new ArrayList<>();
+        for (HrmProduceAttendance attendance : attendanceList) {
+            if (attendance == null || attendance.getEmployeeId() == null) {
+                continue;
+            }
+            HrmEmployee employee = employeeMap.get(attendance.getEmployeeId());
+            if (employee != null) {
+                if (Integer.valueOf(1).equals(employee.getIsDel())) {
+                    continue;
+                }
+                if (!isEmployeeActiveForExport(employee, quitDateByEmployeeId.get(employee.getEmployeeId()), employmentCutoverDate)) {
+                    continue;
+                }
+                if (!matchesAdministrativeAttendanceEmployeeFilter(employee, queryMonthAttendanceBO)) {
+                    continue;
+                }
+                if (!matchesAdministrativeAttendanceDeptFilter(employee, queryMonthAttendanceBO)) {
+                    continue;
+                }
+            } else {
+                String keyword = queryMonthAttendanceBO != null ? trimToEmpty(queryMonthAttendanceBO.getEmployeeName()) : "";
+                if (!keyword.isEmpty() && !keyword.equals(trimToEmpty(attendance.getEmployeeName()))) {
+                    continue;
+                }
+                if (queryMonthAttendanceBO != null && queryMonthAttendanceBO.getDeptIds() != null
+                        && !queryMonthAttendanceBO.getDeptIds().isEmpty()) {
+                    continue;
+                }
+            }
+            String deptName = deptNames.getOrDefault(attendance.getEmployeeId(), "");
+            rows.add(new AdministrativeAttendanceExportSupport.AdministrativeAttendanceExportRow(
+                    attendance.getEmployeeId(),
+                    attendance.getEmployeeName(),
+                    deptName,
+                    BigDecimal.valueOf(targetMonth.lengthOfMonth()),
+                    BigDecimal.ZERO,
+                    attendance.getPositiveAttendance() != null ? attendance.getPositiveAttendance() : BigDecimal.ZERO,
+                    attendance.getProbationAttendance() != null ? attendance.getProbationAttendance() : BigDecimal.ZERO
+            ));
+        }
         return rows;
+    }
+
+    private Map<Long, String> resolveDeptNamesFromEmployees(
+            List<HrmProduceAttendance> attendanceList,
+            Map<Long, HrmEmployee> employeeMap) {
+        Set<Long> deptIds = new LinkedHashSet<>();
+        for (HrmProduceAttendance attendance : attendanceList) {
+            if (attendance != null && attendance.getEmployeeId() != null) {
+                HrmEmployee employee = employeeMap.get(attendance.getEmployeeId());
+                if (employee != null && employee.getDeptId() != null) {
+                    deptIds.add(employee.getDeptId());
+                }
+            }
+        }
+        if (deptIds.isEmpty()) {
+            return Collections.emptyMap();
+        }
+        List<HrmDept> depts = deptRepository.findAllByDeptIdIn(new ArrayList<>(deptIds));
+        if (depts == null || depts.isEmpty()) {
+            return Collections.emptyMap();
+        }
+        Map<Long, Long> employeeToDept = new LinkedHashMap<>();
+        for (HrmProduceAttendance attendance : attendanceList) {
+            if (attendance != null && attendance.getEmployeeId() != null) {
+                HrmEmployee employee = employeeMap.get(attendance.getEmployeeId());
+                if (employee != null && employee.getDeptId() != null) {
+                    employeeToDept.putIfAbsent(attendance.getEmployeeId(), employee.getDeptId());
+                }
+            }
+        }
+        Map<Long, String> deptNameById = depts.stream()
+                .filter(dept -> dept != null && dept.getDeptId() != null)
+                .collect(Collectors.toMap(HrmDept::getDeptId, dept -> nullToEmpty(dept.getName()), (left, right) -> left, LinkedHashMap::new));
+        Map<Long, String> result = new LinkedHashMap<>();
+        for (Map.Entry<Long, Long> entry : employeeToDept.entrySet()) {
+            result.put(entry.getKey(), deptNameById.getOrDefault(entry.getValue(), ""));
+        }
+        return result;
+    }
+
+    private List<AdministrativeAttendanceExportSupport.AdministrativeAttendanceExportRow> buildRowsFromEmployeeList(
+            Map<Long, HrmEmployee> employeeMap,
+            QueryMonthAttendanceBO queryMonthAttendanceBO,
+            YearMonth targetMonth,
+            Map<Long, LocalDate> quitDateByEmployeeId,
+            LocalDate employmentCutoverDate) {
+        LambdaQueryWrapper<HrmProduceAttendance> wrapper = new LambdaQueryWrapper<>();
+        wrapper.eq(HrmProduceAttendance::getYear, targetMonth.getYear())
+                .eq(HrmProduceAttendance::getMonth, targetMonth.getMonthValue());
+        List<HrmProduceAttendance> allAttendance = produceAttendanceMapper.selectList(wrapper);
+        Map<Long, HrmProduceAttendance> attendanceByEmployee = (allAttendance != null ? allAttendance : Collections.<HrmProduceAttendance>emptyList())
+                .stream()
+                .filter(a -> a != null && a.getEmployeeId() != null)
+                .collect(Collectors.toMap(HrmProduceAttendance::getEmployeeId, Function.identity(), (left, right) -> left, LinkedHashMap::new));
+
+        List<HrmEmployee> adminEmployees = employeeMap.values().stream()
+                .filter(e -> e != null && e.getEmployeeId() != null)
+                .filter(e -> !Integer.valueOf(1).equals(e.getIsDel()))
+                .filter(e -> Integer.valueOf(DEPARTMENT_ADMINISTRATIVE).equals(resolveDepartmentType(e)))
+                .filter(e -> isEmployeeActiveForExport(e, quitDateByEmployeeId.get(e.getEmployeeId()), employmentCutoverDate))
+                .filter(e -> matchesAdministrativeAttendanceEmployeeFilter(e, queryMonthAttendanceBO))
+                .filter(e -> matchesAdministrativeAttendanceDeptFilter(e, queryMonthAttendanceBO))
+                .sorted(Comparator.comparing(HrmEmployee::getEmployeeId, Comparator.nullsLast(Long::compareTo)))
+                .collect(Collectors.toList());
+
+        if (adminEmployees.isEmpty()) {
+            return Collections.emptyList();
+        }
+
+        Set<Long> deptIds = adminEmployees.stream()
+                .filter(e -> e.getDeptId() != null)
+                .map(HrmEmployee::getDeptId)
+                .collect(Collectors.toCollection(LinkedHashSet::new));
+        Map<Long, String> deptNameMap = resolveDeptNamesByIds(deptIds);
+
+        List<AdministrativeAttendanceExportSupport.AdministrativeAttendanceExportRow> rows = new ArrayList<>();
+        for (HrmEmployee employee : adminEmployees) {
+            HrmProduceAttendance attendance = attendanceByEmployee.get(employee.getEmployeeId());
+            String deptName = employee.getDeptId() != null ? deptNameMap.getOrDefault(employee.getDeptId(), "") : "";
+            rows.add(new AdministrativeAttendanceExportSupport.AdministrativeAttendanceExportRow(
+                    employee.getEmployeeId(),
+                    employee.getEmployeeName(),
+                    deptName,
+                    BigDecimal.valueOf(targetMonth.lengthOfMonth()),
+                    BigDecimal.ZERO,
+                    attendance != null && attendance.getPositiveAttendance() != null ? attendance.getPositiveAttendance() : BigDecimal.ZERO,
+                    attendance != null && attendance.getProbationAttendance() != null ? attendance.getProbationAttendance() : BigDecimal.ZERO
+            ));
+        }
+        return rows;
+    }
+
+    private Map<Long, String> resolveDeptNamesByIds(Set<Long> deptIds) {
+        if (deptIds == null || deptIds.isEmpty()) {
+            return Collections.emptyMap();
+        }
+        List<HrmDept> depts = deptRepository.findAllByDeptIdIn(new ArrayList<>(deptIds));
+        if (depts == null || depts.isEmpty()) {
+            return Collections.emptyMap();
+        }
+        return depts.stream()
+                .filter(dept -> dept != null && dept.getDeptId() != null)
+                .collect(Collectors.toMap(HrmDept::getDeptId, dept -> nullToEmpty(dept.getName()), (left, right) -> left, LinkedHashMap::new));
     }
 
     private boolean shouldExportAdministrativeAttendanceEmployee(HrmOvertimeNightStatisticsDetail detail,
                                                                  HrmEmployee employee,
-                                                                 QueryMonthAttendanceBO queryMonthAttendanceBO) {
+                                                                 QueryMonthAttendanceBO queryMonthAttendanceBO,
+                                                                 Map<Long, LocalDate> quitDateByEmployeeId,
+                                                                 LocalDate employmentCutoverDate) {
         if (employee != null) {
             if (Integer.valueOf(1).equals(employee.getIsDel())) {
+                return false;
+            }
+            if (!isEmployeeActiveForExport(employee, quitDateByEmployeeId.get(employee.getEmployeeId()), employmentCutoverDate)) {
                 return false;
             }
             if (!Integer.valueOf(DEPARTMENT_ADMINISTRATIVE).equals(resolveDepartmentType(employee))) {
@@ -433,6 +833,85 @@ public class HrmProduceAttendanceServiceImpl extends BaseServiceImpl<HrmProduceA
         return employee != null
                 && employee.getDeptId() != null
                 && queryMonthAttendanceBO.getDeptIds().contains(employee.getDeptId());
+    }
+
+    /**
+     * 解析行政考勤导出的发薪日（计薪设置 payDay）。
+     * 发薪日是"当月是否算在职员工"的分界日；未配置时提示先到系统设置-计薪设置维护发薪日期。
+     */
+    private int resolveAdministrativePayDay() {
+        HrmSalaryConfig salaryConfig = salaryConfigService.getOne(new com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper<>(), false);
+        if (salaryConfig == null || salaryConfig.getPayDay() == null || salaryConfig.getPayDay() <= 0) {
+            throw new IllegalArgumentException("未配置发薪日期，请先在【系统设置-计薪设置】中维护发薪日期后再下载行政体系考勤");
+        }
+        return salaryConfig.getPayDay();
+    }
+
+    /**
+     * 批量取已离职员工(entry_status=4)的离职日期(plan_quit_time)，多个离职记录取最近一条，只取到日。
+     */
+    private Map<Long, LocalDate> resolveAdministrativeQuitDateMap(Map<Long, HrmEmployee> employeeMap) {
+        if (employeeMap == null || employeeMap.isEmpty()) {
+            return Collections.emptyMap();
+        }
+        List<Long> quitEmployeeIds = employeeMap.values().stream()
+                .filter(e -> e != null && e.getEmployeeId() != null && Integer.valueOf(4).equals(e.getEntryStatus()))
+                .map(HrmEmployee::getEmployeeId)
+                .distinct()
+                .collect(Collectors.toList());
+        if (quitEmployeeIds.isEmpty()) {
+            return Collections.emptyMap();
+        }
+        List<HrmEmployeeQuitInfo> quitInfos = quitInfoRepository.findAllByEmployeeIdIn(quitEmployeeIds);
+        if (quitInfos == null || quitInfos.isEmpty()) {
+            return Collections.emptyMap();
+        }
+        Map<Long, LocalDate> result = new LinkedHashMap<>();
+        for (HrmEmployeeQuitInfo quitInfo : quitInfos) {
+            if (quitInfo == null || quitInfo.getEmployeeId() == null || quitInfo.getPlanQuitTime() == null) {
+                continue;
+            }
+            LocalDate quitDate = toLocalDateOnly(quitInfo.getPlanQuitTime());
+            result.merge(quitInfo.getEmployeeId(), quitDate,
+                    (oldDate, newDate) -> newDate.isAfter(oldDate) ? newDate : oldDate);
+        }
+        return result;
+    }
+
+    private LocalDate toLocalDateOnly(Date date) {
+        if (date == null) {
+            return null;
+        }
+        if (date instanceof java.sql.Date) {
+            return ((java.sql.Date) date).toLocalDate();
+        }
+        return date.toInstant().atZone(ZoneId.systemDefault()).toLocalDate();
+    }
+
+    /**
+     * 员工在目标月(M)是否算"在职应导出"：
+     * - entry_status=2(待入职) 不导出；
+     * - entry_status=4(已离职)：离职日期缺失一律不导出；离职日期在发薪日(cutoverDate，含当天)及之后才离职的，
+     *   该员工到发薪日仍在职，M 月仍按在职导出（发薪日当天离职保留）；
+     * - 其余(1 在职 / 3 待离职 / 未知) 视为在职导出。
+     */
+    private boolean isEmployeeActiveForExport(HrmEmployee employee,
+                                              LocalDate quitDate,
+                                              LocalDate employmentCutoverDate) {
+        Integer entryStatus = employee.getEntryStatus();
+        if (entryStatus == null) {
+            return true;
+        }
+        if (Integer.valueOf(4).equals(entryStatus)) {
+            if (quitDate == null) {
+                return false;
+            }
+            return !quitDate.isBefore(employmentCutoverDate);
+        }
+        if (Integer.valueOf(2).equals(entryStatus)) {
+            return false;
+        }
+        return true;
     }
 
     private Map<Long, String> resolveAdministrativeAttendanceDeptNames(
@@ -543,6 +1022,9 @@ public class HrmProduceAttendanceServiceImpl extends BaseServiceImpl<HrmProduceA
         String combined = tagName + " " + subType;
         if (Long.valueOf(1L).equals(approval.getBizType()) || combined.contains("加班")) {
             return "加班";
+        }
+        if (combined.contains("出差")) {
+            return "出差";
         }
         if (combined.contains("事假")) {
             return "事假";

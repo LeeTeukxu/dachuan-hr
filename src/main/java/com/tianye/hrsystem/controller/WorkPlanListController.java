@@ -14,7 +14,8 @@ import com.tianye.hrsystem.entity.vo.WorkPlanImportPreviewVO;
 import com.tianye.hrsystem.model.*;
 import com.tianye.hrsystem.repository.hrmAttendanceShiftRepository;
 import com.tianye.hrsystem.repository.tbPlanListRepository;
-import com.tianye.hrsystem.repository.tbattendanceuserRepository;
+import com.tianye.hrsystem.model.HrmEmployee;
+import com.tianye.hrsystem.repository.hrmEmployeeRepository;
 import com.tianye.hrsystem.service.IWorkPlanService;
 import com.tianye.hrsystem.service.ddTalk.IAccessToken;
 import org.apache.commons.io.FileUtils;
@@ -92,7 +93,25 @@ public class WorkPlanListController {
     tbPlanListRepository planRep;
 
     @Autowired
-    tbattendanceuserRepository userRep;
+    hrmEmployeeRepository employeeRep;
+
+    /** 双键口径：userId 可能是 dingtalk_user_id（新写入）或 employeeId 字符串（历史行），都映射回员工姓名 */
+    private java.util.Map<String, String> loadUserNameMap() {
+        java.util.Map<String, String> nameByUserId = new java.util.HashMap<>();
+        for (HrmEmployee employee : employeeRep.findAll()) {
+            if (employee == null || employee.getEmployeeId() == null
+                    || employee.getEmployeeName() == null || employee.getEmployeeName().trim().isEmpty()) {
+                continue;
+            }
+            String name = employee.getEmployeeName().trim();
+            String dingTalkKey = employee.getDingtalkUserId() == null ? "" : employee.getDingtalkUserId().trim();
+            if (!dingTalkKey.isEmpty()) {
+                nameByUserId.putIfAbsent(dingTalkKey, name);
+            }
+            nameByUserId.putIfAbsent(String.valueOf(employee.getEmployeeId()), name);
+        }
+        return nameByUserId;
+    }
 
     @Autowired
     hrmAttendanceShiftRepository shiftRep;
@@ -466,6 +485,22 @@ public class WorkPlanListController {
         return result;
     }
 
+    @RequestMapping("/batchSetRestDay")
+    @ResponseBody
+    public successResult batchSetRestDay(String workDate) {
+        successResult result = new successResult();
+        try {
+            if (StringUtils.isEmpty(workDate)) {
+                throw new Exception("workDate不能为空");
+            }
+            int count = planService.batchSetRestDay(parseDateValue(workDate, "workDate"));
+            result.setData(count);
+        } catch (Exception ax) {
+            result.raiseException(ax);
+        }
+        return result;
+    }
+
     @RequestMapping("/saveEmployeeDayCustomShift")
     @ResponseBody
     public successResult saveEmployeeDayCustomShift(Long employeeId, String workDate,
@@ -524,7 +559,7 @@ public class WorkPlanListController {
             tbplanlists=tbplanlists.stream().sorted(Comparator.comparing(tbplanlist::getWorkDate)).collect(Collectors.toList());
             planService.fillCustomShiftMeta(tbplanlists);
             if(tbplanlists.size()>0){
-                List<tbattendanceuser> users=userRep.findAll();
+                java.util.Map<String, String> nameByUserId=loadUserNameMap();
                 List<HrmAttendanceShift>  shifts=shiftRep.findAll();
                 List<tbPlanListVo> Vs=new ArrayList<>();
                 for(int i=0;i<tbplanlists.size();i++){
@@ -575,11 +610,15 @@ public class WorkPlanListController {
                     } else continue;
 
                     if(UserIDS.size()>0){
-                        List<tbattendanceuser> Us=
-                                users.stream().filter(f->UserIDS.contains(f.getUserId())).collect(Collectors.toList());
-                        if(Us.size()>0){
-                            String Names=StringUtils.join(Us.stream().map(f->f.getUserName()).collect(Collectors.toList()), ',');
-                            vo.setUserName(Names);
+                        java.util.List<String> names=new java.util.ArrayList<>();
+                        for(String uid : UserIDS){
+                            String name=nameByUserId.get(uid);
+                            if(name!=null && !names.contains(name)){
+                                names.add(name);
+                            }
+                        }
+                        if(!names.isEmpty()){
+                            vo.setUserName(StringUtils.join(names, ','));
                         }
                     }
                     Vs.add(vo);

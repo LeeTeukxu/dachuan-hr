@@ -8,14 +8,30 @@ import com.tianye.hrsystem.entity.bo.QueryAttendanceApprovalPageBO;
 import com.tianye.hrsystem.entity.bo.UpdateAttendanceApprovalDurationBO;
 import com.tianye.hrsystem.entity.bo.UpdateAttendanceApprovalStatisticsStatusBO;
 import com.tianye.hrsystem.entity.bo.UpdateAttendanceApprovalSubtypeBO;
+import com.tianye.hrsystem.entity.vo.AttendanceApprovalMonthPortionVO;
 import com.tianye.hrsystem.entity.vo.QueryAttendanceApprovalPageVO;
 
+import java.time.YearMonth;
+import java.util.Date;
 import java.util.List;
 import java.util.Map;
 
 public interface IHrmAttendanceApprovalService {
 
     BasePage<QueryAttendanceApprovalPageVO> queryPageList(QueryAttendanceApprovalPageBO queryBO);
+
+    /**
+     * 计算一条审批单在指定月份的展示区间与时长（跨月拆分口径的唯一入口，现算不落库）。
+     * 区间与所选月无交集、或时间/时长非法时返回 null。
+     *
+     * @param employeeId 员工ID（决定走行政单双休日历还是排班剔除）
+     */
+    AttendanceApprovalMonthPortionVO calculateMonthPortion(Long employeeId,
+                                                           Date beginTime,
+                                                           Date endTime,
+                                                           String duration,
+                                                           String durationDay,
+                                                           YearMonth month);
 
     Map<String, Object> checkMonthData(AttendanceApprovalMonthBO queryBO);
 

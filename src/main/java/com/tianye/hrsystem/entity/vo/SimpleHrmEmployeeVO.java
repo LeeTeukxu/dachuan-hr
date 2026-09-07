@@ -4,6 +4,7 @@ import io.swagger.annotations.ApiModelProperty;
 import lombok.Data;
 
 import java.io.Serializable;
+import java.time.LocalDate;
 
 /**
  * <p>
@@ -44,5 +45,7 @@ public class SimpleHrmEmployeeVO implements Serializable {
 
     private Integer isDel;
 
+    @ApiModelProperty("计划离职时间")
+    private LocalDate planQuitTime;
 
 }

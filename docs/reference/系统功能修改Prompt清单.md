@@ -15,16 +15,16 @@
 
 ## 一、登录认证与账号体系
 
-### 1.1 登录 / 验证码 / 一号多企业确认 / 修改密码 / 退出登录
+### 1.1 登录 / 验证码 / 一号多企业确认 / 个人信息「切换企业」/ 修改密码 / 退出登录
 **Prompt:**
-这是 SpringBoot 多租户 SaaS 系统,我要修改【登录与账号认证:账号密码登录、图形验证码、一号多企业选择确认、修改密码、退出登录、首次登录强制改密、账号锁定与会话失效】,相关数据库表:tbloginuser、tbAllUserList、tbcompanylist。只输出需要修改的 Controller、Service、Mapper、Entity、Vue 文件完整路径列表,不要生成修改代码,不要执行修改。
+这是 SpringBoot 多租户 SaaS 系统,我要修改【登录与账号认证:账号密码登录、图形验证码、一号多企业选择确认、个人信息页登录态内「切换企业」(POST /hrsystem/switchCompany 换发绑目标企业 token + /switchCompany/candidates 候选列表)、修改密码、退出登录、首次登录强制改密、账号锁定与会话失效】,相关数据库表:tbloginuser、tbAllUserList、tbcompanylist。只输出需要修改的 Controller、Service、Mapper、Entity、Vue 文件完整路径列表,不要生成修改代码,不要执行修改。
 
 **参考文件清单:**
-- Controller:`src/main/java/com/tianye/hrsystem/controller/LoginController.java`、`src/main/java/com/tianye/hrsystem/controller/CaptchaController.java`
+- Controller:`src/main/java/com/tianye/hrsystem/controller/LoginController.java`(含 `switchCompany`/`switchCompanyCandidates`)、`src/main/java/com/tianye/hrsystem/controller/CaptchaController.java`
 - Service/组件:`src/main/java/com/tianye/hrsystem/common/JWTTokenUtils.java`、`src/main/java/com/tianye/hrsystem/common/TokenRevocationService.java`、`src/main/java/com/tianye/hrsystem/config/CompanyInterceptor.java`、`src/main/java/com/tianye/hrsystem/config/CompanyContext.java`
 - Mapper:`src/main/java/com/tianye/hrsystem/mapper/LoginUserMapper.java`
 - Entity:`src/main/java/com/tianye/hrsystem/model/LoginUserInfo.java`、`src/main/java/com/tianye/hrsystem/model/tbloginuser.java`
-- Vue:`src/views/Login.vue`、`src/api/login/user.js`、`src/components/RestPassword.vue`、`src/views/hrm/profile/Index.vue`、`src/utils/permission.js`、`src/router/config.js`、`src/router/router.js`、`src/api/requset.js`
+- Vue:`src/views/Login.vue`、`src/api/login/user.js`、`src/components/RestPassword.vue`、`src/views/hrm/profile/Index.vue`(切换企业按钮+弹窗)、`src/utils/authSession.js`、`src/utils/permission.js`、`src/router/config.js`、`src/router/router.js`、`src/api/requset.js`
 
 ### 1.2 登录用户管理(权限管理-登录用户)
 **Prompt:**
@@ -39,22 +39,23 @@
 
 ### 1.3 角色权限 / 菜单权限
 **Prompt:**
-这是 SpringBoot 多租户 SaaS 系统,我要修改【角色权限分配与菜单权限清单:角色-菜单授权、菜单维护、权限树】,相关数据库表:tbroletypes、tbrolemenu、tbmenu、tb_api_permission。只输出需要修改的 Controller、Service、Mapper、Entity、Vue 文件完整路径列表,不要生成修改代码,不要执行修改。
+这是 SpringBoot 多租户 SaaS 系统,我要修改【角色权限分配与菜单权限清单:角色-菜单授权、菜单维护、权限树、批量角色同步】,相关数据库表:tbroletypes、tbrolemenu、tbmenu、tb_api_permission。只输出需要修改的 Controller、Service、Mapper、Entity、Vue 文件完整路径列表,不要生成修改代码,不要执行修改。
 
 **参考文件清单:**
 - Controller:`src/main/java/com/tianye/hrsystem/modules/role/controller/TbRoleTypesController.java`、`src/main/java/com/tianye/hrsystem/modules/menu/controller/TbRoleMenuController.java`、`src/main/java/com/tianye/hrsystem/modules/menu/controller/TbMenuController.java`
-- Service:`src/main/java/com/tianye/hrsystem/imple/MenuServiceImpl.java`、`src/main/java/com/tianye/hrsystem/modules/menu/service/ApiPermissionPathSupport.java`
-- Mapper:`src/main/resources/mapper/TbRoleTypesMapper.xml`、`src/main/resources/mapper/TbMenuMapper.xml`
-- Vue:`src/views/hrm/system/RolePermission.vue`、`src/views/hrm/system/MenuList.vue`
+- Service:`src/main/java/com/tianye/hrsystem/imple/MenuServiceImpl.java`、`src/main/java/com/tianye/hrsystem/modules/menu/service/ApiPermissionPathSupport.java`、`src/main/java/com/tianye/hrsystem/modules/menu/service/TbRoleMenuService.java`（含批量角色同步逻辑）
+- Mapper:`src/main/resources/mapper/TbRoleTypesMapper.xml`、`src/main/resources/mapper/TbMenuMapper.xml`、`src/main/java/com/tianye/hrsystem/mapper/LoginUserMapper.java`（含 `getAccountsByRoleId`、`getAccountCompanies`）
+- BO:`src/main/java/com/tianye/hrsystem/modules/menu/bo/QueryRoleMenuBO.java`（含 `syncToOtherCompanies`、`targetCompanyIds`）
+- Vue:`src/views/hrm/system/RolePermission.vue`（含企业选择弹窗）、`src/views/hrm/system/MenuList.vue`、`src/api/hrm/system/permission.js`（含 `getCompanies`）
 
 ### 1.4 租户管理 / 企业权限 / 企业开通
 **Prompt:**
-这是 SpringBoot 多租户 SaaS 系统,我要修改【租户管理与企业权限:新租户开通建库、企业列表、企业权限分配】,相关数据库表:tbcompanylist、tbAllUserList、tbloginuser。只输出需要修改的 Controller、Service、Mapper、Entity、Vue 文件完整路径列表,不要生成修改代码,不要执行修改。
+这是 SpringBoot 多租户 SaaS 系统,我要修改【租户管理与企业权限:新租户开通建库、企业列表、企业权限分配、钉钉应用配置(ddAccount)】,相关数据库表:tbcompanylist、tbAllUserList、tbloginuser、ddAccount。只输出需要修改的 Controller、Service、Mapper、Entity、Vue 文件完整路径列表,不要生成修改代码,不要执行修改。
 
 **参考文件清单:**
 - Controller:`src/main/java/com/tianye/hrsystem/modules/company/controller/TenantProvisionController.java`、`src/main/java/com/tianye/hrsystem/modules/company/controller/TbCompanyListController.java`、`src/main/java/com/tianye/hrsystem/controller/CompanyPermissionController.java`
 - Service:`src/main/java/com/tianye/hrsystem/modules/company/service/TenantProvisionService.java`
-- Entity:`src/main/java/com/tianye/hrsystem/modules/company/entity/TbCompanyList.java`
+- Entity:`src/main/java/com/tianye/hrsystem/modules/company/entity/TbCompanyList.java`、`src/main/java/com/tianye/hrsystem/entity/po/ddAccount.java`
 - 多租户基础设施:`src/main/java/com/tianye/hrsystem/config/CompanyDataSourceProvider.java`、`CompanyIdentifierResolver.java`、`DynamicDataSource.java`、`ConnectionParsor.java`
 - Vue:`src/views/hrm/system/TenantManage.vue`、`src/views/hrm/system/CompanyPermission.vue`
 
@@ -92,6 +93,10 @@
 - Entity:`src/main/java/com/tianye/hrsystem/model/HrmDept.java`
 - Vue:`src/views/hrm/dept/Dept.vue`、`src/api/hrm/dept/dept.js`
 
+**分管领导联动(2026-09-07):**保存部门(`/hrmDept/addDept|setDept`)设置分管领导时,部门下全部未删除员工直属上级(`hrm_employee.parent_id`)同步改为该分管领导;新端点 `/hrmDept/queryDeptLeader/{deptId}` 供员工表单选部门后自动带出直属上级(前端 `AddOrEdit.vue`/`DepAddEmployeeDialog.vue`)。
+
+**同步钉钉数据(watch 迁移,2026-09-06):**`/hrmDept/syncDingTalkDept|getExcludeNames|saveExcludeNames`,核心 `imple/HrmDeptDingTalkSyncService.java`(listsub 递归+按名称 upsert+归属以钉钉为准覆盖+全量模式完全覆盖删除多余部门/分公司模式删关键字命中部门+员工自动转根部门+同名未占用行认领保证幂等+拉取失败重试3次),配置表 `hrm_dept_sync_config`,凭据 `imple/ddTalk/DDAccessToken.java`。
+
 ### 3.2 员工管理(花名册/列表/新增编辑/导入导出/动态字段)
 **Prompt:**
 这是 SpringBoot 多租户 SaaS 系统,我要修改【员工管理:员工花名册列表与筛选、员工新增/编辑/再次入职/办理离职/转正/调岗、花名册导入导出、部门明细导出、员工自定义动态字段】,相关数据库表:hrm_employee、hrm_employee_data、hrm_employee_field、hrm_employee_field_manage、hrm_employee_field_config、hrm_employee_change_record、hrm_employee_abnormal_change_record、hrm_employee_quit_info、hrm_key_post_config。只输出需要修改的 Controller、Service、Mapper、Entity、Vue 文件完整路径列表,不要生成修改代码,不要执行修改。
@@ -101,7 +106,10 @@
 - Service:`src/main/java/com/tianye/hrsystem/imple/employee/HrmEmployeeServiceImpl.java`、`src/main/java/com/tianye/hrsystem/imple/employee/HrmEmployeeFieldServiceImpl.java`、`src/main/java/com/tianye/hrsystem/imple/employee/EmployeeBasicInfoExportSupport.java`、`EmployeeDepartmentDetailExportSupport.java`、`EmployeeDepartmentDetailCrossCompanyExportSupport.java`(同目录)
 - Mapper:`src/main/resources/mapper/HrmEmployeeMapper.xml`、`HrmEmployeeDataMapper.xml`、`HrmEmployeeFieldMapper.xml`、`HrmEmployeeFieldManageMapper.xml`、`HrmEmployeeFieldConfigMapper.xml`、`HrmEmployeeChangeRecordMapper.xml`、`HrmEmployeeAbnormalChangeRecordMapper.xml`、`HrmEmployeeQuitInfoMapper.xml`、`HrmKeyPostConfigMapper.xml`
 - Entity:`src/main/java/com/tianye/hrsystem/model/HrmEmployee.java` 及同目录 HrmEmployeeData/Field/ChangeRecord/QuitInfo 等
-- Vue:`src/views/hrm/employee/Index.vue` 及 `src/views/hrm/employee/Components/`(含 `attendance-sync-progress-utils.js`)、`src/api/hrm/employee/employee.js`
+- Service 补充:`src/main/java/com/tianye/hrsystem/imple/employee/HrmEmployeePostServiceImpl.java`(岗位信息编辑,部门变更自动改直属上级为分管领导)
+- Vue:`src/views/hrm/employee/Index.vue` 及 `src/views/hrm/employee/Components/`(含 `attendance-sync-progress-utils.js`、`AddOrEdit.vue`、`DepAddEmployeeDialog.vue`)、`src/api/hrm/employee/employee.js`
+
+**批量设置与同步钉钉员工(watch 迁移,2026-09-06):**`/hrmEmployee/listForBatchSetting|batchSetting/save|syncDingTalkRoster`,核心 `imple/employee/HrmEmployeeDingTalkSyncService.java`(userid 绑定+手机号优先+姓名唯一兜底+预检 dryRun,冲突只报告,姓名/手机号/部门/工号不改仅预检提示,源头字段岗位/邮箱/入职日期/工作地点以钉钉覆盖,拉取失败重试3次),批量设置字段白名单在 `HrmEmployeeServiceImpl` switch 映射;需 DDL `docs/sql/2026-09-06_dingtalk_sync_and_batch_setting.sql`。
 
 ### 3.3 员工合同
 **Prompt:**
@@ -156,7 +164,7 @@
 - Service:`src/main/java/com/tianye/hrsystem/imple/WorkPlanServiceImpl.java`、`src/main/java/com/tianye/hrsystem/imple/ddTalk/AttendancePlanRecord.java`、`AttendanceDetailRecord.java`、`src/main/java/com/tianye/hrsystem/imple/AttendancePlanServiceImpl.java`、`AttendanceDetailServiceImpl.java` 及同目录相关实现
 - Mapper:`src/main/resources/mapper/WorkPlanMapper.xml`、`HrmAttendancePlanMapper.xml`、`HrmEmpScheduleMapper.xml`、`HrmAttendanceShiftMapper.xml`、`HrmAttendanceGroupMapper.xml`、`HrmAttendanceDateShiftMapper.xml`、`HrmAttendanceHistoryShiftMapper.xml`、`HrmAttendanceGroupRelationDeptMapper.xml`、`HrmAttendanceGroupRelationEmployeeMapper.xml`
 - Entity:`src/main/java/com/tianye/hrsystem/model/tbplanlist.java`、`HrmAttendancePlan.java`、`HrmWorkPlanCustomShift.java`、`HrmAttendanceShift.java`、`HrmAttendanceGroup.java`
-- Vue:`src/views/hrm/attendance/scheduling/Scheduling.vue`、`SchedulingDetail.vue`、`src/views/hrm/attendance/records/Records.vue`、`src/api/hrm/attendance/scheduling.js`、`workPlan.js`、`records.js`
+- Vue:`src/views/hrm/attendance/scheduling/Scheduling.vue`、`SchedulingDetail.vue`、`src/views/hrm/attendance/records/Records.vue`、`records/components/AddOrEdit.vue`（+`work-plan-utils.js`，2026-09-06 选人口径与穿梭框统一改动点）、`src/api/hrm/attendance/scheduling.js`、`workPlan.js`、`records.js`
 
 ### 4.2 生产产品配置(添加排班候选)
 **Prompt:**
@@ -213,12 +221,12 @@
 
 ### 4.7 加班/夜班统计
 **Prompt:**
-这是 SpringBoot 多租户 SaaS 系统,我要修改【加班/夜班统计:开始统计、单人统计、应出勤/实际出勤口径、矩阵查询、手工保存出勤小时、导出】,相关数据库表:hrm_overtime_night_statistics、hrm_overtime_night_statistics_detail、hrm_attendance_clock、tbattendanceapprove、hrm_employee。只输出需要修改的 Controller、Service、Mapper、Entity、Vue 文件完整路径列表,不要生成修改代码,不要执行修改。
+这是 SpringBoot 多租户 SaaS 系统,我要修改【加班/夜班统计:开始统计、单人统计、应出勤/实际出勤口径、矩阵查询、手工保存出勤小时、导出】,相关数据库表:hrm_overtime_night_statistics、hrm_overtime_night_statistics_detail、tbplanlist(排班唯一事实源,经hrm_workplan_custom_shift解析自定义班次)、hrm_attendance_clock、tbattendanceapprove、hrm_employee。只输出需要修改的 Controller、Service、Mapper、Entity、Vue 文件完整路径列表,不要生成修改代码,不要执行修改。
 
 **参考文件清单:**
 - Controller:`src/main/java/com/tianye/hrsystem/controller/HrmOvertimeNightStatisticsController.java`
 - Service:`src/main/java/com/tianye/hrsystem/imple/HrmOvertimeNightStatisticsServiceImpl.java`、`OvertimeNightClockResolver.java`、`OvertimeNightStatisticsExportSupport.java`(同目录)
-- Entity:`src/main/java/com/tianye/hrsystem/model/HrmOvertimeNightStatistics(.Detail).java`
+- Entity:`src/main/java/com/tianye/hrsystem/model/HrmOvertimeNightStatistics(.Detail).java`、`hrm_workplan_custom_shift`实体
 - Vue:`src/views/hrm/attendance/overtime-night/Index.vue` 及同目录组件、`src/api/hrm/attendance/overtimeNight.js`
 
 ### 4.8 单双休设置
@@ -233,13 +241,13 @@
 
 ### 4.9 考勤汇总(含行政体系考勤导出)
 **Prompt:**
-这是 SpringBoot 多租户 SaaS 系统,我要修改【考勤汇总:月度汇总列表/单元格编辑/导入/行政体系考勤导出】,相关数据库表:hrm_produce_attendance、hrm_employee、hrm_overtime_night_statistics_detail、tbattendanceapprove。只输出需要修改的 Controller、Service、Mapper、Entity、Vue 文件完整路径列表,不要生成修改代码,不要执行修改。
+这是 SpringBoot 多租户 SaaS 系统,我要修改【考勤汇总:月度汇总列表/单元格编辑/导入/行政体系考勤导出】,相关数据库表:hrm_produce_attendance、hrm_employee、hrm_overtime_night_statistics_detail、tbattendanceapprove、hrm_employee_quit_info(行政导出去离职判定用离职日期)、hrm_salary_config(行政导出去离职判定用发薪日 payDay)。只输出需要修改的 Controller、Service、Mapper、Entity、Vue 文件完整路径列表,不要生成修改代码,不要执行修改。
 
 **参考文件清单:**
 - Controller:`src/main/java/com/tianye/hrsystem/controller/HrmProduceAttendanceController.java`
-- Service:`src/main/java/com/tianye/hrsystem/imple/HrmProduceAttendanceServiceImpl.java`、`AdministrativeAttendanceExportSupport.java`
-- Mapper:`src/main/resources/mapper/HrmProduceAttendanceMapper.xml`
-- Entity:`src/main/java/com/tianye/hrsystem/model/HrmProduceAttendance.java`
+- Service:`src/main/java/com/tianye/hrsystem/imple/HrmProduceAttendanceServiceImpl.java`、`AdministrativeAttendanceExportSupport.java`(导出模板+单元格批注)；在职判定读 `modules/salary/service/HrmSalaryConfigService.java`(payDay)、离职日期读 `repository/hrmEmployeeQuitInfoRepository.java`
+- Mapper:`src/main/java/com/tianye/hrsystem/mapper/HrmProduceAttendanceMapper.java`、`src/main/resources/mapper/HrmProduceAttendanceMapper.xml`
+- Entity:`src/main/java/com/tianye/hrsystem/model/HrmProduceAttendance.java`、`src/main/java/com/tianye/hrsystem/entity/vo/AdministrativeAttendanceReportDetailVO.java`(导出批注用按天明细)、`model/HrmEmployeeQuitInfo.java`(离职日期)、`modules/salary/entity/HrmSalaryConfig.java`(发薪日)
 - Vue:`src/views/hrm/attendance/upload/Upload.vue`、`src/api/hrm/attendance/upload.js`
 
 ### 4.10 考勤规则设置(管理端)
@@ -285,20 +293,22 @@
 
 **参考文件清单:**
 - Controller:`src/main/java/com/tianye/hrsystem/modules/salary/controller/HrmSalaryMonthRecordController.java`
-- Service:`src/main/java/com/tianye/hrsystem/modules/salary/service/SalaryMonthRecordServiceNew.java`、`SalaryComputeServiceNew.java`、`src/main/java/com/tianye/hrsystem/imple/HrmSalaryMonthRecordServiceImpl.java`、`HrmSalaryMonthOptionValueServiceImpl.java`
+- Service:`src/main/java/com/tianye/hrsystem/modules/salary/service/SalaryMonthRecordServiceNew.java`、`SalaryComputeServiceNew.java`、`TaxCalculator.java`、`src/main/java/com/tianye/hrsystem/modules/salary/support/SalaryExportCommentWriteHandler.java`(导出批注)、`src/main/java/com/tianye/hrsystem/imple/HrmSalaryMonthRecordServiceImpl.java`、`HrmSalaryMonthOptionValueServiceImpl.java`
 - Mapper:`src/main/resources/mapper/HrmSalaryMonthRecordMapper.xml`、`HrmSalaryMonthEmpRecordMapper.xml`、`HrmSalaryMonthOptionValueMapper.xml`、`HrmSalaryOptionMapper.xml`、`HrmSalaryExportMapper.xml`
 - Entity:`src/main/java/com/tianye/hrsystem/modules/salary/entity/`(HrmSalaryMonthRecord、HrmSalaryMonthEmpRecord 等)
 - Vue:`src/views/hrm/salary/salary/SalaryManage.vue`、`src/views/hrm/salary/Index.vue`、`src/api/hrm/salary/salary.js`
 
 ### 6.2 薪资档案
 **Prompt:**
-这是 SpringBoot 多租户 SaaS 系统,我要修改【薪资档案:定薪、档案明细(基本/岗位/职务工资、试用期与正式两套)、在职离职筛选】,相关数据库表:hrm_salary_archives、hrm_salary_archives_option、hrm_employee。只输出需要修改的 Controller、Service、Mapper、Entity、Vue 文件完整路径列表,不要生成修改代码,不要执行修改。
+这是 SpringBoot 多租户 SaaS 系统,我要修改【薪资档案:定薪、上传调薪/定薪(Excel导入,沿用watch模板格式)、下载模板、下载数据、档案明细(基本/岗位/职务工资、试用期与正式两套)、在职离职筛选】,相关数据库表:hrm_salary_archives、hrm_salary_archives_option、hrm_salary_change_record、hrm_employee。只输出需要修改的 Controller、Service、Mapper、Entity、Vue 文件完整路径列表,不要生成修改代码,不要执行修改。
 
 **参考文件清单:**
 - Controller:`src/main/java/com/tianye/hrsystem/modules/salary/controller/HrmSalaryArchivesController.java`
+- Service:`src/main/java/com/tianye/hrsystem/modules/salary/service/HrmSalaryArchivesService.java`(importSalaryFixing/downloadSalaryFixingTemplate/downloadSalaryFixingData)
 - Mapper:`src/main/resources/mapper/HrmSalaryArchivesMapper.xml`
 - Entity:`src/main/java/com/tianye/hrsystem/modules/salary/entity/HrmSalaryArchives(.Option).java`
-- Vue:`src/views/hrm/salary/archives/Archives.vue`
+- 模板:`src/main/resources/export/调薪定薪导入模板.xlsx`
+- Vue:`src/views/hrm/salary/archives/Archives.vue`、`src/api/hrm/salary/salary.js`
 
 ### 6.3 历史工资
 **Prompt:**
@@ -432,12 +442,66 @@
 
 ### 7.8 小程序(移动端登录/排班)
 **Prompt:**
-这是 SpringBoot 多租户 SaaS 系统,我要修改【小程序端:扫码登录绑定、员工排班查询等移动端能力】,相关数据库表:tbloginuser、tbplanlist(含 Redis 临时凭证键)。只输出需要修改的 Controller、Service、Mapper、Entity、Vue 文件完整路径列表,不要生成修改代码,不要执行修改。
+这是 SpringBoot 多租户 SaaS 系统,我要修改【小程序端:微信 OpenID 登录、首次员工身份绑定、多公司切换、员工排班查询等移动端能力】,相关数据库表:hrm_employee(openid)、tbCompanyList、tbplanlist(含 Redis 临时凭证键)。只输出需要修改的 Controller、Service、Mapper、Entity、Vue 文件完整路径列表,不要生成修改代码,不要执行修改。
 
 **参考文件清单:**
 - Controller:`src/main/java/com/tianye/hrsystem/controller/MiniAppController.java`
-- Service:`src/main/java/com/tianye/hrsystem/modules/miniapp/service/impl/MiniAppServiceImpl.java`、`MiniAppScheduleServiceImpl.java`
-- Vue:小程序端独立工程(不在 hr_web 内)
+- Service:`src/main/java/com/tianye/hrsystem/modules/miniapp/service/impl/MiniAppServiceImpl.java`、`MiniAppScheduleServiceImpl.java`、`src/main/java/com/tianye/hrsystem/modules/miniapp/support/MiniAppWxClient.java`
+- Mapper/Entity:`src/main/java/com/tianye/hrsystem/modules/miniapp/mapper/MiniAppEmployeeMapper.java`、`MiniAppSystemMapper.java`、`src/main/java/com/tianye/hrsystem/model/HrmEmployee.java`
+- Vue:小程序端 `miniapp/hr_miniapp/src/pages/login/login.vue`、`src/api/modules/miniapp.js`
+
+### 7.9 通知中心(系统消息通知)
+**Prompt:**
+这是 SpringBoot 多租户 SaaS 系统,我要修改【通知中心:系统级消息通知(考勤同步/审批获取/社保计算等任务状态),支持未读计数、标记已读、删除、跳转链接】,相关数据库表:admin_message。只输出需要修改的 Controller、Service、Mapper、Entity、Vue 文件完整路径列表,不要生成修改代码,不要执行修改。
+
+**参考文件清单:**
+- Controller:`src/main/java/com/tianye/hrsystem/controller/AdminMessageController.java`
+- Service:`src/main/java/com/tianye/hrsystem/imple/AdminMessageServiceImpl.java`、`src/main/java/com/tianye/hrsystem/service/IAdminMessageService.java`
+- Mapper:`src/main/resources/mapper/AdminMessageMapper.xml`、`src/main/java/com/tianye/hrsystem/mapper/AdminMessageMapper.java`
+- Entity:`src/main/java/com/tianye/hrsystem/entity/po/AdminMessage.java`、`src/main/java/com/tianye/hrsystem/entity/bo/AdminMessageBO.java`、`src/main/java/com/tianye/hrsystem/enums/AdminMessageEnum.java`
+- Vue:`src/components/NotificationCenter.vue`、`src/views/notification/NotificationList.vue`、`src/components/layout/TopHeader.vue`、`src/api/hrm/notification.js`、`src/router/config.js`
+
+### 7.10 算法知识库(顶栏弹窗,纯前端)
+**Prompt:**
+这是 HR 系统,我要修改【顶栏算法知识库:展示后端全部业务算法/计算公式(公式、豁免规则、代码位置),支持关键词搜索匹配,按模块分组】,纯前端无后端接口。只输出需要修改的 Vue/JS 文件完整路径列表,不要生成修改代码,不要执行修改。
+
+**参考文件清单:**
+- 数据:`hr_web/src/constants/knowledgeBase.js`(28 条算法条目,后端算法改动须同步)
+- Vue:`hr_web/src/components/KnowledgeBaseDialog.vue`(搜索+模块分组弹窗)、`hr_web/src/components/layout/TopHeader.vue`(Collection 图标按钮)
+- 算法来源(后端,只读参考):`hainan/src/main/java/com/tianye/hrsystem/modules/salary/service/SalaryComputeServiceNew.java`、`TaxCalculator.java`、`SalaryMonthRecordServiceNew.java`、`HrmOvertimeNightStatisticsServiceImpl.java` 等
+
+### 7.11 到龄退休提醒
+**Prompt:**
+这是 SpringBoot 多租户 SaaS 系统,我要修改【到龄退休提醒:按出生日期推算退休日期(男63/女58),员工本月到龄时发站内信,支持定时/页面刷新钩子/手动触发三种入口】,相关数据库表:admin_message(现有表,无 DDL)。只输出需要修改的 Controller、Task、Vue 文件完整路径列表,不要生成修改代码,不要执行修改。
+
+**参考文件清单:**
+- Task:`hainan/src/main/java/com/tianye/hrsystem/autoTask/RetirementReminderTask.java`(推算+发信+按月去重+三入口)
+- Controller:`hainan/src/main/java/com/tianye/hrsystem/controller/AdminMessageController.java`(unreadCount 前置钩子,主路径)、`hainan/src/main/java/com/tianye/hrsystem/controller/HrmEmployeeController.java`(/retirementRemind 手动触发)
+- 枚举:`hainan/src/main/java/com/tianye/hrsystem/enums/AdminMessageEnum.java`(type=207 HRM_EMPLOYEE_RETIREMENT_REMIND)
+- Vue:`hr_web/src/components/NotificationCenter.vue`(铃铛展示,未改动)
+
+### 7.12 排班小程序权限(员工级授权+审批可见范围)
+**Prompt:**
+这是 SpringBoot 多租户 SaaS 系统,我要修改【排班小程序权限:PC 配置页按员工授予"可添加排班"与审批可见范围三档(直属下属/全部员工/自定义指定),租户级菜单开关控制 /mp/mySchedule 等端点】,相关数据库表:mp_schedule_permission、mp_schedule_visible_employee、tbmenu(1021/5000/5020)、tb_api_permission、hrm_employee(parent_id 直属上级)。只输出需要修改的 Controller、Service、Mapper、Entity、Vue 文件完整路径列表,不要生成修改代码,不要执行修改。
+
+**参考文件清单:**
+- Controller:`hainan/src/main/java/com/tianye/hrsystem/modules/miniapp/controller/MiniAppPermissionController.java`(/mpPermission/employeeList|save)、`controller/MiniAppController.java`(isSupervisor 返回 {isSupervisor,canSchedule}/save/employees 权限校验)、`config/CompanyInterceptor.java`(租户级菜单开关分支)
+- Service:`hainan/src/main/java/com/tianye/hrsystem/modules/miniapp/service/IMiniAppPermissionService.java` 及 impl、`WorkPlanApplicationServiceImpl.java`(listToApprove 三档可见范围；done=我批的∪可见已处理并集)
+- SQL:`hainan/docs/sql/2026-09-06_miniapp_schedule_permission.sql`(存量租户补数)、`schema-baseline.sql`/`seed-data.sql`/`api-permission-seed.sql`
+- Vue:`hr_web/src/views/hrm/system/MiniappPermission.vue`(员工列表+穿梭框选员工:按人员/按部门)、`hr_web/src/api/hrm/system/permission.js`
+- 小程序:`miniapp/hr_miniapp/src/pages/index/index.vue`(添加排班入口按 canSchedule 显隐)、`miniapp/hr_miniapp/src/pages/addschedule/addschedule.vue`(onLoad canSchedule 门禁)、`miniapp/hr_miniapp/src/api/modules/miniapp.js`(isSupervisor)
+
+### 7.13 本地考勤判定引擎(弃用钉钉排班推送)
+**Prompt:**
+这是 SpringBoot 多租户 SaaS 系统,我要修改【本地考勤判定:弃用提交排班到钉钉(开关 hrm.dingtalk.schedule-push.enabled 默认 false),以 tbplanlist 为应出勤基准本地判定迟到/早退/缺卡/旷工;夜班(customShiftPeriod=night)即跨天班;宽松取卡口径(最早上班卡/最晚下班卡),迟到缺卡互斥,旷工=全天无卡;补卡取自审批数据(tagName 含"补卡"),每人每月前 N 张生效(N=考勤规则 max_monthly_card_repair);阈值/窗口接入考勤规则设置;员工保存时按姓名+手机号映射 dingtalk_user_id,查无此人拒保存(排班域不再读写 tbattendanceuser,考勤域保留)】,相关数据库表:hrm_attendance_judge_result、hrm_attendance_rule(judge_window_before/after_minutes、max_monthly_card_repair)、tbplanlist、tbattendancedetail、tbattendanceapprove、hrm_employee(dingtalk_user_id)、tbattendanceuser(仅考勤域)。只输出需要修改的 Controller、Service、Mapper、Entity、Vue 文件完整路径列表,不要生成修改代码,不要执行修改。
+
+**参考文件清单:**
+- 判定引擎:`hainan/src/main/java/com/tianye/hrsystem/imple/HrmAttendanceJudgeServiceImpl.java`、`service/IHrmAttendanceJudgeService.java`
+- 推送开关/排班身份:`hainan/src/main/java/com/tianye/hrsystem/imple/WorkPlanServiceImpl.java`(submitPlans 开关分支、resolveAttendanceUserByEmployeeId 内存身份、loadUsersFromLocalSnapshot/resolveEmployeeContinuousShiftByUserId 双键)
+- 映射前置:`hainan/src/main/java/com/tianye/hrsystem/imple/HrmAttendanceApprovalSyncServiceImpl.java`(ensureDingTalkUserId)、`imple/employee/HrmEmployeeServiceImpl.java`(add/updateInformation/updateCommunication 钩子)、`autoTask/DingTalkUserMappingRetryTask.java`(每日重试+remapEmployees)、`common/EmployeeNotInDingTalkException.java`
+- 降表依赖:`modules/miniapp/service/impl/MiniAppScheduleServiceImpl.java`、`modules/workplanapplication/service/impl/WorkPlanApplicationServiceImpl.java`、`modules/workplan/service/impl/WorkPlanProductServiceImpl.java`、`controller/WorkPlanListController.java`
+- 接口:`controller/HrmAttendanceDataController.java`(/attendanceData/judgeRecompute)
+- SQL:`hainan/docs/sql/2026-09-06_attendance_judge.sql`(租户库)
 
 ---
 

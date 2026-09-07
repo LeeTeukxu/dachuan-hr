@@ -13,6 +13,7 @@ import com.tianye.hrsystem.model.ShiftItem;
 import com.tianye.hrsystem.model.UserObject;
 import com.tianye.hrsystem.model.successResult;
 import com.tianye.hrsystem.model.tbattendanceuser;
+import com.tianye.hrsystem.task.AttendanceSyncTaskLauncher;
 import com.tianye.hrsystem.repository.hrmAttendanceGroupRepository;
 import com.tianye.hrsystem.repository.hrmAttendancePlanRepository;
 import com.tianye.hrsystem.repository.hrmAttendanceShiftRepository;
@@ -37,6 +38,7 @@ import java.util.Arrays;
 import java.util.Collections;
 import java.util.Date;
 import java.util.List;
+import java.util.HashMap;
 import java.text.SimpleDateFormat;
 
 import static org.mockito.ArgumentMatchers.any;
@@ -54,6 +56,9 @@ public class HrmAttendanceDataControllerTest {
 
     @Mock
     private IHrmAttendanceDataService dataService;
+
+    @Mock
+    private AttendanceSyncTaskLauncher syncTaskLauncher;
 
     @Mock
     private hrmEmployeeRepository empRep;
@@ -255,6 +260,26 @@ public class HrmAttendanceDataControllerTest {
         Assert.assertEquals("17:30", data.get(1).getEnd1());
         verify(tokener, never()).Refresh(eq("1001"));
         verify(tokener, never()).GetAdminUser(eq("1001"));
+    }
+
+    @Test
+    public void getData_shouldIdentifyCompanyAndAccountWhenSyncLockIsHeld() throws Exception {
+        Date end = new Date();
+        when(dateUtils.setItEnd(any(Date.class))).thenReturn(end);
+        when(syncTaskLauncher.tryBegin(eq("1001"), any(LoginUserInfo.class))).thenReturn(false);
+        HashMap<String, Object> owner = new HashMap<>();
+        owner.put("companyName", "示例公司");
+        owner.put("account", "alice");
+        owner.put("userName", "Alice");
+        when(syncTaskLauncher.getRunningOwner("1001")).thenReturn(owner);
+
+        successResult result = controller.GetData("101", "2026-08-01", "2026-08-31");
+
+        Assert.assertFalse(result.getSuccess());
+        Assert.assertTrue(result.getMessage().contains("示例公司"));
+        Assert.assertTrue(result.getMessage().contains("alice"));
+        Assert.assertTrue(result.getMessage().contains("当前操作账号"));
+        verify(dataService, never()).markSyncQueued();
     }
 
     @Test

@@ -2,6 +2,7 @@ package com.tianye.hrsystem.controller;
 
 import com.tianye.hrsystem.entity.po.HrmEmployeeContract;
 import com.tianye.hrsystem.entity.vo.ContractInformationVO;
+import com.tianye.hrsystem.entity.vo.DuplicateContractVO;
 import com.tianye.hrsystem.entity.vo.Result;
 import com.tianye.hrsystem.service.employee.IHrmEmployeeContractService;
 import io.swagger.annotations.Api;
@@ -18,6 +19,7 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.net.URLEncoder;
 import java.util.List;
+import java.util.Map;
 
 /**
  * <p>
@@ -58,7 +60,7 @@ public class HrmEmployeeContractController {
     @RequestMapping("/import")
     @ResponseBody
     @ApiOperation("导入员工合同")
-    public Result<Integer> importContracts(MultipartFile file) {
+    public Result<Map<String, Object>> importContracts(MultipartFile file) {
         try {
             return Result.ok(employeeContractService.importContracts(file));
         } catch (Exception ax) {
@@ -96,6 +98,28 @@ public class HrmEmployeeContractController {
     public Result deleteContract(@PathVariable("contractId") Long contractId) {
         employeeContractService.deleteContract(contractId);
         return Result.ok();
+    }
+
+    @PostMapping("/queryDuplicateContracts")
+    @ApiOperation("查询重复合同列表")
+    public Result<List<DuplicateContractVO>> queryDuplicateContracts() {
+        try {
+            return Result.ok(employeeContractService.queryDuplicateContracts());
+        } catch (Exception ax) {
+            logger.error("查询重复合同失败", ax);
+            return Result.error(500, ax.getMessage());
+        }
+    }
+
+    @PostMapping("/deleteDuplicateContracts")
+    @ApiOperation("批量删除重复合同")
+    public Result<Integer> deleteDuplicateContracts(@RequestBody List<Long> contractIds) {
+        try {
+            return Result.ok(employeeContractService.deleteDuplicateContracts(contractIds));
+        } catch (Exception ax) {
+            logger.error("删除重复合同失败", ax);
+            return Result.error(500, ax.getMessage());
+        }
     }
 }
 

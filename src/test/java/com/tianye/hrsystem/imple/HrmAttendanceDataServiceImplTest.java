@@ -169,7 +169,7 @@ public class HrmAttendanceDataServiceImplTest {
 
     @Test
     public void getSyncProgress_shouldExposeSuccessUntilOperatorAcknowledges() {
-        when(redis.get("attendance:sync:step:0003")).thenReturn(7);
+        when(redis.get("attendance:sync:step:0003")).thenReturn("7");
         when(redis.get("attendance:sync:status:0003")).thenReturn("SUCCESS");
         when(redis.get("attendance:sync:message:0003")).thenReturn("同步完成，请确认后关闭进度条");
 
@@ -180,6 +180,25 @@ public class HrmAttendanceDataServiceImplTest {
         org.junit.Assert.assertEquals(Boolean.TRUE, progress.get("success"));
         org.junit.Assert.assertEquals(100, progress.get("progress"));
         org.junit.Assert.assertEquals("同步完成，请确认后关闭进度条", progress.get("message"));
+    }
+
+    @Test
+    public void markSyncRetrying_shouldStoreUpdateTimeAsStringForStringRedisSerializer() {
+        service.markSyncRetrying(1, 1000L);
+
+        org.mockito.ArgumentCaptor<Object> updateTime = org.mockito.ArgumentCaptor.forClass(Object.class);
+        verify(redis).setex(eq("attendance:sync:update_time:0003"), anyInt(), updateTime.capture());
+        org.junit.Assert.assertTrue("进度更新时间必须以字符串写入 Redis", updateTime.getValue() instanceof String);
+    }
+
+    @Test
+    public void getSyncProgress_shouldParseStringStageFromRedis() {
+        org.mockito.Mockito.doReturn("3").when(redis).get("attendance:sync:step:0003");
+
+        Map<String, Object> progress = service.getSyncProgress();
+
+        org.junit.Assert.assertEquals(3, progress.get("currentStep"));
+        org.junit.Assert.assertEquals(20, progress.get("progress"));
     }
 
     @Test

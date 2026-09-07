@@ -282,10 +282,13 @@ public class SalaryMonthRecordServiceNewTest {
 
             SalaryExportCommentWriteHandler.applySalaryExportComments(row, export);
 
-            assertCellCommentContains(row.getCell(17), "40102", "未生成", "有效病假", "应计出勤");
-            assertCellCommentContains(row.getCell(19), "200101", "应出勤天数", "应计出勤小时", "当前超缺勤天数：1.00");
-            assertCellCommentContains(row.getCell(21), "230101", "累计预扣法", "累计已缴税额", "当前个税：2.40");
-            assertCellCommentContains(row.getCell(25), "160102", "应发工资 * 0.5%", "实习/离职", "半路转正");
+            assertCellCommentContains(row.getCell(16), "考勤管理", "每月考勤统计", "其他补贴");
+            assertCellCommentContains(row.getCell(17), "基本工资设置", "没有全勤奖", "超缺勤", "满勤天数：24.00");
+            assertCellCommentContains(row.getCell(19), "迟到", "早退", "旷工", "事假", "病假", "缺卡",
+                    "当前超缺勤天数：1.00");
+            assertCellCommentContains(row.getCell(21), "累计预扣", "固定减除费用", "社保", "专项附加扣除",
+                    "当前个税：2.40");
+            assertCellCommentContains(row.getCell(25), "0.5%", "没有工会费", "应发工资：5000.00");
             Assert.assertNull("非目标薪资字段不应添加批注", row.getCell(0).getCellComment());
         }
     }
@@ -296,7 +299,7 @@ public class SalaryMonthRecordServiceNewTest {
             Sheet sheet = workbook.createSheet("Sheet1");
             Row subtotalRow = sheet.createRow(4);
             Row totalRow = sheet.createRow(5);
-            for (int column : Arrays.asList(17, 19, 21, 25)) {
+            for (int column : Arrays.asList(16, 17, 19, 21, 25)) {
                 subtotalRow.createCell(column).setCellValue("");
                 totalRow.createCell(column).setCellValue("");
             }
@@ -309,7 +312,7 @@ public class SalaryMonthRecordServiceNewTest {
             SalaryExportCommentWriteHandler.applySalaryExportComments(subtotalRow, subtotal);
             SalaryExportCommentWriteHandler.applySalaryExportComments(totalRow, total);
 
-            for (int column : Arrays.asList(17, 19, 21, 25)) {
+            for (int column : Arrays.asList(16, 17, 19, 21, 25)) {
                 Assert.assertNull(subtotalRow.getCell(column).getCellComment());
                 Assert.assertNull(totalRow.getCell(column).getCellComment());
             }

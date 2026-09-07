@@ -49,7 +49,15 @@ public class HrmAttendanceApprovalController {
         String companyId = info != null && info.getCompanyId() != null ? info.getCompanyId() : "unknown";
         // 按公司互斥：提交路径同步抢占，重复触发当场返回“进行中”
         if (!attendanceApprovalService.tryBeginFetch(companyId)) {
-            throw new IllegalStateException("该公司的审批数据获取正在进行中，请勿重复发起；可在进度条中查看当前进展");
+            // 任务正在进行中，返回特殊状态码202（Accepted），而不是抛异常
+            // 前端会根据这个状态码自动切换到查看进度模式
+            java.util.Map<String, Object> runningData = new java.util.HashMap<>();
+            runningData.put("alreadyRunning", true);
+            runningData.put("queued", true);
+            Result<Object> runningResult = Result.ok(runningData);
+            runningResult.setCode(202);
+            runningResult.setMsg("审批数据获取正在进行中，已自动切换到查看进度模式");
+            return runningResult;
         }
         try {
             attendanceApprovalService.beginFetchProgress();

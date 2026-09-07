@@ -14,6 +14,7 @@ public interface hrmEmployeeRepository  extends JpaRepository<HrmEmployee,Long> 
     Optional<HrmEmployee> findFirstByJobNumberAndEmployeeIdNot(String JobNumber,Long EmpID);
     Optional<HrmEmployee> findFirstByMobile(String JobNumber);
     Optional<HrmEmployee> findFirstByMobileAndEmployeeIdNot(String JobNumber,Long EmpID);
+    Optional<HrmEmployee> findFirstByOpenid(String openid);
     List<SimpleHrmEmployeeVO> findAllByEmployeeNameLike(String EmpName);
     List<SimpleHrmEmployeeVO> findAllByStatusAndIsDel(Integer Status,Integer IsDel);
 
@@ -30,4 +31,7 @@ public interface hrmEmployeeRepository  extends JpaRepository<HrmEmployee,Long> 
     List<HrmEmployee> findAllByEmployeeName(String EmployeeName);
 
     long countByParentIdAndIsDel(Long parentId, Integer isDel);
+
+    /** 直属下属列表（parent_id = 本人），用于小程序审批可见范围默认档 */
+    List<HrmEmployee> findAllByParentIdAndIsDel(Long parentId, Integer isDel);
 }

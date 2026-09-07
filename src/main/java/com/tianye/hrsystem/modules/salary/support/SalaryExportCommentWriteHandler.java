@@ -22,15 +22,19 @@ import java.util.Set;
 
 /**
  * 薪资导出批注：只解释关键计算字段，不参与金额计算。
+ * 批注正文优先使用导出服务按员工生成的具体说明（见 HrmSalaryExport 各 comment 字段），
+ * 无具体说明时回退到通用解释文本。
  */
 public class SalaryExportCommentWriteHandler implements CellWriteHandler {
 
     private static final int DATA_START_ROW_INDEX = 4;
+    private static final int OTHER_SUBSIDY_COLUMN_INDEX = 16;
     private static final int FULL_ATTENDANCE_COLUMN_INDEX = 17;
     private static final int ABSENCE_SALARY_COLUMN_INDEX = 19;
     private static final int TAX_COLUMN_INDEX = 21;
     private static final int UNION_FEES_COLUMN_INDEX = 25;
     private static final Set<Integer> COMMENT_COLUMN_INDEXES = new HashSet<>(Arrays.asList(
+            OTHER_SUBSIDY_COLUMN_INDEX,
             FULL_ATTENDANCE_COLUMN_INDEX,
             ABSENCE_SALARY_COLUMN_INDEX,
             TAX_COLUMN_INDEX,
@@ -79,7 +83,13 @@ public class SalaryExportCommentWriteHandler implements CellWriteHandler {
         if (salaryExport == null) {
             return "";
         }
+        String prepared = preparedComment(salaryExport, columnIndex);
+        if (prepared != null && !prepared.trim().isEmpty()) {
+            return prepared;
+        }
         switch (columnIndex) {
+            case OTHER_SUBSIDY_COLUMN_INDEX:
+                return buildOtherSubsidyComment(salaryExport);
             case FULL_ATTENDANCE_COLUMN_INDEX:
                 return buildFullAttendanceComment(salaryExport);
             case ABSENCE_SALARY_COLUMN_INDEX:
@@ -90,6 +100,23 @@ public class SalaryExportCommentWriteHandler implements CellWriteHandler {
                 return buildUnionFeesComment(salaryExport);
             default:
                 return "";
+        }
+    }
+
+    private static String preparedComment(HrmSalaryExport salaryExport, int columnIndex) {
+        switch (columnIndex) {
+            case OTHER_SUBSIDY_COLUMN_INDEX:
+                return salaryExport.getOtherSubsidyComment();
+            case FULL_ATTENDANCE_COLUMN_INDEX:
+                return salaryExport.getFullAttendanceComment();
+            case ABSENCE_SALARY_COLUMN_INDEX:
+                return salaryExport.getAbsenceComment();
+            case TAX_COLUMN_INDEX:
+                return salaryExport.getTaxComment();
+            case UNION_FEES_COLUMN_INDEX:
+                return salaryExport.getUnionFeesComment();
+            default:
+                return null;
         }
     }
 
@@ -117,41 +144,63 @@ public class SalaryExportCommentWriteHandler implements CellWriteHandler {
         cell.setCellComment(comment);
     }
 
+    private static String buildOtherSubsidyComment(HrmSalaryExport salaryExport) {
+        BigDecimal otherSubsidy = safeDecimal(salaryExport.getOthersalary());
+        String base = "其他补贴的数据来自【考勤管理】中的“每月考勤统计”（上传考勤）：先通过考勤报表文件导入，"
+                + "也可以在考勤统计页面上直接修改单元格保存，薪资核算时按该列金额发放。";
+        if (isBlankOrZero(otherSubsidy)) {
+            return base + "本月该员工的其他补贴未填写或为0。";
+        }
+        return base + "本月金额：" + amount(otherSubsidy) + " 元。";
+    }
+
     private static String buildFullAttendanceComment(HrmSalaryExport salaryExport) {
         BigDecimal fullAttendance = safeDecimal(salaryExport.getFullattendancesalary());
-        String base = "满勤/全勤奖 = 工资项 40102。金额来自计薪员工 fullMoney，员工级金额优先，基本工资设置兜底。";
+        String base = "全勤奖是员工当月满勤发放的奖励，金额在【薪资管理-基本工资设置】中按员工设定。";
         if (isBlankOrZero(fullAttendance)) {
-            return base + "当前为空/为0，表示薪资核算未生成 40102；通常因为未转正或当月半路转正、未启用全勤奖、存在有效病假、应计出勤低于应出勤、缺少加班/夜班统计应出勤数据，或薪资项未生成。"
-                    + "当前满勤天数：" + safeString(salaryExport.getNormaldays())
-                    + "，超缺勤天数：" + amount(salaryExport.getAbsencehours()) + "。";
+            String reason = "本月没有全勤奖，常见原因：① 入职后尚未转正，或当月才转正；"
+                    + "② 基本工资设置中未启用全勤奖；"
+                    + "③ 本月有病假，按规则取消全勤；"
+                    + "④ 本月出勤不满，存在迟到、早退、旷工、缺卡或请假。";
+            if (salaryExport.getAbsencehours() != null && salaryExport.getAbsencehours().compareTo(BigDecimal.ZERO) != 0) {
+                reason = "本月没有全勤奖：该员工存在超缺勤（超缺勤天数 " + amount(salaryExport.getAbsencehours())
+                        + " 天），不满足满勤条件。另需注意：① 入职后尚未转正或当月才转正、② 基本工资设置中未启用全勤奖，也会导致没有全勤奖。";
+            }
+            return base + reason
+                    + "当前满勤天数：" + safeString(salaryExport.getNormaldays()) + " 天。";
         }
-        return base + "满足正式/启用全勤、无有效病假、应计出勤达到应出勤等条件后生成。当前全勤奖："
-                + amount(fullAttendance) + "。";
+        return base + "该员工本月满足满勤条件（已转正、无病假、出勤达标），获得全勤奖 "
+                + amount(fullAttendance) + " 元。当前满勤天数：" + safeString(salaryExport.getNormaldays()) + " 天。";
     }
 
     private static String buildAbsenceSalaryComment(HrmSalaryExport salaryExport) {
-        return "超缺勤工资 = 工资项 200101，由迟到、早退、旷工、事假、病假、缺卡等考勤扣款项汇总生成。"
-                + "超缺勤天数 = (应出勤天数 * 8 - 应计出勤小时) / 8；应出勤和应计出勤读取加班/夜班统计落库结果。"
+        return "超缺勤工资是因迟到、早退、旷工、请事假、请病假、缺卡等从工资中扣除的部分，"
+                + "由各项考勤扣款汇总得出。超缺勤天数 =（应出勤天数 × 8 − 应计出勤小时）÷ 8，"
+                + "出勤数据来自考勤统计结果。病假扣款规则：每月前2天病假不扣钱，超过2天的部分按当地最低工资标准折算扣除。"
                 + "当前超缺勤天数：" + amount(salaryExport.getAbsencehours())
-                + "，当前超缺勤工资：" + amount(salaryExport.getAbsencesalary()) + "。";
+                + " 天，超缺勤扣款合计：" + amount(salaryExport.getAbsencesalary()) + " 元。"
+                + "各项扣款的具体金额见核算后的工资明细（迟到、早退、旷工、事假、病假、缺卡）。";
     }
 
     private static String buildTaxComment(HrmSalaryExport salaryExport) {
-        return "个人所得税 = 工资项 230101，按累计预扣法计算。"
-                + "累计收入（含本月应税收入、福利计税、只计税奖金） - 累计减除费用 - 累计专项扣除（社保/公积金） - 累计专项附加扣除 = 累计应纳税所得额；"
-                + "再按税率和速算扣除计算累计应纳税额，减去累计已缴税额得到本月个税。"
-                + "当前个税：" + amount(salaryExport.getTax()) + "。";
+        return "个人所得税按“累计预扣”方法计算：把今年1月至本月的收入累加，"
+                + "减去每月5000元的固定减除费用、个人承担的社保和公积金、专项附加扣除，得到累计应纳税所得额；"
+                + "再按税率表（年应纳税所得额不超过3.6万的部分3%，之后依次10%、20%、25%、30%、35%、45%）算出累计应缴税额，"
+                + "减去之前月份已缴的税，就是本月要扣的个税。"
+                + "当前个税：" + amount(salaryExport.getTax()) + " 元。"
+                + "该员工本月的具体计算过程（累计收入、各项扣除、适用税率等）见核算后保存的个税累计数据。";
     }
 
     private static String buildUnionFeesComment(HrmSalaryExport salaryExport) {
         BigDecimal unionFees = safeDecimal(salaryExport.getUnionfees());
-        String base = "工会费 = 工资项 160102。正常规则为应发工资 * 0.5%，并受公司、员工状态、转正时间和应发工资规则限制。";
+        String base = "工会费按应发工资的0.5%收取，并受员工状态、转正时间等规则限制。";
         if (isBlankOrZero(unionFees)) {
-            return base + "当前为空/为0，通常因为成都/攀枝花公司免收、应发工资小于等于0、实习/离职员工、半路转正员工，或薪资项 160102 未生成。"
-                    + "当前应发工资：" + amount(salaryExport.getTotalsalary()) + "。";
+            return base + "本月没有工会费，常见原因：① 实习或已离职员工不收取；"
+                    + "② 入职当月尚未转正不收取；③ 本月应发工资为0；④ 所在公司免收工会费。"
+                    + "当前应发工资：" + amount(salaryExport.getTotalsalary()) + " 元。";
         }
-        return base + "当前应发工资：" + amount(salaryExport.getTotalsalary())
-                + "，当前工会费：" + amount(unionFees) + "。";
+        return base + "本月计算：应发工资 " + amount(salaryExport.getTotalsalary())
+                + " 元 × 0.5% = " + amount(unionFees) + " 元。";
     }
 
     private static boolean isSubtotalOrTotalRow(HrmSalaryExport salaryExport) {

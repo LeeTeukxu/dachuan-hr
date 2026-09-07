@@ -33,6 +33,7 @@ public class CompanyInterceptor extends HandlerInterceptorAdapter {
             "/hrsystem/login",
             "/hrsystem/captcha/generate",
             "/hrsystem/mp/login",
+            "/hrsystem/mp/login/bindEmployee",
             "/hrsystem/mp/login/bindCompany",
             "/hrsystem/confirmCompany",
             "/hrsystem/logout");
@@ -42,6 +43,8 @@ public class CompanyInterceptor extends HandlerInterceptorAdapter {
 ApiPermissionPathSupport apiPermissionPathSupport;
 @Autowired
 com.tianye.hrsystem.common.TokenRevocationService tokenRevocationService;
+@Autowired
+com.tianye.hrsystem.mapper.LoginUserMapper loginUserMapper;
 Logger logger= LoggerFactory.getLogger(CompanyInterceptor.class);
     @Override
     public void postHandle(HttpServletRequest request, HttpServletResponse response, Object handler, ModelAndView
@@ -115,9 +118,16 @@ Logger logger= LoggerFactory.getLogger(CompanyInterceptor.class);
                 boolean isMiniappPath = urlPath.equals(miniappPrefix) || urlPath.startsWith(miniappPrefix + "/");
                 boolean allowed;
                 if (!requiredMenuPaths.isEmpty()) {
-                    // 命中菜单权限映射：按菜单权限校验（PC 管理端路径）
-                    allowed = hasMenuPermission(Info, requiredMenuPaths);
-                    if (!allowed) result.raiseException(new Exception("当前账号没有访问该功能的权限"));
+                    // 命中菜单权限映射：PC 账号按菜单权限校验；
+                    // 小程序员工 token 无菜单树，按租户级判定——任一角色勾选了所需菜单即视为该租户开通此功能
+                    if (isMiniappPath
+                            && (Info.getMenuTree() == null || Info.getMenuTree().isEmpty())) {
+                        allowed = hasTenantMenuPermission(Info, requiredMenuPaths);
+                        if (!allowed) result.raiseException(new Exception("当前企业未开通该小程序功能，请联系管理员在角色权限中勾选"));
+                    } else {
+                        allowed = hasMenuPermission(Info, requiredMenuPaths);
+                        if (!allowed) result.raiseException(new Exception("当前账号没有访问该功能的权限"));
+                    }
                 } else if (isMiniappPath) {
                     // 小程序端：员工身份无菜单树，仅校验 token；数据权限（本人数据/直属上级）在各接口内校验
                     allowed = true;
@@ -171,8 +181,28 @@ Logger logger= LoggerFactory.getLogger(CompanyInterceptor.class);
         }
     }
 
-    private boolean hasMenuPermission(LoginUserInfo info, List<String> requiredMenuPaths) {
+    /**
+     * 租户级菜单开关：小程序员工 token 不携带菜单树，查该租户库是否存在任一角色勾选了所需菜单路径。
+     * 权限页勾选"排班数据加载"= 给该公司开通此功能。
+     */
+    private boolean hasTenantMenuPermission(LoginUserInfo info, List<String> requiredMenuPaths) {
         if (requiredMenuPaths == null || requiredMenuPaths.isEmpty()) {
+            return true;
+        }
+        String companyId = info == null ? null : info.getCompanyId();
+        if (StringUtils.isEmpty(companyId)) {
+            return false;
+        }
+        String suffix = StringUtils.isNotEmpty(info.getSuffix()) ? info.getSuffix() : databasesuffix;
+        try {
+            return loginUserMapper.countTenantMenuPermission(companyId, suffix, requiredMenuPaths) > 0;
+        } catch (Exception e) {
+            logger.warn("租户级菜单权限判定失败(company={}): {}", companyId, e.getMessage());
+            return false;
+        }
+    }
+
+    private boolean hasMenuPermission(LoginUserInfo info, List<String> requiredMenuPaths) {        if (requiredMenuPaths == null || requiredMenuPaths.isEmpty()) {
             return true;
         }
         if (info == null || info.getMenuTree() == null || info.getMenuTree().isEmpty()) {

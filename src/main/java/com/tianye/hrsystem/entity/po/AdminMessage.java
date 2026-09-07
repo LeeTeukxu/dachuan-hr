@@ -89,6 +89,9 @@ public class AdminMessage implements Serializable {
     @TableField(fill = FieldFill.UPDATE)
     private LocalDateTime updateTime;
 
+    @ApiModelProperty(value = "跳转链接")
+    private String linkUrl;
+
     @ApiModelProperty(value = "更新时间")
     @TableField(exist = false)
     private Map<String, String> languageKeyMap;

@@ -87,6 +87,16 @@ public class Result<T> implements Serializable {
         return this;
     }
 
+    public Result<T> setCode(int code) {
+        this.code = code;
+        return this;
+    }
+
+    public Result<T> setMsg(String msg) {
+        this.msg = msg;
+        return this;
+    }
+
     public T getData() {
         return this.data;
     }

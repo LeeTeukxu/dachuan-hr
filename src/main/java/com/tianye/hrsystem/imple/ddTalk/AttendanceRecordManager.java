@@ -138,10 +138,44 @@ public class AttendanceRecordManager implements IRecordManager {
                 app.setDurationUnit(r.getDurationUnit());
                 app.setUserId(UserID);
                 app.setDuration(r.getDuration());
+                app.setDurationDay(toLeaveDay(r.getDuration(), r.getDurationUnit()));
                 app.setWorkDate(WorkDate);
                 app.setCreateTime(new Date());
                 appRep.save(app);
             }
         }
+    }
+
+    /**
+     * 由存储的 (时长,单位) 推导一致的"天"口径：小时→/8、分钟→/60/8、天→原值，保留 2 位小数。
+     * 与 HrmAttendanceApprovalProcessInstanceParser.toDayText 口径一致，保证 durationDay 派生列自洽。
+     */
+    private String toLeaveDay(String duration, String unit) {
+        if (duration == null || duration.trim().isEmpty()) {
+            return "";
+        }
+        double value;
+        try {
+            value = Double.parseDouble(duration.trim());
+        } catch (NumberFormatException ex) {
+            return "";
+        }
+        if (value <= 0) {
+            return "";
+        }
+        double days;
+        String u = unit == null ? "" : unit.trim();
+        if ("分钟".equals(u)) {
+            days = value / 60.0 / 8.0;
+        } else if ("天".equals(u) || "日".equals(u)) {
+            days = value;
+        } else {
+            days = value / 8.0;
+        }
+        days = Math.round(days * 100.0) / 100.0;
+        if (days == Math.floor(days)) {
+            return String.valueOf((long) days);
+        }
+        return String.valueOf(days);
     }
 }

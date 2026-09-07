@@ -130,6 +130,8 @@ public class LoginController {
             clearLoginFail(account);
             matched.setSuffix(databasesuffix);
             matched.setAccount(account);
+            // 登录令牌携带公司名，异步任务锁提示可明确定位企业。
+            fillCompanyName(matched, companies);
             // 校验通过即视为合法用户：清除可能因连续输错密码产生的封禁，避免“登录成功却被强制下线”的死循环
             tokenRevocation.unbanAccount(account);
             Integer pcr = userMapper.getPwdChangeRequired(matched.getAccount(), matched.getCompanyId(), databasesuffix);
@@ -195,6 +197,7 @@ public class LoginController {
             clearLoginFail(account);
             matched.setSuffix(databasesuffix);
             matched.setAccount(account);
+            fillCompanyName(matched, listCandidateCompanies(account));
             // 校验通过即视为合法用户：清除可能因连续输错密码产生的封禁，避免“登录成功却被强制下线”的死循环
             tokenRevocation.unbanAccount(account);
             Integer pcr2 = userMapper.getPwdChangeRequired(matched.getAccount(), matched.getCompanyId(), databasesuffix);
@@ -222,6 +225,97 @@ public class LoginController {
                 result.raiseException(ax);
                 log.error("confirmCompany 异常", ax);
             }
+        }
+        return result;
+    }
+
+    /**
+     * 个人信息界面「切换企业」：登录态内把当前账号换发为绑定目标企业的新令牌。
+     * 多租户路由以 token 内嵌 companyId 为唯一来源，切换=签发绑新企业的新 JWT + 重载该企业菜单。
+     * 安全：目标企业必须属于当前账号候选（实时白名单），越权直接拒绝；不引入明文密码/验证码。
+     * 会话种子沿用当前值(不 bump)，原企业 token 保留至自然过期，支持切回与多标签页不被误杀。
+     * 失败优雅降级：目标企业数据库不可达等异常返回失败，不消费/不影响当前登录态，用户可留在原企业。
+     */
+    @PostMapping("/switchCompany")
+    public successResult switchCompany(String companyId) {
+        successResult result = new successResult();
+        try {
+            LoginUserInfo current = CompanyContext.get();
+            if (current == null || current.getAccount() == null || current.getAccount().trim().isEmpty()) {
+                result.raiseException(new Exception("未登录或登录已失效"));
+                return result;
+            }
+            String account = current.getAccount();
+            if (companyId == null || StringUtils.isEmpty(companyId.trim())) {
+                throw new Exception("缺少目标企业ID");
+            }
+            String target = companyId.trim();
+            if (current.getCompanyId() != null && target.equals(current.getCompanyId())) {
+                throw new Exception("当前已在该企业，无需切换");
+            }
+            List<java.util.Map<String, Object>> companies = listCandidateCompanies(account);
+            if (companies.isEmpty()) {
+                throw new Exception(account + "在系统中不存在!");
+            }
+            boolean belongs = companies.stream()
+                    .anyMatch(c -> target.equals(String.valueOf(c.get("companyId"))));
+            if (!belongs) {
+                throw new Exception("当前账号不可访问企业 " + target + "，无法切换");
+            }
+            LoginUserInfo matched = loadTenantUser(account, target);
+            matched.setSuffix(databasesuffix);
+            matched.setAccount(account);
+            fillCompanyName(matched, companies);
+            // 切换企业不动会话种子：沿用当前值，原企业令牌保留至自然过期（可切回/多标签不误杀）
+            matched.setSessionSeed(tokenRevocation.getSessionSeed(account));
+            matched.setPassword(null);
+            Integer pcr = userMapper.getPwdChangeRequired(matched.getAccount(), matched.getCompanyId(), databasesuffix);
+            matched.setMustChangePassword(pcr != null && pcr == 1);
+            // 装载目标企业 menuTree（fillPermissionMenus 内部 set 目标企业上下文，会顺带触发目标租户池建池预热）
+            fillPermissionMenus(matched);
+            String token = JWTTokenUtils.getToken(matched);
+            matched.setToken(token);
+            result.setData(matched);
+        } catch (Exception ax) {
+            String msg = ax == null ? "" : (ax.getMessage() == null ? "" : ax.getMessage());
+            boolean jdbcFailure = msg.contains("Unable to acquire JDBC Connection")
+                    || (msg.contains("租户") && msg.contains("无法连接其数据库"));
+            if (jdbcFailure) {
+                // 目标企业库不可达：保持当前登录态，返回可定位的提示（前端可留在原企业）
+                result.setSuccess(false);
+                result.setCode(500);
+                result.setMessage("切换失败：企业(" + (companyId == null ? "" : companyId.trim())
+                        + ")的数据库连接异常，请检查该企业数据库是否可访问或联系系统管理员");
+                log.error("switchCompany 目标租户数据库连接失败 companyId={}", companyId, ax);
+            } else {
+                result.raiseException(ax);
+                log.error("switchCompany 异常", ax);
+            }
+        }
+        return result;
+    }
+
+    /**
+     * 个人信息界面「切换企业」候选列表：返回当前账号可访问的企业(实时白名单)与当前所在企业。
+     */
+    @PostMapping("/switchCompany/candidates")
+    public successResult switchCompanyCandidates() {
+        successResult result = new successResult();
+        try {
+            LoginUserInfo current = CompanyContext.get();
+            if (current == null || current.getAccount() == null || current.getAccount().trim().isEmpty()) {
+                result.raiseException(new Exception("未登录或登录已失效"));
+                return result;
+            }
+            String account = current.getAccount();
+            List<java.util.Map<String, Object>> companies = listCandidateCompanies(account);
+            java.util.Map<String, Object> data = new java.util.HashMap<>();
+            data.put("currentCompanyId", current.getCompanyId());
+            data.put("companies", companies);
+            result.setData(data);
+        } catch (Exception ax) {
+            result.raiseException(ax);
+            log.error("switchCompanyCandidates 异常", ax);
         }
         return result;
     }
@@ -266,6 +360,21 @@ public class LoginController {
             return userMapper.getByAcountAndCompanyID(account, companyId, databasesuffix);
         } catch (Exception ex) {
             return null;
+        }
+    }
+
+    private void fillCompanyName(LoginUserInfo info, List<java.util.Map<String, Object>> companies) {
+        if (info == null || info.getCompanyId() == null || companies == null) {
+            return;
+        }
+        for (java.util.Map<String, Object> company : companies) {
+            if (info.getCompanyId().equals(String.valueOf(company.get("companyId")))) {
+                Object companyName = company.get("companyName");
+                if (companyName != null && !StringUtils.isEmpty(String.valueOf(companyName).trim())) {
+                    info.setCompanyName(String.valueOf(companyName).trim());
+                }
+                return;
+            }
         }
     }
 

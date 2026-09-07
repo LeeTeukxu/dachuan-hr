@@ -19,4 +19,10 @@ public class QueryRoleMenuBO extends MyPageEntity {
     private Integer menuId;
 
     private List<TbRoleMenu> listRoleMenu;
+
+    @ApiModelProperty(value = "是否同步到其他企业")
+    private Boolean syncToOtherCompanies;
+
+    @ApiModelProperty(value = "要同步的企业ID列表（为空则同步到该角色下所有账号的所有企业）")
+    private List<String> targetCompanyIds;
 }

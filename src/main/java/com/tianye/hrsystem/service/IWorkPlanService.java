@@ -49,6 +49,7 @@ public interface IWorkPlanService {
                                                     String customShiftPeriod, Boolean customContinuousShift,
                                                     Boolean customContinuousShiftExplicit,
                                                     String restShiftType) throws Exception;
+    int batchSetRestDay(Date workDate) throws Exception;
     void fillCustomShiftMeta(List<tbplanlist> planList) throws Exception;
     List<WorkPlanCustomShiftOptionVO> queryCustomShiftOptions() throws Exception;
 

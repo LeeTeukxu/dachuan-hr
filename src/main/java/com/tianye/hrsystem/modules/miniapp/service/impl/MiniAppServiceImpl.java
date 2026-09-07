@@ -7,7 +7,7 @@ import com.tianye.hrsystem.entity.vo.WorkPlanEmployeeDayShiftVO;
 import com.tianye.hrsystem.model.HrmEmployee;
 import com.tianye.hrsystem.model.HrmWorkplanApplication;
 import com.tianye.hrsystem.model.LoginUserInfo;
-import com.tianye.hrsystem.modules.miniapp.entity.MiniAppUserBinding;
+import com.tianye.hrsystem.modules.miniapp.mapper.MiniAppEmployeeMapper;
 import com.tianye.hrsystem.modules.miniapp.mapper.MiniAppSystemMapper;
 import com.tianye.hrsystem.modules.miniapp.service.IMiniAppService;
 import com.tianye.hrsystem.modules.miniapp.support.MiniAppWxClient;
@@ -27,16 +27,12 @@ import org.springframework.stereotype.Service;
 
 import java.text.SimpleDateFormat;
 import java.util.*;
-import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * 小程序登录绑定与排班查询。
  *
- * <p>重名处理：openid 首次登录按手机号遍历各公司库精确匹配（matching by mobile，从不按姓名），
- * 手机号匹配结果与公司ID一起记录；openid 与员工唯一绑定后，后续一律按绑定表定位员工，与姓名无关。</p>
- *
- * <p>微信手机号 code（phoneCode）为一次性凭证：跨公司多条匹配时，将 openid+手机号暂存于服务端
- * 短时 ticket，用户选择公司后携带 ticket 完成绑定，避免重复消耗 phoneCode。</p>
+ * <p>登录使用微信 code2Session 返回的 openid 遍历租户员工表。首次未绑定时返回短期 ticket，
+ * 员工完成公司、姓名和证件号码核验后将 openid 写回 hrm_employee。</p>
  */
 @Service
 public class MiniAppServiceImpl implements IMiniAppService {
@@ -44,29 +40,17 @@ public class MiniAppServiceImpl implements IMiniAppService {
     private static final Logger logger = LoggerFactory.getLogger(MiniAppServiceImpl.class);
 
     private static final String STATUS_PENDING = "pending";
-    private static final long PENDING_TICKET_TTL_MILLIS = 10 * 60 * 1000L;
+    private static final String BIND_VERIFY_ERROR = "员工信息核验失败，请检查后重试";
+    private static final String PENDING_TICKET_KEY_PREFIX = "mp:login:ticket:";
+    private static final String PENDING_BIND_PREFIX = "bind:";
+    private static final String PENDING_COMPANY_PREFIX = "company:";
+    private static final int PENDING_TICKET_TTL_SECONDS = 10 * 60;
 
     /** 登录限流：同一身份连续失败 5 次锁定 15 分钟（与 PC 端登录锁定策略一致） */
     private static final String LOGIN_FAIL_KEY_PREFIX = "mp:login:fail:";
     private static final String LOGIN_LOCK_KEY_PREFIX = "mp:login:lock:";
     private static final int LOGIN_MAX_FAIL_COUNT = 5;
     private static final int LOGIN_LOCK_SECONDS = 900;
-
-    /** 短时暂存：ticket -> 待绑定信息 */
-    private static final Map<String, PendingLogin> PENDING_LOGINS = new ConcurrentHashMap<>();
-
-    /** 清理过期 ticket */
-    static {
-        Timer timer = new Timer("miniapp-pending-cleaner", true);
-        timer.schedule(new TimerTask() {
-            @Override
-            public void run() {
-                long now = System.currentTimeMillis();
-                PENDING_LOGINS.entrySet().removeIf(e ->
-                        now - e.getValue().createAt > PENDING_TICKET_TTL_MILLIS);
-            }
-        }, 60_000L, 60_000L);
-    }
 
     @Autowired
     private MiniAppWxClient wxClient;
@@ -78,6 +62,9 @@ public class MiniAppServiceImpl implements IMiniAppService {
     private hrmEmployeeRepository employeeRepository;
 
     @Autowired
+    private MiniAppEmployeeMapper employeeBindingMapper;
+
+    @Autowired
     private hrmWorkplanApplicationRepository applicationRepository;
 
     @Autowired
@@ -86,60 +73,118 @@ public class MiniAppServiceImpl implements IMiniAppService {
     @Autowired
     private Redis redis;
 
+    @Autowired
+    private com.tianye.hrsystem.modules.miniapp.service.IMiniAppPermissionService miniAppPermissionService;
+
     @Value("${hrm.system.databasesuffix:}")
     private String databaseSuffix;
 
     @Override
-    public MiniAppLoginVO login(String code, String phoneCode) throws Exception {
+    public MiniAppLoginVO login(String code) throws Exception {
         if (StringUtils.isBlank(code)) {
             throw new Exception("微信登录code为空");
         }
         // code2session 失败时拿不到 openid，退化为按 code 指纹限流，避免免鉴权接口被刷
-        String identity;
+        String identityKey;
+        String identityLabel;
         com.alibaba.fastjson.JSONObject session = null;
         try {
             session = wxClient.code2Session(code);
-            identity = "openid:" + maskText(session.getString("openid"), 4);
+            String openid = session.getString("openid");
+            identityKey = "openid:" + fingerprint(openid);
+            identityLabel = "openid:" + maskText(openid, 4);
         } catch (Exception e) {
-            identity = "code:" + Integer.toHexString(StringUtils.trimToEmpty(code).hashCode());
+            identityKey = "code:" + fingerprint(code);
+            identityLabel = "code:" + fingerprint(code).substring(0, 8);
         }
-        checkLoginNotLocked(identity);
+        checkLoginNotLocked(identityKey);
         try {
-            MiniAppLoginVO vo = doLogin(session, phoneCode);
-            redis.del(LOGIN_FAIL_KEY_PREFIX + identity);
+            MiniAppLoginVO vo = doLogin(session);
+            if (!Boolean.TRUE.equals(vo.getBindRequired())) {
+                redis.del(LOGIN_FAIL_KEY_PREFIX + identityKey);
+            }
             return vo;
         } catch (Exception e) {
-            recordLoginFail(identity);
-            logger.warn("小程序登录失败({}): {}", identity, e.getMessage());
+            recordLoginFail(identityKey);
+            logger.warn("小程序登录失败({}): {}", identityLabel, e.getMessage());
             throw e;
         }
     }
 
-    private MiniAppLoginVO doLogin(com.alibaba.fastjson.JSONObject session, String phoneCode) throws Exception {
+    @Override
+    public MiniAppLoginVO bindEmployee(String ticket, String companyId,
+                                       String employeeName, String idNumber) throws Exception {
+        PendingLogin pending = loadPendingLogin(ticket);
+        if (pending == null || !pending.employeeBindingAllowed) {
+            throw new Exception("绑定凭证已过期，请重新登录");
+        }
+
+        String identityKey = "openid:" + fingerprint(pending.openid);
+        String identityLabel = "openid:" + maskText(pending.openid, 4);
+        checkLoginNotLocked(identityKey);
+        try {
+            CompanyOptionVO company = findCompany(companyId);
+            if (company == null || StringUtils.isBlank(employeeName) || StringUtils.isBlank(idNumber)) {
+                throw bindingVerificationException();
+            }
+            HrmEmployee employee = findEmployeeForBinding(
+                    companyId, employeeName.trim(), idNumber.trim());
+            if (employee == null) {
+                throw bindingVerificationException();
+            }
+            if (StringUtils.isBlank(employee.getOpenid())) {
+                int updated;
+                try {
+                    updated = bindOpenidInCompany(
+                            companyId, employee.getEmployeeId(), pending.openid);
+                } catch (Exception updateException) {
+                    updated = 0;
+                }
+                if (updated != 1) {
+                    HrmEmployee current = resolveEmployee(companyId, employee.getEmployeeId());
+                    if (current == null || !pending.openid.equals(current.getOpenid())) {
+                        throw bindingVerificationException();
+                    }
+                    employee = current;
+                } else {
+                    employee.setOpenid(pending.openid);
+                }
+            } else if (!pending.openid.equals(employee.getOpenid())) {
+                throw bindingVerificationException();
+            }
+
+            deletePendingLogin(ticket);
+            redis.del(LOGIN_FAIL_KEY_PREFIX + identityKey);
+            return buildLoginVO(new EmployeeMatch(companyId, company.getCompanyName(), employee));
+        } catch (Exception ex) {
+            recordLoginFail(identityKey);
+            logger.warn("小程序首次绑定失败({}): {}", identityLabel,
+                    ex.getClass().getSimpleName());
+            if (BIND_VERIFY_ERROR.equals(ex.getMessage())) {
+                throw ex;
+            }
+            throw bindingVerificationException();
+        }
+    }
+
+    private MiniAppLoginVO doLogin(com.alibaba.fastjson.JSONObject session) throws Exception {
         if (session == null || StringUtils.isBlank(session.getString("openid"))) {
             throw new Exception("微信登录返回openid为空");
         }
         String openid = session.getString("openid");
 
-        MiniAppLoginVO existing = buildLoginByBinding(openid);
-        if (existing != null) {
-            return existing;
-        }
-
-        String phone = wxClient.getPhoneByCode(phoneCode);
-        List<EmployeeMatch> matches = findEmployeesByPhone(phone);
-        if (matches.isEmpty()) {
-            throw new Exception("未找到手机号对应的员工，请联系人事");
-        }
+        List<EmployeeMatch> matches = findEmployeesByOpenid(openid);
 
         if (matches.size() == 1) {
-            EmployeeMatch single = matches.get(0);
-            bindAndExempt(openid, session.getString("unionid"), phone, single);
-            return buildLoginVO(single);
+            return buildLoginVO(matches.get(0));
         }
 
         String ticket = UUID.randomUUID().toString().replace("-", "");
-        PENDING_LOGINS.put(ticket, new PendingLogin(openid, phone));
+        if (matches.isEmpty()) {
+            storePendingLogin(ticket, openid, true);
+            return buildBindingRequired(ticket);
+        }
+        storePendingLogin(ticket, openid, false);
         return buildCandidates(ticket, matches);
     }
 
@@ -189,6 +234,21 @@ public class MiniAppServiceImpl implements IMiniAppService {
         return v.substring(0, keep) + "****" + v.substring(v.length() - keep);
     }
 
+    private String fingerprint(String value) {
+        try {
+            java.security.MessageDigest digest = java.security.MessageDigest.getInstance("SHA-256");
+            byte[] bytes = digest.digest(StringUtils.trimToEmpty(value)
+                    .getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            StringBuilder hex = new StringBuilder(bytes.length * 2);
+            for (byte b : bytes) {
+                hex.append(String.format("%02x", b & 0xff));
+            }
+            return hex.toString();
+        } catch (java.security.NoSuchAlgorithmException ex) {
+            throw new IllegalStateException("SHA-256不可用", ex);
+        }
+    }
+
     @Override
     public void checkApprovalPermission(Long approverEmployeeId, Long applicationId) throws Exception {
         if (approverEmployeeId == null) {
@@ -203,19 +263,28 @@ public class MiniAppServiceImpl implements IMiniAppService {
             throw new Exception("仅申请人的直属上级可审批");
         }
         HrmEmployee applicant = employeeRepository.findById(applicantId).orElse(null);
-        if (applicant == null || applicant.getParentId() == null
-                || !approverEmployeeId.equals(applicant.getParentId())) {
+        if (applicant == null) {
             throw new Exception("仅申请人的直属上级可审批");
         }
+        boolean directSupervisor = applicant.getParentId() != null && approverEmployeeId.equals(applicant.getParentId());
+        if (directSupervisor) {
+            return;
+        }
+        // 直属下属档追加指定员工/自定义档：在可见员工名单内也可审批（跨部门）
+        List<Long> visibleIds = miniAppPermissionService.resolveVisibleEmployeeIds(approverEmployeeId);
+        if (visibleIds != null && visibleIds.contains(applicantId)) {
+            return;
+        }
+        throw new Exception("仅申请人的直属上级或已授权可见的员工可审批");
     }
 
     @Override
     public MiniAppLoginVO bindCompany(String ticket, String companyId) throws Exception {
-        PendingLogin pending = PENDING_LOGINS.remove(ticket);
+        PendingLogin pending = loadPendingLogin(ticket);
         if (pending == null) {
             throw new Exception("绑定凭证已过期，请重新登录");
         }
-        List<EmployeeMatch> matches = findEmployeesByPhone(pending.phone);
+        List<EmployeeMatch> matches = findEmployeesByOpenid(pending.openid);
         EmployeeMatch target = null;
         for (EmployeeMatch match : matches) {
             if (companyId != null && companyId.equals(match.companyId)) {
@@ -224,10 +293,54 @@ public class MiniAppServiceImpl implements IMiniAppService {
             }
         }
         if (target == null) {
-            throw new Exception("所选公司下未找到该手机号的员工");
+            throw new Exception("所选公司下未找到已绑定的员工，请选择其他公司");
         }
-        bindAndExempt(pending.openid, null, pending.phone, target);
+        deletePendingLogin(ticket);
         return buildLoginVO(target);
+    }
+
+    @Override
+    public List<CompanyOptionVO> switchCompany(Long employeeId) throws Exception {
+        if (employeeId == null) {
+            throw new Exception("员工ID为空");
+        }
+        String openid = currentEmployeeOpenid(employeeId);
+        List<EmployeeMatch> matches = findEmployeesByOpenid(openid);
+        if (matches.isEmpty()) {
+            throw new Exception("未找到可切换的公司");
+        }
+        List<CompanyOptionVO> candidates = new ArrayList<>();
+        for (EmployeeMatch match : matches) {
+            boolean skip = false;
+            for (CompanyOptionVO candidate : candidates) {
+                if (candidate.getCompanyId().equals(match.companyId)) {
+                    skip = true;
+                    break;
+                }
+            }
+            if (!skip) {
+                CompanyOptionVO option = new CompanyOptionVO();
+                option.setCompanyId(match.companyId);
+                option.setCompanyName(match.companyName);
+                candidates.add(option);
+            }
+        }
+        return candidates;
+    }
+
+    @Override
+    public MiniAppLoginVO confirmSwitch(Long employeeId, String companyId) throws Exception {
+        if (employeeId == null || StringUtils.isBlank(companyId)) {
+            throw new Exception("参数不完整");
+        }
+        String openid = currentEmployeeOpenid(employeeId);
+        List<EmployeeMatch> matches = findEmployeesByOpenid(openid);
+        for (EmployeeMatch match : matches) {
+            if (companyId.equals(match.companyId)) {
+                return buildLoginVO(match);
+            }
+        }
+        throw new Exception("您不在该公司名下，无法切换");
     }
 
     @Override
@@ -308,26 +421,12 @@ public class MiniAppServiceImpl implements IMiniAppService {
 
     // ---------------- 私有方法 ----------------
 
-    private MiniAppLoginVO buildLoginByBinding(String openid) {
-        MiniAppUserBinding binding = systemMapper.findByOpenid(openid);
-        if (binding == null) {
-            return null;
-        }
-        HrmEmployee emp = resolveEmployee(binding.getCompanyId(), binding.getEmployeeId());
-        if (emp == null) {
-            return null;
-        }
-        EmployeeMatch match = new EmployeeMatch(binding.getCompanyId(), emp);
-        return buildLoginVO(match);
-    }
-
-    /** 按手机号遍历各公司库精确匹配在岗员工，结果携带公司ID */
-    private List<EmployeeMatch> findEmployeesByPhone(String phone) {
-        String normalized = normalizePhone(phone);
-        if (StringUtils.isBlank(normalized)) {
-            return new ArrayList<>();
-        }
+    /** 按 OpenID 遍历各公司库精确匹配未删除员工，结果携带公司ID */
+    private List<EmployeeMatch> findEmployeesByOpenid(String openid) {
         List<EmployeeMatch> result = new ArrayList<>();
+        if (StringUtils.isBlank(openid)) {
+            return result;
+        }
         List<CompanyOptionVO> companies;
         try {
             companies = systemMapper.listAllCompanies();
@@ -335,7 +434,7 @@ public class MiniAppServiceImpl implements IMiniAppService {
             logger.warn("枚举公司失败: {}", ex.getMessage());
             return result;
         }
-        if (companies == null || companies.isEmpty()) {
+        if (companies == null) {
             return result;
         }
         for (CompanyOptionVO company : companies) {
@@ -343,36 +442,92 @@ public class MiniAppServiceImpl implements IMiniAppService {
                 continue;
             }
             try {
-                HrmEmployee found = findByMobileInCompany(company.getCompanyId(), normalized);
+                HrmEmployee found = findByOpenidInCompany(company.getCompanyId(), openid);
                 if (found != null) {
-                    result.add(new EmployeeMatch(company.getCompanyId(), found));
+                    result.add(new EmployeeMatch(company.getCompanyId(), company.getCompanyName(), found));
                 }
             } catch (Exception ex) {
-                logger.warn("公司{}按手机号匹配异常: {}", company.getCompanyId(), ex.getMessage());
+                logger.warn("公司{}按openid匹配异常: {}", company.getCompanyId(), ex.getMessage());
             }
         }
         return result;
     }
 
-    /** 切换 CompanyContext 到指定公司后，用 JPA 按手机号查员工 */
-    private HrmEmployee findByMobileInCompany(String companyId, String phone) {
+    private HrmEmployee findByOpenidInCompany(String companyId, String openid) {
         LoginUserInfo previous = CompanyContext.get();
         LoginUserInfo info = new LoginUserInfo();
         info.setCompanyId(companyId);
         info.setSuffix(databaseSuffix);
         CompanyContext.set(info);
         try {
-            Optional<HrmEmployee> byMobile = employeeRepository.findFirstByMobile(phone);
-            if (byMobile.isPresent()) {
-                HrmEmployee e = byMobile.get();
-                if (e.getIsDel() == null || e.getIsDel() != 1) {
-                    return e;
+            Optional<HrmEmployee> employee = employeeRepository.findFirstByOpenid(openid);
+            if (employee.isPresent()) {
+                HrmEmployee found = employee.get();
+                if (found.getIsDel() == null || found.getIsDel() != 1) {
+                    return found;
                 }
             }
             return null;
         } finally {
             CompanyContext.set(previous);
         }
+    }
+
+    private HrmEmployee findEmployeeForBinding(String companyId, String employeeName, String idNumber) {
+        LoginUserInfo previous = CompanyContext.get();
+        LoginUserInfo info = new LoginUserInfo();
+        info.setCompanyId(companyId);
+        info.setSuffix(databaseSuffix);
+        CompanyContext.set(info);
+        try {
+            List<HrmEmployee> employees = employeeRepository.findAllByEmployeeName(employeeName);
+            if (employees == null) {
+                return null;
+            }
+            HrmEmployee matched = null;
+            for (HrmEmployee employee : employees) {
+                if (employee != null
+                        && (employee.getIsDel() == null || employee.getIsDel() != 1)
+                        && StringUtils.isNotBlank(employee.getIdNumber())
+                        && idNumber.equalsIgnoreCase(employee.getIdNumber().trim())) {
+                    if (matched != null) {
+                        return null;
+                    }
+                    matched = employee;
+                }
+            }
+            return matched;
+        } finally {
+            CompanyContext.set(previous);
+        }
+    }
+
+    private int bindOpenidInCompany(String companyId, Long employeeId, String openid) {
+        LoginUserInfo previous = CompanyContext.get();
+        LoginUserInfo info = new LoginUserInfo();
+        info.setCompanyId(companyId);
+        info.setSuffix(databaseSuffix);
+        CompanyContext.set(info);
+        try {
+            return employeeBindingMapper.bindOpenidIfEmpty(employeeId, openid);
+        } finally {
+            CompanyContext.set(previous);
+        }
+    }
+
+    private CompanyOptionVO findCompany(String companyId) {
+        if (StringUtils.isBlank(companyId)) {
+            return null;
+        }
+        List<CompanyOptionVO> companies = systemMapper.listAllCompanies();
+        if (companies != null) {
+            for (CompanyOptionVO company : companies) {
+                if (company != null && companyId.equals(company.getCompanyId())) {
+                    return company;
+                }
+            }
+        }
+        return null;
     }
 
     private HrmEmployee resolveEmployee(String companyId, Long employeeId) {
@@ -389,18 +544,16 @@ public class MiniAppServiceImpl implements IMiniAppService {
         }
     }
 
-    private void bindAndExempt(String openid, String unionid, String phone, EmployeeMatch match) {
-        MiniAppUserBinding binding = new MiniAppUserBinding();
-        binding.setOpenid(openid);
-        binding.setUnionid(unionid);
-        binding.setPhone(phone);
-        binding.setEmployeeId(match.emp.getEmployeeId());
-        binding.setCompanyId(match.companyId);
-        try {
-            systemMapper.insertBinding(binding);
-        } catch (Exception ex) {
-            logger.warn("绑定写入失败(可能已存在): {}", ex.getMessage());
+    private String currentEmployeeOpenid(Long employeeId) throws Exception {
+        LoginUserInfo current = CompanyContext.get();
+        if (current == null || StringUtils.isBlank(current.getCompanyId())) {
+            throw new Exception("当前登录身份缺少公司信息");
         }
+        HrmEmployee employee = resolveEmployee(current.getCompanyId(), employeeId);
+        if (employee == null || StringUtils.isBlank(employee.getOpenid())) {
+            throw new Exception("当前员工未绑定微信，请重新登录");
+        }
+        return employee.getOpenid();
     }
 
     private MiniAppLoginVO buildLoginVO(EmployeeMatch match) {
@@ -409,9 +562,11 @@ public class MiniAppServiceImpl implements IMiniAppService {
         vo.setEmployeeId(emp.getEmployeeId());
         vo.setEmployeeName(emp.getEmployeeName());
         vo.setCompanyId(match.companyId);
+        vo.setCompanyName(match.companyName);
         vo.setDepId(emp.getDeptId());
 
         LoginUserInfo info = new LoginUserInfo();
+        info.setUserId(String.valueOf(emp.getEmployeeId()));
         info.setEmployeeId(emp.getEmployeeId());
         info.setCompanyId(match.companyId);
         info.setUserName(emp.getEmployeeName());
@@ -438,7 +593,7 @@ public class MiniAppServiceImpl implements IMiniAppService {
             if (!skip) {
                 CompanyOptionVO o = new CompanyOptionVO();
                 o.setCompanyId(match.companyId);
-                o.setCompanyName(match.companyId);
+                o.setCompanyName(match.companyName);
                 candidates.add(o);
             }
         }
@@ -447,24 +602,56 @@ public class MiniAppServiceImpl implements IMiniAppService {
         return vo;
     }
 
-    private String normalizePhone(String phone) {
-        if (StringUtils.isBlank(phone)) {
-            return phone;
-        }
-        String normalized = phone.trim().replaceAll("[\\s\\-\\(\\)\\+]", "");
-        if (normalized.startsWith("86") && normalized.length() == 13) {
-            normalized = normalized.substring(2);
-        }
-        return normalized;
+    private MiniAppLoginVO buildBindingRequired(String ticket) {
+        MiniAppLoginVO vo = new MiniAppLoginVO();
+        List<CompanyOptionVO> companies = systemMapper.listAllCompanies();
+        vo.setBindRequired(true);
+        vo.setCandidates(companies == null ? new ArrayList<>() : companies);
+        vo.setToken(ticket);
+        return vo;
     }
 
-    /** 员工匹配结果：公司ID + 员工 */
+    private void storePendingLogin(String ticket, String openid, boolean employeeBindingAllowed) {
+        String prefix = employeeBindingAllowed ? PENDING_BIND_PREFIX : PENDING_COMPANY_PREFIX;
+        redis.setex(PENDING_TICKET_KEY_PREFIX + ticket, PENDING_TICKET_TTL_SECONDS, prefix + openid);
+    }
+
+    private PendingLogin loadPendingLogin(String ticket) {
+        if (StringUtils.isBlank(ticket)) {
+            return null;
+        }
+        String value = redis.get(PENDING_TICKET_KEY_PREFIX + ticket);
+        if (StringUtils.isBlank(value)) {
+            return null;
+        }
+        if (value.startsWith(PENDING_BIND_PREFIX)) {
+            return new PendingLogin(value.substring(PENDING_BIND_PREFIX.length()), true);
+        }
+        if (value.startsWith(PENDING_COMPANY_PREFIX)) {
+            return new PendingLogin(value.substring(PENDING_COMPANY_PREFIX.length()), false);
+        }
+        return null;
+    }
+
+    private void deletePendingLogin(String ticket) {
+        if (StringUtils.isNotBlank(ticket)) {
+            redis.del(PENDING_TICKET_KEY_PREFIX + ticket);
+        }
+    }
+
+    private Exception bindingVerificationException() {
+        return new Exception(BIND_VERIFY_ERROR);
+    }
+
+    /** 员工匹配结果：公司ID + 公司名称 + 员工 */
     private static class EmployeeMatch {
         final String companyId;
+        final String companyName;
         final HrmEmployee emp;
 
-        EmployeeMatch(String companyId, HrmEmployee emp) {
+        EmployeeMatch(String companyId, String companyName, HrmEmployee emp) {
             this.companyId = companyId;
+            this.companyName = companyName;
             this.emp = emp;
         }
     }
@@ -472,13 +659,11 @@ public class MiniAppServiceImpl implements IMiniAppService {
     /** 待绑定暂存信息 */
     private static class PendingLogin {
         final String openid;
-        final String phone;
-        final long createAt;
+        final boolean employeeBindingAllowed;
 
-        PendingLogin(String openid, String phone) {
+        PendingLogin(String openid, boolean employeeBindingAllowed) {
             this.openid = openid;
-            this.phone = phone;
-            this.createAt = System.currentTimeMillis();
+            this.employeeBindingAllowed = employeeBindingAllowed;
         }
     }
 

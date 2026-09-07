@@ -76,6 +76,10 @@ public class HrmOvertimeNightStatisticsDetail implements Serializable {
     @Column(name = "attendance_manual_adjusted")
     private Integer attendanceManualAdjusted;
 
+    /** 当日加班/夜班计算过程说明（明细悬浮展示） */
+    @Column(name = "calc_process")
+    private String calcProcess;
+
     @Column(name = "create_user_id")
     private Long createUserId;
 
@@ -254,6 +258,14 @@ public class HrmOvertimeNightStatisticsDetail implements Serializable {
 
     public void setAttendanceManualAdjusted(Integer attendanceManualAdjusted) {
         this.attendanceManualAdjusted = attendanceManualAdjusted;
+    }
+
+    public String getCalcProcess() {
+        return calcProcess;
+    }
+
+    public void setCalcProcess(String calcProcess) {
+        this.calcProcess = calcProcess;
     }
 
     public Long getCreateUserId() {

@@ -30,4 +30,15 @@ public class CompanyInterceptorTest {
         assertTrue(companyInterceptor.preHandle(request, response, new Object()));
         Assert.assertEquals(200, response.getStatus());
     }
+
+    @Test
+    public void firstEmployeeBindingShouldBypassTokenValidation() throws Exception {
+        MockHttpServletRequest request = new MockHttpServletRequest();
+        request.setMethod("POST");
+        request.setRequestURI("/hrsystem/mp/login/bindEmployee");
+        MockHttpServletResponse response = new MockHttpServletResponse();
+
+        assertTrue(companyInterceptor.preHandle(request, response, new Object()));
+        Assert.assertEquals("", response.getContentAsString());
+    }
 }

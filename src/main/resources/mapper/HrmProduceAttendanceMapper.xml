@@ -67,4 +67,22 @@
         </if>
         group by emp_id
     </select>
+
+    <!--行政体系考勤导出批注：按天取考勤异常明细，用于标注发生日期-->
+    <select id="queryAdministrativeAttendanceReportDetail" resultType="com.tianye.hrsystem.entity.vo.AdministrativeAttendanceReportDetailVO">
+        select
+            emp_id as employeeId,
+            work_date as workDate,
+            field_name as fieldName
+        from hrm_attendance_report_data
+        where work_date between #{beginDate} and #{endDate}
+          and field_name in ('旷工天数', '旷工迟到天数', '迟到次数', '早退次数', '上班缺卡次数', '下班缺卡次数')
+          and value > 0
+        <if test="employeeIds != null and employeeIds.size > 0">
+            and emp_id in
+            <foreach collection="employeeIds" item="employeeId" open="(" close="," separator=",">
+                #{employeeId}
+            </foreach>
+        </if>
+    </select>
 </mapper>

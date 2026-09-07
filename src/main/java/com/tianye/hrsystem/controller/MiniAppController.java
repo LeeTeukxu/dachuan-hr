@@ -9,6 +9,7 @@ import com.tianye.hrsystem.modules.miniapp.service.IMiniAppService;
 import com.tianye.hrsystem.modules.miniapp.vo.MiniAppDayShiftVO;
 import com.tianye.hrsystem.modules.miniapp.vo.MiniAppLoginVO;
 import com.tianye.hrsystem.modules.miniapp.vo.MiniAppMonthScheduleVO;
+import com.tianye.hrsystem.modules.miniapp.vo.CompanyOptionVO;
 import com.tianye.hrsystem.modules.miniapp.vo.MiniAppProductScheduleVO;
 import com.tianye.hrsystem.modules.miniapp.vo.MiniAppScheduleEmployeeVO;
 import com.tianye.hrsystem.modules.miniapp.vo.MiniAppScheduleSaveBO;
@@ -46,13 +47,29 @@ public class MiniAppController {
     @Autowired
     private IWorkPlanApplicationService applicationService;
 
+    @Autowired
+    private com.tianye.hrsystem.modules.miniapp.service.IMiniAppPermissionService permissionService;
+
     // ============ 登录/绑定 ============
 
     @PostMapping("/login")
-    public successResult login(String code, String phoneCode) {
+    public successResult login(String code) {
         successResult result = new successResult();
         try {
-            MiniAppLoginVO vo = miniAppService.login(code, phoneCode);
+            MiniAppLoginVO vo = miniAppService.login(code);
+            result.setData(vo);
+        } catch (Exception ax) {
+            result.raiseException(ax);
+        }
+        return result;
+    }
+
+    @PostMapping("/login/bindEmployee")
+    public successResult bindEmployee(String ticket, String companyId,
+                                      String employeeName, String idNumber) {
+        successResult result = new successResult();
+        try {
+            MiniAppLoginVO vo = miniAppService.bindEmployee(ticket, companyId, employeeName, idNumber);
             result.setData(vo);
         } catch (Exception ax) {
             result.raiseException(ax);
@@ -65,6 +82,34 @@ public class MiniAppController {
         successResult result = new successResult();
         try {
             MiniAppLoginVO vo = miniAppService.bindCompany(ticket, companyId);
+            result.setData(vo);
+        } catch (Exception ax) {
+            result.raiseException(ax);
+        }
+        return result;
+    }
+
+    @PostMapping("/login/switchCompany")
+    public successResult switchCompany() {
+        successResult result = new successResult();
+        try {
+            LoginUserInfo info = CompanyContext.get();
+            Long employeeId = info.getEmployeeId();
+            List<CompanyOptionVO> candidates = miniAppService.switchCompany(employeeId);
+            result.setData(candidates);
+        } catch (Exception ax) {
+            result.raiseException(ax);
+        }
+        return result;
+    }
+
+    @PostMapping("/login/confirmSwitch")
+    public successResult confirmSwitch(String companyId) {
+        successResult result = new successResult();
+        try {
+            LoginUserInfo info = CompanyContext.get();
+            Long employeeId = info.getEmployeeId();
+            MiniAppLoginVO vo = miniAppService.confirmSwitch(employeeId, companyId);
             result.setData(vo);
         } catch (Exception ax) {
             result.raiseException(ax);
@@ -205,7 +250,7 @@ public class MiniAppController {
 
     // ============ 生产排班（添加排班） ============
 
-    /** 是否上级角色（存在直属下级），用于首页「添加排班」入口显隐 */
+    /** 小程序首页入口显隐：isSupervisor=存在直属下级；canSchedule=被授予添加排班权限（2026-09-06 起两者分开判断） */
     @GetMapping("/isSupervisor")
     public successResult isSupervisor() {
         successResult result = new successResult();
@@ -216,6 +261,7 @@ public class MiniAppController {
             }
             Map<String, Object> data = new HashMap<>();
             data.put("isSupervisor", miniAppService.isSupervisor(info.getEmployeeId()));
+            data.put("canSchedule", permissionService.canSchedule(info.getEmployeeId()));
             result.setData(data);
         } catch (Exception ax) {
             result.raiseException(ax);
@@ -223,7 +269,7 @@ public class MiniAppController {
         return result;
     }
 
-    /** 可排班员工池（在职员工，含姓名/手机号/部门名，供搜索与展示）。仅上级账号可用，防止全员通讯录泄露 */
+    /** 可排班员工池（在职员工，含姓名/手机号/部门名，供搜索与展示）。仅被授予添加排班权限的员工可用，防止全员通讯录泄露 */
     @GetMapping("/schedule/employees")
     public successResult scheduleEmployees() {
         successResult result = new successResult();
@@ -232,8 +278,8 @@ public class MiniAppController {
             if (info.getEmployeeId() == null) {
                 throw new Exception("当前登录身份缺少员工信息");
             }
-            if (!miniAppService.isSupervisor(info.getEmployeeId())) {
-                throw new Exception("仅上级账号可查看可排班员工");
+            if (!permissionService.canSchedule(info.getEmployeeId())) {
+                throw new Exception("当前员工没有被授予\"添加排班\"权限，请联系管理员在【排班小程序权限】中配置");
             }
             List<MiniAppScheduleEmployeeVO> list = scheduleService.listSchedulableEmployees();
             result.setData(list);
@@ -265,8 +311,8 @@ public class MiniAppController {
             if (info.getEmployeeId() == null) {
                 throw new Exception("当前登录身份缺少员工信息");
             }
-            if (!miniAppService.isSupervisor(info.getEmployeeId())) {
-                throw new Exception("仅上级账号可保存排班");
+            if (!permissionService.canSchedule(info.getEmployeeId())) {
+                throw new Exception("当前员工没有被授予\"添加排班\"权限，请联系管理员在【排班小程序权限】中配置");
             }
             int saved = scheduleService.saveProductSchedule(info.getEmployeeId(), request);
             Map<String, Object> data = new HashMap<>();

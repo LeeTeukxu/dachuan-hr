@@ -1,10 +1,12 @@
 package com.tianye.hrsystem.imple;
 
 import cn.hutool.core.collection.ListUtil;
+import com.tianye.hrsystem.common.ProgressTracker;
 import com.tianye.hrsystem.common.Redis;
 import com.tianye.hrsystem.config.ApplicationContextHolder;
 import com.tianye.hrsystem.config.CompanyContext;
 import com.tianye.hrsystem.controller.HrmAttendanceDataController;
+import com.tianye.hrsystem.entity.po.AdminMessage;
 import com.tianye.hrsystem.model.HrmEmployee;
 import com.tianye.hrsystem.model.LoginUserInfo;
 import com.tianye.hrsystem.model.tbattendanceuser;
@@ -26,6 +28,7 @@ import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.support.TransactionTemplate;
 
 import java.text.SimpleDateFormat;
+import java.time.LocalDateTime;
 import java.util.*;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -59,6 +62,8 @@ public class HrmAttendanceDataServiceImpl implements IHrmAttendanceDataService {
     private static final String STATUS_SUCCESS = "SUCCESS";
     private static final String STATUS_FAILED = "FAILED";
     private static final String STATUS_IDLE = "IDLE";
+    // ProgressTracker 前缀
+    private static final String SYNC_KEY_PREFIX = "attendance:sync";
     // 进度过期时间：24小时
     private static final int PROGRESS_EXPIRE_SECONDS = 86400;
     // 并行处理线程数（步骤3-4调用钉钉API，保守设置）
@@ -99,6 +104,10 @@ public class HrmAttendanceDataServiceImpl implements IHrmAttendanceDataService {
     hrmEmployeeRepository empRep;
     @Autowired
     Redis redis;
+    @Autowired
+    ProgressTracker progressTracker;
+    @Autowired
+    AdminMessageServiceImpl adminMessageService;
 
     // 同步失败自动重试：次数与退避基数可配（默认 2 次自动重试、60s 起步指数退避、封顶 5 分钟）
     @Value("${hrm.attendance-sync.auto-retry.attempts:2}")
@@ -117,6 +126,12 @@ public class HrmAttendanceDataServiceImpl implements IHrmAttendanceDataService {
         return baseKey + ":" + companyId;
     }
 
+    /** 获取当前公司 ID */
+    private String getCompanyId() {
+        LoginUserInfo info = CompanyContext.get();
+        return info != null && info.getCompanyId() != null ? info.getCompanyId() : "unknown";
+    }
+
     private long parseRedisLong(String value) {
         if (value == null || value.trim().isEmpty()) {
             return 0L;
@@ -128,19 +143,26 @@ public class HrmAttendanceDataServiceImpl implements IHrmAttendanceDataService {
         }
     }
 
+    /** 同步进度使用 StringRedisSerializer，所有状态值统一以字符串持久化。 */
+    private void saveSyncValue(String key, Object value) {
+        redis.setex(syncKey(key), PROGRESS_EXPIRE_SECONDS, String.valueOf(value));
+    }
+
     /** 提交同步时写入排队标记（服务端时间戳）：前端据此区分本次运行与上一次运行的旧进度 */
     public long markSyncQueued() {
-        long queuedAt = System.currentTimeMillis();
-        redis.setex(syncKey(SYNC_QUEUED_KEY), PROGRESS_EXPIRE_SECONDS, String.valueOf(queuedAt));
+        String companyId = getCompanyId();
+        long queuedAt = progressTracker.markQueued(SYNC_KEY_PREFIX, companyId);
+        logger.info("[同步进度] 公司{} 已标记排队 queuedAt={}", companyId, queuedAt);
         return queuedAt;
     }
 
     /** 自动重试等待期：保持 RUNNING 状态并刷新文案，避免前端把中间失败当成最终结果 */
     public void markSyncRetrying(int attempt, long backoffMs) {
-        redis.setex(syncKey(SYNC_STATUS_KEY), PROGRESS_EXPIRE_SECONDS, STATUS_RUNNING);
-        redis.setex(syncKey(SYNC_MESSAGE_KEY), PROGRESS_EXPIRE_SECONDS,
-                "同步中断，正在自动重试（第" + (attempt + 1) + "次），约" + Math.max(1, Math.round(backoffMs / 1000.0)) + "秒后开始");
-        redis.setex(syncKey(SYNC_UPDATE_TIME_KEY), PROGRESS_EXPIRE_SECONDS, System.currentTimeMillis());
+        String companyId = getCompanyId();
+        ProgressTracker.ProgressState state = progressTracker.queryProgress(SYNC_KEY_PREFIX, companyId);
+        state.status = ProgressTracker.STATUS_RUNNING;
+        state.message = "同步中断，正在自动重试（第" + (attempt + 1) + "次），约" + Math.max(1, Math.round(backoffMs / 1000.0)) + "秒后开始";
+        progressTracker.saveProgress(SYNC_KEY_PREFIX, companyId, state);
     }
 
     /**
@@ -182,34 +204,30 @@ public class HrmAttendanceDataServiceImpl implements IHrmAttendanceDataService {
 
     @Override
     public Map<String, Object> getSyncProgress() {
-        Map<String, Object> progress = new HashMap<>();
+        String companyId = getCompanyId();
+        ProgressTracker.ProgressState state = progressTracker.queryProgress(SYNC_KEY_PREFIX, companyId);
 
-        Integer step = redis.get(syncKey(SYNC_STEP_KEY));
+        // 读取断点续传所需的字段
         String processedEmps = redis.get(syncKey(SYNC_PROCESSED_EMPS_KEY));
         String params = redis.get(syncKey(SYNC_PARAMS_KEY));
-        String savedStatus = redis.get(syncKey(SYNC_STATUS_KEY));
-        String savedMessage = redis.get(syncKey(SYNC_MESSAGE_KEY));
-        String savedErrors = redis.get(syncKey(SYNC_ERRORS_KEY));
         String step7aProcessed = redis.get(syncKey(SYNC_STEP7A_PROCESSED_KEY));
         String step7bProcessed = redis.get(syncKey(SYNC_STEP7B_PROCESSED_KEY));
-        long updateTime = parseRedisLong(redis.get(syncKey(SYNC_UPDATE_TIME_KEY)));
-        long queuedAt = parseRedisLong(redis.get(syncKey(SYNC_QUEUED_KEY)));
 
-        boolean hasProgress = step != null && step > 0;
-        int currentStep = step != null ? Math.max(0, Math.min(7, step)) : 0;
+        // 从状态中提取当前步骤（如果有的话，否则从 processedEmps 推断）
+        int currentStep = state.progress > 0 ? inferStepFromProgress(state.progress) : 0;
+        boolean hasProgress = currentStep > 0;
         int totalCount = parseTotalCountFromParams(params);
         int processedCount = countCsvItems(processedEmps);
         int step7aCount = countCsvItems(step7aProcessed);
         int step7bCount = countCsvItems(step7bProcessed);
-        String status = normalizeSyncStatus(savedStatus, hasProgress);
-        boolean success = STATUS_SUCCESS.equals(status);
-        boolean failed = STATUS_FAILED.equals(status);
-        boolean done = success || failed;
-        int percent = success
+
+        // 计算实际进度百分比
+        int percent = state.success
                 ? 100
                 : calculateProgressPercent(currentStep, hasProgress, totalCount, processedCount, step7aCount, step7bCount);
 
-        progress.put("hasProgress", hasProgress && !success);
+        Map<String, Object> progress = new HashMap<>();
+        progress.put("hasProgress", hasProgress && !state.success);
         progress.put("currentStep", currentStep);
         progress.put("processedEmps", processedEmps != null ? processedEmps : "");
         progress.put("params", params != null ? params : "");
@@ -217,16 +235,27 @@ public class HrmAttendanceDataServiceImpl implements IHrmAttendanceDataService {
         progress.put("processedCount", processedCount);
         progress.put("progress", percent);
         progress.put("percent", percent);
-        progress.put("status", status);
-        progress.put("done", done);
-        progress.put("success", success);
-        progress.put("error", failed);
-        progress.put("errors", parseProgressErrors(savedErrors));
-        progress.put("message", resolveProgressMessage(savedMessage, status, currentStep, hasProgress));
-        progress.put("updateTime", updateTime);
-        progress.put("queuedAt", queuedAt);
+        progress.put("status", state.status);
+        progress.put("done", state.done);
+        progress.put("success", state.success);
+        progress.put("error", ProgressTracker.STATUS_FAILED.equals(state.status));
+        progress.put("errors", state.errors);
+        progress.put("message", state.message);
+        progress.put("updateTime", state.updateTime);
+        progress.put("queuedAt", state.queuedAt);
 
         return progress;
+    }
+
+    /** 根据进度百分比推断当前步骤 */
+    private int inferStepFromProgress(int progress) {
+        if (progress <= 5) return 1;
+        if (progress <= 15) return 2;
+        if (progress <= 38) return 3;
+        if (progress <= 60) return 4;
+        if (progress <= 70) return 5;
+        if (progress <= 82) return 6;
+        return 7;
     }
 
     private String normalizeSyncStatus(String status, boolean hasProgress) {
@@ -417,8 +446,10 @@ public class HrmAttendanceDataServiceImpl implements IHrmAttendanceDataService {
      * 清除同步进度（同步成功或需要重新开始时调用）
      */
     public void clearSyncProgress() {
-        redis.del(syncKey(SYNC_STEP_KEY), syncKey(SYNC_PROCESSED_EMPS_KEY), syncKey(SYNC_PARAMS_KEY),
-                syncKey(SYNC_STATUS_KEY), syncKey(SYNC_MESSAGE_KEY), syncKey(SYNC_ERRORS_KEY),
+        String companyId = getCompanyId();
+        progressTracker.clearProgress(SYNC_KEY_PREFIX, companyId);
+        // 清除断点续传所需的字段
+        redis.del(syncKey(SYNC_PROCESSED_EMPS_KEY), syncKey(SYNC_PARAMS_KEY),
                 syncKey(SYNC_STEP7A_PROCESSED_KEY), syncKey(SYNC_STEP7B_PROCESSED_KEY));
         logger.info("已清除同步进度缓存");
     }
@@ -427,33 +458,99 @@ public class HrmAttendanceDataServiceImpl implements IHrmAttendanceDataService {
      * 保存同步进度
      */
     private void saveSyncProgress(int step, String processedEmps, String params) {
-        redis.setex(syncKey(SYNC_STEP_KEY), PROGRESS_EXPIRE_SECONDS, step);
+        String companyId = getCompanyId();
+        ProgressTracker.ProgressState state = new ProgressTracker.ProgressState();
+        state.progress = calculateProgressPercent(step, true, parseTotalCountFromParams(params),
+                countCsvItems(processedEmps), 0, 0);
+        state.status = ProgressTracker.STATUS_RUNNING;
+        state.message = getStepLabel(step);
+        state.done = false;
+        state.queuedAt = parseRedisLong(redis.get(syncKey(SYNC_QUEUED_KEY)));
+        progressTracker.saveProgress(SYNC_KEY_PREFIX, companyId, state);
+        // 保留断点续传所需的字段
         redis.setex(syncKey(SYNC_PROCESSED_EMPS_KEY), PROGRESS_EXPIRE_SECONDS, processedEmps);
         redis.setex(syncKey(SYNC_PARAMS_KEY), PROGRESS_EXPIRE_SECONDS, params);
-        redis.setex(syncKey(SYNC_STATUS_KEY), PROGRESS_EXPIRE_SECONDS, STATUS_RUNNING);
-        redis.setex(syncKey(SYNC_MESSAGE_KEY), PROGRESS_EXPIRE_SECONDS, getStepLabel(step));
-        redis.setex(syncKey(SYNC_ERRORS_KEY), PROGRESS_EXPIRE_SECONDS, "");
-        redis.setex(syncKey(SYNC_UPDATE_TIME_KEY), PROGRESS_EXPIRE_SECONDS, System.currentTimeMillis());
+        logger.info("[同步进度] 公司{} 步骤{}/7 {} 进度{}%", companyId, step, getStepLabel(step), state.progress);
+        // 同步更新通知中心的进度内容
+        updateSyncNotificationProgress(companyId, state.progress);
+    }
+
+    /**
+     * 更新同步考勤通知的进度内容（实时百分比）
+     */
+    private void updateSyncNotificationProgress(String companyId, int percent) {
+        try {
+            String messageIdStr = redis.get("attendance:notification:sync:" + companyId);
+            if (messageIdStr == null || messageIdStr.isEmpty()) {
+                return;
+            }
+            Long messageId = Long.parseLong(messageIdStr);
+            adminMessageService.updateContent(messageId, "进度 " + percent + "%");
+        } catch (Exception e) {
+            logger.warn("[同步进度] 更新通知内容失败", e);
+        }
     }
 
     private void saveFinalSyncProgress(String params) {
-        redis.setex(syncKey(SYNC_STEP_KEY), PROGRESS_EXPIRE_SECONDS, 7);
+        String companyId = getCompanyId();
+        ProgressTracker.ProgressState state = new ProgressTracker.ProgressState();
+        state.progress = 100;
+        state.status = ProgressTracker.STATUS_SUCCESS;
+        state.message = "同步完成，请确认后关闭进度条";
+        state.done = true;
+        state.success = true;
+        state.queuedAt = parseRedisLong(redis.get(syncKey(SYNC_QUEUED_KEY)));
+        progressTracker.saveProgress(SYNC_KEY_PREFIX, companyId, state);
+        // 保留断点续传所需的字段
         redis.setex(syncKey(SYNC_PARAMS_KEY), PROGRESS_EXPIRE_SECONDS, params);
-        redis.setex(syncKey(SYNC_STATUS_KEY), PROGRESS_EXPIRE_SECONDS, STATUS_SUCCESS);
-        redis.setex(syncKey(SYNC_MESSAGE_KEY), PROGRESS_EXPIRE_SECONDS, "同步完成，请确认后关闭进度条");
-        redis.setex(syncKey(SYNC_ERRORS_KEY), PROGRESS_EXPIRE_SECONDS, "");
-        redis.setex(syncKey(SYNC_UPDATE_TIME_KEY), PROGRESS_EXPIRE_SECONDS, System.currentTimeMillis());
+        logger.info("[同步进度] 公司{} 同步完成", companyId);
+        
+        // 更新运行中通知的内容为"已完成"，并清理Redis标记
+        try {
+            String runningMsgIdStr = redis.get("attendance:notification:sync:" + companyId);
+            if (runningMsgIdStr != null && !runningMsgIdStr.isEmpty()) {
+                adminMessageService.updateContent(Long.parseLong(runningMsgIdStr), "已完成");
+                redis.del("attendance:notification:sync:" + companyId);
+            }
+        } catch (Exception e) {
+            logger.warn("[同步进度] 更新运行中通知失败", e);
+        }
+        
+        // 写入通知：同步考勤完成
+        try {
+            AdminMessage completeMsg = new AdminMessage();
+            completeMsg.setTitle("同步考勤完成");
+            completeMsg.setContent("点击查看");
+            completeMsg.setLabel(8); // 人资
+            completeMsg.setType(202); // HRM_ATTENDANCE_SYNC_COMPLETE
+            completeMsg.setLinkUrl("/hrm/attendance/scheduling");
+            completeMsg.setCreateUser(0L); // 系统
+            completeMsg.setRecipientUser(0L); // 系统级通知
+            completeMsg.setCreateTime(LocalDateTime.now());
+            completeMsg.setIsRead(0);
+            adminMessageService.save(completeMsg);
+            logger.info("[同步进度] 公司{} 已写入完成通知", companyId);
+        } catch (Exception e) {
+            logger.error("[同步进度] 公司{} 写入完成通知失败", companyId, e);
+        }
     }
 
     private void saveFailedSyncProgress(int step, String params, Throwable throwable) {
         int currentStep = Math.max(1, Math.min(7, step));
         String message = toFriendlySyncErrorMessage(throwable);
-        redis.setex(syncKey(SYNC_STEP_KEY), PROGRESS_EXPIRE_SECONDS, currentStep);
+        String companyId = getCompanyId();
+        ProgressTracker.ProgressState state = new ProgressTracker.ProgressState();
+        state.progress = calculateProgressPercent(currentStep, true, parseTotalCountFromParams(params), 0, 0, 0);
+        state.status = ProgressTracker.STATUS_FAILED;
+        state.message = message;
+        state.done = true;
+        state.success = false;
+        state.errors = Collections.singletonList(message);
+        state.queuedAt = parseRedisLong(redis.get(syncKey(SYNC_QUEUED_KEY)));
+        progressTracker.saveProgress(SYNC_KEY_PREFIX, companyId, state);
+        // 保留断点续传所需的字段
         redis.setex(syncKey(SYNC_PARAMS_KEY), PROGRESS_EXPIRE_SECONDS, params);
-        redis.setex(syncKey(SYNC_STATUS_KEY), PROGRESS_EXPIRE_SECONDS, STATUS_FAILED);
-        redis.setex(syncKey(SYNC_MESSAGE_KEY), PROGRESS_EXPIRE_SECONDS, message);
-        redis.setex(syncKey(SYNC_ERRORS_KEY), PROGRESS_EXPIRE_SECONDS, message);
-        redis.setex(syncKey(SYNC_UPDATE_TIME_KEY), PROGRESS_EXPIRE_SECONDS, System.currentTimeMillis());
+        logger.error("[同步进度] 公司{} 步骤{}/7 同步失败: {}", companyId, currentStep, message);
     }
 
     public static String toFriendlySyncErrorMessage(Throwable throwable) {
@@ -591,6 +688,27 @@ public class HrmAttendanceDataServiceImpl implements IHrmAttendanceDataService {
         logger.info("========== 开始同步考勤数据 (步骤{}/7起) ==========", startStep);
         logger.info("总员工数: {}，待处理员工数: {}", allEmpIds.size(), remainingEmpIds.size());
 
+        // 写入通知：同步考勤开始
+        try {
+            AdminMessage startMsg = new AdminMessage();
+            startMsg.setTitle("同步考勤数据中");
+            startMsg.setContent("准备中... 0%");
+            startMsg.setLabel(8);
+            startMsg.setType(201); // HRM_ATTENDANCE_SYNC_RUNNING
+            startMsg.setLinkUrl("/hrm/attendance/scheduling");
+            startMsg.setCreateUser(0L);
+            startMsg.setRecipientUser(0L);
+            startMsg.setCreateTime(LocalDateTime.now());
+            startMsg.setIsRead(0);
+            adminMessageService.save(startMsg);
+            // 保存通知ID到Redis，用于进度更新时同步通知内容
+            String companyId = getCompanyId();
+            redis.setex("attendance:notification:sync:" + companyId, 7200, String.valueOf(startMsg.getMessageId()));
+            logger.info("[同步进度] 已写入开始通知, messageId={}", startMsg.getMessageId());
+        } catch (Exception e) {
+            logger.error("[同步进度] 写入开始通知失败", e);
+        }
+
         int activeStep = startStep;
         try {
             // 步骤1: 同步组织架构
@@ -676,6 +794,8 @@ public class HrmAttendanceDataServiceImpl implements IHrmAttendanceDataService {
                     syncByEmployeeBatchParallelSafe(allEmpIds, step7aProcessed, Begin, End,
                             currentParams, 7, threadSafeUsers, leaveService);
                     logger.info("[步顂7a/7] 请假数据同步完成");
+                    // 7a完成后更新进度，防止后续步骤失败导致进度卡在RUNNING
+                    saveSyncProgress(7, String.join(",", step7aProcessed), currentParams);
                 } catch (Exception e) {
                     logger.error("[步顂7a/7] 请假数据同步失败，已保存进度，可从断点恢复", e);
                     throw e; // 重新抛出异常，不执行后续步骤
@@ -695,6 +815,10 @@ public class HrmAttendanceDataServiceImpl implements IHrmAttendanceDataService {
                     syncByEmployeeBatchParallelSafe(allEmpIds, step7bProcessed, Begin, End,
                             currentParams, 7, threadSafeUsers, holidayService);
                     logger.info("[步顂7b/7] 假期数据同步完成");
+                    // 7b完成后更新进度，确保状态反映最新进展
+                    Set<String> allStep7Processed = new HashSet<>(step7aProcessed);
+                    allStep7Processed.addAll(step7bProcessed);
+                    saveSyncProgress(7, String.join(",", allStep7Processed), currentParams);
                 } catch (Exception e) {
                     logger.error("[步顂7b/7] 假期数据同步失败，已保存进度，可从断点恢复", e);
                     throw e; // 重新抛出异常
@@ -704,6 +828,14 @@ public class HrmAttendanceDataServiceImpl implements IHrmAttendanceDataService {
             // 同步成功后保留最终进度，等待操作人员在前端确认后关闭进度条。
             saveFinalSyncProgress(currentParams);
             logger.info("========== 考勤数据同步完成 ==========");
+
+            // 同步完成后触发本地考勤判定重算（2026-09 弃用钉钉推送后的本地口径；失败不影响同步结果）
+            try {
+                ApplicationContextHolder.getBean(com.tianye.hrsystem.service.IHrmAttendanceJudgeService.class)
+                        .recompute(Begin, End, null);
+            } catch (Exception judgeEx) {
+                logger.warn("[本地考勤判定] 同步后重算失败，可用考勤汇总的手动重算接口补算", judgeEx);
+            }
             return true;
 
         } catch (Exception e) {

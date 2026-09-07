@@ -1,9 +1,11 @@
 package com.tianye.hrsystem.modules.workplanapplication.service.impl;
 
 import com.tianye.hrsystem.entity.vo.WorkPlanEmployeeDayShiftVO;
+import com.tianye.hrsystem.model.HrmEmployee;
 import com.tianye.hrsystem.model.HrmWorkplanApplication;
 import com.tianye.hrsystem.model.tbattendanceuser;
 import com.tianye.hrsystem.modules.workplanapplication.service.IWorkPlanApplicationService;
+import com.tianye.hrsystem.repository.hrmEmployeeRepository;
 import com.tianye.hrsystem.repository.hrmWorkplanApplicationRepository;
 import com.tianye.hrsystem.repository.tbattendanceuserRepository;
 import com.tianye.hrsystem.service.IWorkPlanService;
@@ -14,7 +16,9 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.util.ArrayList;
 import java.util.Date;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.stream.Collectors;
 
@@ -36,7 +40,13 @@ public class WorkPlanApplicationServiceImpl implements IWorkPlanApplicationServi
     private tbattendanceuserRepository attendanceUserRepository;
 
     @Autowired
+    private hrmEmployeeRepository employeeRepository;
+
+    @Autowired
     private IWorkPlanService workPlanService;
+
+    @Autowired
+    private com.tianye.hrsystem.modules.miniapp.service.IMiniAppPermissionService miniAppPermissionService;
 
     @Override
     public HrmWorkplanApplication submit(Long employeeId, Date workDate, String shiftType,
@@ -118,10 +128,62 @@ public class WorkPlanApplicationServiceImpl implements IWorkPlanApplicationServi
 
     @Override
     public List<HrmWorkplanApplication> listToApprove(Long approverEmployeeId, String scope) {
-        if ("done".equalsIgnoreCase(scope)) {
-            return applicationRepository.findApprovedByApprover(approverEmployeeId);
+        boolean done = "done".equalsIgnoreCase(scope);
+        // 可见范围：null=全部员工；其余按员工 ID 集合过滤（默认=直属下属，保持原有 parent_id 查询）
+        List<Long> visibleIds = miniAppPermissionService.resolveVisibleEmployeeIds(approverEmployeeId);
+        boolean unrestricted = visibleIds == null;
+        List<Long> explicitIds = visibleIds == null ? new ArrayList<>() : visibleIds;
+        MpScopeKind kind = resolveScopeKind(approverEmployeeId);
+        if (unrestricted) {
+            return done
+                    ? applicationRepository.findByStatusNotOrderByApproveTimeDesc(STATUS_PENDING)
+                    : applicationRepository.findByStatusOrderByCreateTimeDesc(STATUS_PENDING);
         }
-        return applicationRepository.findToApproveByStatus(STATUS_PENDING, approverEmployeeId);
+        if (kind == MpScopeKind.DEFAULT_SUBORDINATES && explicitIds.isEmpty()) {
+            // 无下属且无追加员工：保持原查询（done=我审批过的）
+            return done
+                    ? applicationRepository.findApprovedByApprover(approverEmployeeId)
+                    : applicationRepository.findToApproveByStatus(STATUS_PENDING, approverEmployeeId);
+        }
+        // 直属下属档（∪追加员工）与自定义档：按可见员工集合查询
+        if (!done) {
+            return applicationRepository.findToApproveByStatusAndEmployeeIdIn(STATUS_PENDING, explicitIds);
+        }
+        // done 综合口径（2026-09-06 第二十七轮）：我亲手批过的 ∪ 可见范围内已处理的，按 id 去重、审批时间倒序
+        Map<Long, HrmWorkplanApplication> merged = new LinkedHashMap<>();
+        for (HrmWorkplanApplication app : applicationRepository.findApprovedByApprover(approverEmployeeId)) {
+            merged.put(app.getId(), app);
+        }
+        for (HrmWorkplanApplication app : applicationRepository.findProcessedByEmployeeIdIn(explicitIds)) {
+            merged.putIfAbsent(app.getId(), app);
+        }
+        List<HrmWorkplanApplication> result = new ArrayList<>(merged.values());
+        result.sort((a, b) -> {
+            Date ta = a.getApproveTime();
+            Date tb = b.getApproveTime();
+            if (ta == null && tb == null) return 0;
+            if (ta == null) return 1;
+            if (tb == null) return -1;
+            return tb.compareTo(ta);
+        });
+        return result;
+    }
+
+    private enum MpScopeKind { DEFAULT_SUBORDINATES, ALL, CUSTOM }
+
+    private MpScopeKind resolveScopeKind(Long approverEmployeeId) {
+        com.tianye.hrsystem.model.MpSchedulePermission permission =
+                miniAppPermissionService.getByEmployeeId(approverEmployeeId);
+        if (permission == null || permission.getVisibleScope() == null) {
+            return MpScopeKind.DEFAULT_SUBORDINATES;
+        }
+        if (permission.getVisibleScope() == com.tianye.hrsystem.model.MpSchedulePermission.SCOPE_CUSTOM) {
+            return MpScopeKind.CUSTOM;
+        }
+        if (permission.getVisibleScope() == com.tianye.hrsystem.model.MpSchedulePermission.SCOPE_ALL) {
+            return MpScopeKind.ALL;
+        }
+        return MpScopeKind.DEFAULT_SUBORDINATES;
     }
 
     @Override
@@ -198,12 +260,26 @@ public class WorkPlanApplicationServiceImpl implements IWorkPlanApplicationServi
         return workPlanService.queryEmployeeDayShift(employeeId, workDate);
     }
 
+    /**
+     * 排班申请身份解析（2026-09 决议：不再读写 tbattendanceuser）。
+     * userId 取 hrm_employee.dingtalk_user_id（缺失即明确报错），groupId 属钉钉考勤组数据不再落申请单。
+     */
     private tbattendanceuser resolveAttendanceUser(Long employeeId) throws Exception {
-        Optional<tbattendanceuser> attendanceUser = attendanceUserRepository.findFirstByEmpId(employeeId);
-        if (!attendanceUser.isPresent() || StringUtils.isBlank(attendanceUser.get().getUserId())) {
-            throw new Exception("未找到员工对应的考勤用户，无法提交排班申请");
+        HrmEmployee employee = employeeRepository.findById(employeeId).orElse(null);
+        if (employee == null) {
+            throw new Exception("未找到员工[" + employeeId + "]的档案，无法提交排班申请");
         }
-        return attendanceUser.get();
+        String userId = StringUtils.trimToEmpty(employee.getDingtalkUserId());
+        if (StringUtils.isBlank(userId)) {
+            throw new Exception("员工[" + StringUtils.trimToEmpty(employee.getEmployeeName())
+                    + "]缺少钉钉用户ID，无法提交排班申请，请先在钉钉创建该员工并使用员工管理的「重新映射」");
+        }
+        tbattendanceuser identity = new tbattendanceuser();
+        identity.setEmpId(employeeId);
+        identity.setUserId(userId);
+        identity.setUserName(employee.getEmployeeName());
+        identity.setDepId(employee.getDeptId());
+        return identity;
     }
 
     private String normalizeShiftType(String value) {

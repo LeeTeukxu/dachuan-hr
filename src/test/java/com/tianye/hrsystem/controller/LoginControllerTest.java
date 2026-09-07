@@ -49,6 +49,9 @@ public class LoginControllerTest {
     @Mock
     private Redis redis;
 
+    @Mock
+    private com.tianye.hrsystem.common.TokenRevocationService tokenRevocation;
+
     private AutoCloseable mocks;
 
     @Before
@@ -127,7 +130,6 @@ public class LoginControllerTest {
         when(userMapper.getCompaniesByUserName("cfy", "hrsystem"))
                 .thenReturn(Arrays.asList(company("0001", "达川公司"), company("0002", "成都公司")));
         when(userMapper.getByAcountAndCompanyID("cfy", "0001", "")).thenReturn(loginUser("0001"));
-        when(userMapper.getByAcountAndCompanyID("cfy", "0002", "")).thenReturn(loginUser("0002"));
         stubPermissionMenus();
 
         successResult result = controller.Login("cfy", "123", CAPTCHA_ID, CAPTCHA_CODE, null);
@@ -152,6 +154,20 @@ public class LoginControllerTest {
         Assert.assertTrue(result.getMessage(), result.getSuccess());
         LoginUserInfo data = (LoginUserInfo) result.getData();
         Assert.assertEquals("0002", data.getCompanyId());
+    }
+
+    @Test
+    public void Login_shouldIncludeCompanyNameInIssuedLoginInfo() {
+        stubValidCaptcha();
+        when(userMapper.getCompaniesByUserName("cfy", "hrsystem"))
+                .thenReturn(Arrays.asList(company("0002", "成都公司")));
+        when(userMapper.getByAcountAndCompanyID("cfy", "0002", "")).thenReturn(loginUser("0002"));
+        stubPermissionMenus();
+
+        successResult result = controller.Login("cfy", "123", CAPTCHA_ID, CAPTCHA_CODE, null);
+
+        Assert.assertTrue(result.getMessage(), result.getSuccess());
+        Assert.assertEquals("成都公司", ((LoginUserInfo) result.getData()).getCompanyName());
     }
 
     @Test
@@ -193,6 +209,72 @@ public class LoginControllerTest {
         // 安全修正：未验密不得返回企业列表
         Assert.assertFalse(result.getSuccess());
         Assert.assertNull(result.getData());
+    }
+
+    // ============ 切换企业（switchCompany / candidates）============
+
+    /** 模拟当前已登录操作员：其账号 cfy 可访问 0001/0002，当前在 0001 */
+    private LoginUserInfo currentOperatorIn0001() {
+        when(userMapper.getCompaniesByUserName("cfy", "hrsystem"))
+                .thenReturn(Arrays.asList(company("0001", "达川公司"), company("0002", "成都公司")));
+        when(userMapper.getByAcountAndCompanyID("cfy", "0002", "")).thenReturn(loginUser("0002"));
+        when(tokenRevocation.getSessionSeed("cfy")).thenReturn(99L);
+        when(userMapper.getPwdChangeRequired("cfy", "0002", "")).thenReturn(null);
+        stubPermissionMenus();
+        LoginUserInfo current = loginUser("0001");
+        current.setAccount("cfy");
+        CompanyContext.set(current);
+        return current;
+    }
+
+    @Test
+    public void switchCompany_shouldIssueTokenForTargetInCandidates() {
+        currentOperatorIn0001();
+        successResult result = controller.switchCompany("0002");
+        Assert.assertTrue(result.getMessage(), result.getSuccess());
+        LoginUserInfo data = (LoginUserInfo) result.getData();
+        Assert.assertEquals("0002", data.getCompanyId());
+        Assert.assertEquals("cfy", data.getAccount());
+        Assert.assertNotNull(data.getToken());
+        // 沿用当前会话种子（不 bump），原企业 token 不被作废
+        Assert.assertEquals(Long.valueOf(99L), data.getSessionSeed());
+        Assert.assertEquals("成都公司", data.getCompanyName());
+        // 目标企业菜单已装载
+        Assert.assertEquals(1, data.getMenuTree().size());
+    }
+
+    @Test
+    public void switchCompany_shouldReject_whenTargetNotInCandidates() {
+        LoginUserInfo current = loginUser("0001");
+        current.setAccount("cfy");
+        CompanyContext.set(current);
+        when(userMapper.getCompaniesByUserName("cfy", "hrsystem"))
+                .thenReturn(Arrays.asList(company("0001", "达川公司")));
+        successResult result = controller.switchCompany("0009");
+        Assert.assertFalse(result.getSuccess());
+        Assert.assertTrue(result.getMessage().contains("不可访问"));
+    }
+
+    @Test
+    public void switchCompany_shouldReject_whenSwitchingToCurrentCompany() {
+        currentOperatorIn0001();
+        successResult result = controller.switchCompany("0001");
+        Assert.assertFalse(result.getSuccess());
+        Assert.assertTrue(result.getMessage().contains("无需切换"));
+    }
+
+    @Test
+    public void switchCompanyCandidates_shouldReturnCompaniesAndCurrentCompanyId() {
+        LoginUserInfo current = loginUser("0001");
+        current.setAccount("cfy");
+        CompanyContext.set(current);
+        when(userMapper.getCompaniesByUserName("cfy", "hrsystem"))
+                .thenReturn(Arrays.asList(company("0001", "达川公司"), company("0002", "成都公司")));
+        successResult result = controller.switchCompanyCandidates();
+        Assert.assertTrue(result.getMessage(), result.getSuccess());
+        Map<String, Object> data = (Map<String, Object>) result.getData();
+        Assert.assertEquals("0001", data.get("currentCompanyId"));
+        Assert.assertEquals(2, ((java.util.List) data.get("companies")).size());
     }
 
     private void stubPermissionMenus() {

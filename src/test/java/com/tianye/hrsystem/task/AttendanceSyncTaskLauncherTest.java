@@ -3,6 +3,7 @@ package com.tianye.hrsystem.task;
 import com.tianye.hrsystem.common.Redis;
 import com.tianye.hrsystem.config.CompanyContext;
 import com.tianye.hrsystem.model.LoginUserInfo;
+import java.util.Map;
 import org.junit.After;
 import org.junit.Assert;
 import org.junit.Before;
@@ -35,9 +36,88 @@ public class AttendanceSyncTaskLauncherTest {
     public void tryBegin_shouldRejectSecondAcquireForSameCompany() {
         Mockito.doReturn(true).doReturn(false).when(redis).setNx(Mockito.anyString(), Mockito.anyLong(), Mockito.any());
 
-        Assert.assertTrue(launcher.tryBegin("0001"));
-        Assert.assertFalse(launcher.tryBegin("0001"));
-        Mockito.verify(redis, Mockito.times(2)).setNx("attendance:sync:running:0001", 7200L, "1");
+        LoginUserInfo info = new LoginUserInfo();
+        info.setAccount("alice");
+        info.setUserName("Alice");
+        info.setCompanyName("示例公司");
+        Assert.assertTrue(launcher.tryBegin("0001", info));
+        Assert.assertFalse(launcher.tryBegin("0001", info));
+        Mockito.verify(redis, Mockito.times(2)).setNx(Mockito.eq("attendance:sync:running:0001"), Mockito.eq(7200L), Mockito.argThat(value -> {
+            String payload = String.valueOf(value);
+            return payload.contains("alice") && payload.contains("示例公司");
+        }));
+    }
+
+    @Test
+    public void getRunningOwner_shouldExposeAccountAndCompanyFromLockPayload() {
+        Mockito.when(redis.get("attendance:sync:running:0001"))
+                .thenReturn("{\"account\":\"alice\",\"userName\":\"Alice\",\"companyName\":\"示例公司\"}");
+
+        Map<String, Object> owner = launcher.getRunningOwner("0001");
+
+        Assert.assertEquals("alice", owner.get("account"));
+        Assert.assertEquals("Alice", owner.get("userName"));
+        Assert.assertEquals("示例公司", owner.get("companyName"));
+    }
+
+    @Test
+    public void tryBegin_shouldRecoverFinishedStaleLock() {
+        long oldAcquiredAt = System.currentTimeMillis() - 60_000L;
+        Mockito.when(redis.setNx(Mockito.anyString(), Mockito.anyLong(), Mockito.any()))
+                .thenReturn(false).thenReturn(true);
+        Mockito.when(redis.get("attendance:sync:running:0001"))
+                .thenReturn("{\"account\":\"alice\",\"acquiredAt\":" + oldAcquiredAt + "}");
+        Mockito.when(redis.get("attendance:sync:status:0001")).thenReturn("SUCCESS");
+        Mockito.when(redis.get("attendance:sync:update_time:0001")).thenReturn(String.valueOf(oldAcquiredAt + 1));
+
+        Assert.assertTrue(launcher.tryBegin("0001", new LoginUserInfo()));
+
+        Mockito.verify(redis).del("attendance:sync:running:0001");
+    }
+
+    @Test
+    public void tryBegin_shouldRecoverTerminalLockImmediatelyAfterProgressIsFinal() {
+        long acquiredAt = System.currentTimeMillis();
+        Mockito.when(redis.setNx(Mockito.anyString(), Mockito.anyLong(), Mockito.any()))
+                .thenReturn(false).thenReturn(true);
+        Mockito.when(redis.get("attendance:sync:running:0001"))
+                .thenReturn("{\"account\":\"alice\",\"acquiredAt\":" + acquiredAt + "}");
+        Mockito.when(redis.get("attendance:sync:status:0001")).thenReturn("SUCCESS");
+        Mockito.when(redis.get("attendance:sync:update_time:0001")).thenReturn(String.valueOf(acquiredAt + 1));
+
+        Assert.assertTrue(launcher.tryBegin("0001", new LoginUserInfo()));
+
+        Mockito.verify(redis).del("attendance:sync:running:0001");
+    }
+
+    @Test
+    public void tryBegin_shouldRecoverRunningLockCreatedBeforeThisProcessStarted() {
+        long acquiredAt = System.currentTimeMillis() - 60_000L;
+        Mockito.when(redis.setNx(Mockito.anyString(), Mockito.anyLong(), Mockito.any()))
+                .thenReturn(false).thenReturn(true);
+        Mockito.when(redis.get("attendance:sync:running:0001"))
+                .thenReturn("{\"account\":\"alice\",\"acquiredAt\":" + acquiredAt + "}");
+        Mockito.when(redis.get("attendance:sync:status:0001")).thenReturn("RUNNING");
+
+        Assert.assertTrue(launcher.tryBegin("0001", new LoginUserInfo()));
+
+        Mockito.verify(redis).del("attendance:sync:running:0001");
+    }
+
+    @Test
+    public void tryBegin_shouldKeepRunningLockCreatedByThisProcess() {
+        long processStartedAt = (Long) ReflectionTestUtils.getField(launcher, "processStartedAt");
+        long acquiredAt = processStartedAt + 1;
+        Mockito.when(redis.setNx(Mockito.anyString(), Mockito.anyLong(), Mockito.any())).thenReturn(false);
+        Mockito.when(redis.get("attendance:sync:running:0001"))
+                .thenReturn("{\"account\":\"alice\",\"acquiredAt\":" + acquiredAt + "}");
+        Mockito.when(redis.get("attendance:sync:status:0001")).thenReturn("RUNNING");
+
+        Assert.assertFalse(launcher.tryBegin("0001", new LoginUserInfo()));
+
+        Mockito.verify(redis, Mockito.never()).del("attendance:sync:running:0001");
+        Mockito.verify(redis, Mockito.times(1))
+                .setNx(Mockito.eq("attendance:sync:running:0001"), Mockito.eq(7200L), Mockito.any());
     }
 
     @Test

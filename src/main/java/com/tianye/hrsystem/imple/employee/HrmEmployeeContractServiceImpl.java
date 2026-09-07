@@ -9,6 +9,7 @@ import com.tianye.hrsystem.entity.po.FileEntity;
 import com.tianye.hrsystem.entity.po.HrmEmployee;
 import com.tianye.hrsystem.entity.po.HrmEmployeeContract;
 import com.tianye.hrsystem.entity.vo.ContractInformationVO;
+import com.tianye.hrsystem.entity.vo.DuplicateContractVO;
 import com.tianye.hrsystem.enums.EmployeeContractStatus;
 import com.tianye.hrsystem.enums.EmployeeContractType;
 import com.tianye.hrsystem.enums.HrmCodeEnum;
@@ -30,7 +31,9 @@ import javax.annotation.Resource;
 import java.io.InputStream;
 import java.math.BigDecimal;
 import java.time.LocalDate;
+import java.time.format.DateTimeFormatter;
 import java.time.temporal.ChronoUnit;
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -95,7 +98,7 @@ public class HrmEmployeeContractServiceImpl extends BaseServiceImpl<HrmEmployeeC
 
     @Override
     @Transactional(rollbackFor = Exception.class)
-    public Integer importContracts(MultipartFile file) throws Exception {
+    public Map<String, Object> importContracts(MultipartFile file) throws Exception {
         if (file == null || file.isEmpty()) {
             throw new CrmException(HrmCodeEnum.TEMPLATE_SAVE_PARAM_ERROR, "请选择合同导入文件");
         }
@@ -115,19 +118,41 @@ public class HrmEmployeeContractServiceImpl extends BaseServiceImpl<HrmEmployeeC
         requireHeader(headerIndexes, "合同状态");
 
         int importedCount = 0;
+        int skippedCount = 0;
+        List<String> skippedDetails = new ArrayList<>();
+        DateTimeFormatter dateFormatter = DateTimeFormatter.ofPattern("yyyy-MM-dd");
+
         for (int rowIndex = 1; rowIndex < all.size(); rowIndex++) {
             List<String> row = all.get(rowIndex);
             if (isContractImportRowEmpty(row, headerIndexes)) {
                 continue;
             }
             HrmEmployeeContract contract = buildImportContract(row, headerIndexes, employeeMap, rowIndex + 1);
+
+            // 检查是否重复合同
+            if (isContractDuplicate(contract)) {
+                skippedCount++;
+                String employeeName = getImportText(row, headerIndexes, "姓名");
+                String contractTypeName = getContractTypeName(contract.getContractType());
+                String startTimeStr = contract.getStartTime() != null ? contract.getStartTime().format(dateFormatter) : "";
+                String endTimeStr = contract.getEndTime() != null ? contract.getEndTime().format(dateFormatter) : "无固定期限";
+                skippedDetails.add(employeeName + " " + contractTypeName + " " + startTimeStr + " ~ " + endTimeStr);
+                continue;
+            }
+
             addOrUpdateContract(contract);
             importedCount++;
         }
-        if (importedCount == 0) {
+
+        Map<String, Object> result = new HashMap<>();
+        result.put("importedCount", importedCount);
+        result.put("skippedCount", skippedCount);
+        result.put("skippedDetails", skippedDetails);
+
+        if (importedCount == 0 && skippedCount == 0) {
             throw new CrmException(HrmCodeEnum.TEMPLATE_SAVE_PARAM_ERROR, "导入文件没有可导入的合同数据");
         }
-        return importedCount;
+        return result;
     }
 
     @Override
@@ -140,6 +165,116 @@ public class HrmEmployeeContractServiceImpl extends BaseServiceImpl<HrmEmployeeC
     @Override
     public List<Long> queryToExpireContractCount() {
         return getBaseMapper().queryToExpireContractCount();
+    }
+
+    @Override
+    public List<DuplicateContractVO> queryDuplicateContracts() {
+        // 查询所有合同，按 employeeId + contractType + startTime + endTime 分组
+        List<HrmEmployeeContract> allContracts = lambdaQuery()
+                .orderByAsc(HrmEmployeeContract::getEmployeeId)
+                .orderByAsc(HrmEmployeeContract::getContractType)
+                .orderByAsc(HrmEmployeeContract::getStartTime)
+                .orderByAsc(HrmEmployeeContract::getCreateTime)
+                .list();
+
+        // 按分组键分组
+        Map<String, List<HrmEmployeeContract>> groupMap = new HashMap<>();
+        for (HrmEmployeeContract contract : allContracts) {
+            String groupKey = buildContractGroupKey(contract);
+            groupMap.computeIfAbsent(groupKey, k -> new ArrayList<>()).add(contract);
+        }
+
+        // 筛选出重复的分组（数量 > 1）
+        List<DuplicateContractVO> result = new ArrayList<>();
+        List<HrmEmployee> employeeList = listContractImportCandidates();
+        Map<Long, HrmEmployee> employeeMap = new HashMap<>();
+        for (HrmEmployee emp : employeeList) {
+            if (emp != null) {
+                employeeMap.put(emp.getEmployeeId(), emp);
+            }
+        }
+
+        for (Map.Entry<String, List<HrmEmployeeContract>> entry : groupMap.entrySet()) {
+            List<HrmEmployeeContract> contracts = entry.getValue();
+            if (contracts.size() <= 1) {
+                continue;
+            }
+
+            DuplicateContractVO groupVO = new DuplicateContractVO();
+            groupVO.setGroupKey(entry.getKey());
+
+            HrmEmployeeContract firstContract = contracts.get(0);
+            groupVO.setEmployeeId(firstContract.getEmployeeId());
+            groupVO.setContractType(firstContract.getContractType());
+            groupVO.setContractTypeName(getContractTypeName(firstContract.getContractType()));
+            groupVO.setStartTime(firstContract.getStartTime());
+            groupVO.setEndTime(firstContract.getEndTime());
+            groupVO.setDuplicateCount(contracts.size());
+
+            // 获取员工信息
+            HrmEmployee employee = employeeMap.get(firstContract.getEmployeeId());
+            if (employee != null) {
+                groupVO.setEmployeeName(employee.getEmployeeName());
+                groupVO.setEmployeePhone(employee.getMobile());
+            }
+
+            // 构建合同详情列表
+            List<DuplicateContractVO.ContractDetailVO> detailList = new ArrayList<>();
+            for (HrmEmployeeContract contract : contracts) {
+                DuplicateContractVO.ContractDetailVO detail = new DuplicateContractVO.ContractDetailVO();
+                detail.setContractId(contract.getContractId());
+                detail.setContractNum(contract.getContractNum());
+                detail.setStatus(contract.getStatus());
+                detail.setStatusName(getContractStatusName(contract.getStatus()));
+                detail.setSignCompany(contract.getSignCompany());
+                detail.setSignTime(contract.getSignTime());
+                detail.setCreateTime(contract.getCreateTime());
+                detail.setRemarks(contract.getRemarks());
+                detailList.add(detail);
+            }
+            groupVO.setContracts(detailList);
+
+            result.add(groupVO);
+        }
+
+        return result;
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public Integer deleteDuplicateContracts(List<Long> contractIds) {
+        if (contractIds == null || contractIds.isEmpty()) {
+            return 0;
+        }
+
+        int deletedCount = 0;
+        for (Long contractId : contractIds) {
+            HrmEmployeeContract contract = getById(contractId);
+            if (contract != null) {
+                employeeActionRecordService.addOrDeleteRecord(HrmActionBehaviorEnum.DELETE, LabelGroupEnum.CONTRACT, contract.getEmployeeId());
+                removeById(contractId);
+                deletedCount++;
+            }
+        }
+        return deletedCount;
+    }
+
+    private String buildContractGroupKey(HrmEmployeeContract contract) {
+        String startTimeStr = contract.getStartTime() != null ? contract.getStartTime().toString() : "";
+        String endTimeStr = contract.getEndTime() != null ? contract.getEndTime().toString() : "null";
+        return contract.getEmployeeId() + "|" + contract.getContractType() + "|" + startTimeStr + "|" + endTimeStr;
+    }
+
+    private String getContractStatusName(Integer status) {
+        if (status == null) {
+            return "未知";
+        }
+        for (EmployeeContractStatus s : EmployeeContractStatus.values()) {
+            if (s.getValue() == status) {
+                return s.getName();
+            }
+        }
+        return "未知";
     }
 
     protected List<HrmEmployee> listContractImportCandidates() {
@@ -397,6 +532,27 @@ public class HrmEmployeeContractServiceImpl extends BaseServiceImpl<HrmEmployeeC
 
     private boolean isOpenEndedContract(Integer contractType) {
         return Integer.valueOf(EmployeeContractType.NO_FIXED_TERM_LABOR_CONTRACT.getValue()).equals(contractType);
+    }
+
+    private boolean isContractDuplicate(HrmEmployeeContract contract) {
+        return lambdaQuery()
+                .eq(HrmEmployeeContract::getEmployeeId, contract.getEmployeeId())
+                .eq(HrmEmployeeContract::getContractType, contract.getContractType())
+                .eq(HrmEmployeeContract::getStartTime, contract.getStartTime())
+                .eq(HrmEmployeeContract::getEndTime, contract.getEndTime())
+                .exists();
+    }
+
+    private String getContractTypeName(Integer contractType) {
+        if (contractType == null) {
+            return "未知";
+        }
+        for (EmployeeContractType type : EmployeeContractType.values()) {
+            if (type.getValue() == contractType) {
+                return type.getName();
+            }
+        }
+        return "未知";
     }
 
     private Integer calculateContractTerm(LocalDate startTime, LocalDate endTime) {

@@ -24,6 +24,9 @@ public class HrmAttendanceApprovalProcessInstanceParser {
     private static final Long BIZ_TYPE_TRAVEL = 2L;
     private static final Long BIZ_TYPE_LEAVE = 3L;
 
+    /** 请假时长口径：1 个工作日 = 8 工作小时（与 PC 前端/考勤统计换算一致） */
+    private static final java.math.BigDecimal LEAVE_HOURS_PER_DAY = java.math.BigDecimal.valueOf(8);
+
     private static final List<String> LEAVE_KEYWORDS = Arrays.asList(
             "请假", "事假", "调休", "病假", "婚假", "丧假", "产假", "陪产假", "年假", "补休"
     );
@@ -68,6 +71,7 @@ public class HrmAttendanceApprovalProcessInstanceParser {
 
         entity.setDuration(durationValue.value);
         entity.setDurationUnit(durationValue.unit);
+        entity.setDurationDay(toDayText(durationValue.value, durationValue.unit));
         return Optional.of(entity);
     }
 
@@ -209,10 +213,23 @@ public class HrmAttendanceApprovalProcessInstanceParser {
         return "";
     }
 
+    private static final List<String> LEAVE_BEGIN_COMPONENT_NAMES = Arrays.asList(
+            "请假开始时间", "请假开始日期", "请假时间", "假期开始时间", "假期开始日期", "假期时间"
+    );
+    private static final List<String> LEAVE_END_COMPONENT_NAMES = Arrays.asList(
+            "请假结束时间", "请假结束日期", "请假时间", "假期结束时间", "假期结束日期", "假期时间"
+    );
+
     private DateRange resolveDateRange(OapiProcessinstanceGetResponse.ProcessInstanceTopVo processInstance,
                                        String typeLabel,
                                        DurationValue durationValue) {
         List<OapiProcessinstanceGetResponse.FormComponentValueVo> components = processInstance.getFormComponentValues();
+        if ("请假".equals(typeLabel)) {
+            DateRange leaveRange = resolveLeaveDateRange(components, processInstance);
+            if (leaveRange != null) {
+                return leaveRange;
+            }
+        }
         OapiProcessinstanceGetResponse.FormComponentValueVo beginComponent = findComponent(
                 components,
                 "开始时间", "开始日期", "起始时间", "加班日期", "加班开始时间", "加班开始日期",
@@ -288,14 +305,90 @@ public class HrmAttendanceApprovalProcessInstanceParser {
             String durationInHour = normalizeNumericText(extValue.getString("durationInHour"));
             java.math.BigDecimal dayValue = parsePositiveDecimal(durationInDay);
             java.math.BigDecimal hourValue = parsePositiveDecimal(durationInHour);
+
+            // 钉钉请假控件口径：按"天"填写的请假 durationInDay 恒为 0.5 的整数倍（半天=0.5、全天=1、1.5 天等），
+            // 是权威的"时长(天)"。而 durationInHour 对这类请假可能返回日历小时伪值
+            // （如半天=下午固定 12 小时，而非工作小时 4h），与 durationInDay*8 不一致，不能直接信任。
+            // 判定：durationInDay 是 0.5 的整数倍 ⇒ 按天填写 ⇒ 小时 = durationInDay * 8 落库；
+            // 否则为按小时填写（如 30 分钟→durationInDay=0.07），以 durationInHour 为准。
+            if (dayValue != null && isHalfDayGranular(dayValue)) {
+                return new DurationValue(
+                        dayValue.multiply(LEAVE_HOURS_PER_DAY).stripTrailingZeros().toPlainString(), "小时");
+            }
             if (hourValue != null) {
-                return new DurationValue(durationInHour, "小时");
+                return new DurationValue(hourValue.stripTrailingZeros().toPlainString(), "小时");
             }
             if (dayValue != null) {
-                return new DurationValue(durationInDay, "天");
+                return new DurationValue(
+                        dayValue.multiply(LEAVE_HOURS_PER_DAY).stripTrailingZeros().toPlainString(), "小时");
             }
         }
         return null;
+    }
+
+    /**
+     * 请假类（调休/年假等）业务日期区间解析。
+     * 钉钉请假控件组件名通常是"请假时间/假期"等，不在原通用候选名单内，导致 beginTime/endTime
+     * 兜底成发起时间/审批完成时间，跨月单（如 7/24~8/4）整段落发起月，次月列表查不到。
+     * 解析优先级：①请假控件 ext_value 权威 start_time/end_time（毫秒）②请假类命名组件 value 内的日期
+     * ③全部组件 value 日期扫描取 min/max（仅当扫到日期时）。
+     */
+    private DateRange resolveLeaveDateRange(List<OapiProcessinstanceGetResponse.FormComponentValueVo> components,
+                                            OapiProcessinstanceGetResponse.ProcessInstanceTopVo processInstance) {
+        if (components == null || components.isEmpty()) {
+            return null;
+        }
+        for (OapiProcessinstanceGetResponse.FormComponentValueVo component : components) {
+            JSONObject extValue = parseComponentExtValue(component);
+            if (extValue == null) {
+                continue;
+            }
+            Date startTime = parseMillis(extValue.getString("start_time"));
+            Date endTime = parseMillis(extValue.getString("end_time"));
+            if (startTime != null && endTime != null) {
+                return new DateRange(startTime, endTime);
+            }
+        }
+        List<Date> beginDates = extractComponentDates(findComponent(components, LEAVE_BEGIN_COMPONENT_NAMES.toArray(new String[0])));
+        List<Date> endDates = extractComponentDates(findComponent(components, LEAVE_END_COMPONENT_NAMES.toArray(new String[0])));
+        Date beginTime = firstDate(beginDates);
+        Date endTime = lastDate(endDates);
+        if (endTime == null && beginDates.size() >= 2) {
+            endTime = lastDate(beginDates);
+        }
+        if (beginTime == null && endDates.size() >= 2) {
+            beginTime = firstDate(endDates);
+        }
+        if (beginTime != null && endTime != null) {
+            return new DateRange(beginTime, endTime);
+        }
+        List<Date> allDates = new ArrayList<>();
+        for (OapiProcessinstanceGetResponse.FormComponentValueVo component : components) {
+            allDates.addAll(extractComponentDates(component));
+        }
+        if (!allDates.isEmpty()) {
+            return new DateRange(firstDate(allDates), lastDate(allDates));
+        }
+        return null;
+    }
+
+    private Date parseMillis(String value) {
+        String normalized = normalizeNumericText(value);
+        if (normalized.isEmpty()) {
+            return null;
+        }
+        try {
+            long millis = Long.parseLong(normalized);
+            return millis > 0 ? new Date(millis) : null;
+        } catch (NumberFormatException ex) {
+            return null;
+        }
+    }
+
+    private boolean isHalfDayGranular(java.math.BigDecimal dayValue) {
+        return dayValue.multiply(java.math.BigDecimal.valueOf(2))
+                .remainder(java.math.BigDecimal.ONE)
+                .compareTo(java.math.BigDecimal.ZERO) == 0;
     }
 
     private java.math.BigDecimal parsePositiveDecimal(String value) {
@@ -557,6 +650,32 @@ public class HrmAttendanceApprovalProcessInstanceParser {
         }
         String extValue = component.getExtValue();
         return extValue == null ? "" : extValue.trim();
+    }
+
+    private String toDayText(String value, String unit) {
+        if (value == null || !isNumeric(value)) {
+            return "";
+        }
+        java.math.BigDecimal numeric;
+        try {
+            numeric = new java.math.BigDecimal(value);
+        } catch (NumberFormatException ex) {
+            return "";
+        }
+        if (numeric.compareTo(java.math.BigDecimal.ZERO) <= 0) {
+            return "";
+        }
+        java.math.BigDecimal days;
+        if ("天".equals(unit)) {
+            days = numeric;
+        } else if ("分钟".equals(unit)) {
+            days = numeric.divide(java.math.BigDecimal.valueOf(60), 6, java.math.RoundingMode.HALF_UP)
+                    .divide(LEAVE_HOURS_PER_DAY, 6, java.math.RoundingMode.HALF_UP);
+        } else {
+            // 默认按小时换算：天 = 小时 / 8
+            days = numeric.divide(LEAVE_HOURS_PER_DAY, 6, java.math.RoundingMode.HALF_UP);
+        }
+        return days.setScale(2, java.math.RoundingMode.HALF_UP).stripTrailingZeros().toPlainString();
     }
 
     private String normalizeText(String value) {
