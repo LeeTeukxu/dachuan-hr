@@ -19,6 +19,7 @@ import com.tianye.hrsystem.enums.*;
 import com.tianye.hrsystem.common.ResultCode;
 import com.tianye.hrsystem.exception.HrmException;
 import com.tianye.hrsystem.mapper.HrmEmployeeMapper;
+import com.tianye.hrsystem.entity.po.HrmDept;
 import com.tianye.hrsystem.model.LoginUserInfo;
 import com.tianye.hrsystem.modules.salary.dto.*;
 import com.tianye.hrsystem.modules.salary.entity.HrmSalaryArchives;
@@ -27,7 +28,9 @@ import com.tianye.hrsystem.modules.salary.entity.HrmSalaryChangeRecord;
 import com.tianye.hrsystem.modules.salary.entity.HrmSalaryChangeTemplate;
 import com.tianye.hrsystem.modules.salary.mapper.HrmSalaryArchivesMapper;
 import com.tianye.hrsystem.modules.salary.vo.*;
+import com.tianye.hrsystem.service.IHrmDeptService;
 import com.tianye.hrsystem.service.employee.IHrmEmployeeService;
+import com.tianye.hrsystem.util.RecursionUtil;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -71,6 +74,9 @@ public class HrmSalaryArchivesService  extends BaseServiceImpl<HrmSalaryArchives
     @Autowired
     private IHrmEmployeeService employeeService;
 
+    @Autowired
+    private IHrmDeptService hrmDeptService;
+
 
     /**
      * 薪资档案列表
@@ -79,6 +85,16 @@ public class HrmSalaryArchivesService  extends BaseServiceImpl<HrmSalaryArchives
      */
     public BasePage<QuerySalaryArchivesListVO> querySalaryArchivesList(QuerySalaryArchivesListDto querySalaryArchivesListDto)
     {
+        // 递归查找选中部门的所有子部门
+        if (querySalaryArchivesListDto.getDeptId() != null) {
+            List<Long> allDeptIds = new ArrayList<>();
+            allDeptIds.add(querySalaryArchivesListDto.getDeptId());
+            List<HrmDept> allDepts = hrmDeptService.list();
+            List<Long> childIds = RecursionUtil.getChildList(allDepts, "parentId", querySalaryArchivesListDto.getDeptId(), "deptId", "deptId");
+            allDeptIds.addAll(childIds);
+            querySalaryArchivesListDto.setDeptIds(allDeptIds);
+        }
+
         List<Long> employeeIds =null;
         if(!CollectionUtil.isEmpty(querySalaryArchivesListDto.getEmployeeIds()))
         {
@@ -102,6 +118,16 @@ public class HrmSalaryArchivesService  extends BaseServiceImpl<HrmSalaryArchives
      */
     public List<QuerySalaryArchivesListVO> queryEmpSalaryArchivesList(QuerySalaryArchivesListDto querySalaryArchivesListDto)
     {
+        // 递归查找选中部门的所有子部门
+        if (querySalaryArchivesListDto.getDeptId() != null) {
+            List<Long> allDeptIds = new ArrayList<>();
+            allDeptIds.add(querySalaryArchivesListDto.getDeptId());
+            List<HrmDept> allDepts = hrmDeptService.list();
+            List<Long> childIds = RecursionUtil.getChildList(allDepts, "parentId", querySalaryArchivesListDto.getDeptId(), "deptId", "deptId");
+            allDeptIds.addAll(childIds);
+            querySalaryArchivesListDto.setDeptIds(allDeptIds);
+        }
+
         List<Long> employeeIds =null;
         if(!CollectionUtil.isEmpty(querySalaryArchivesListDto.getEmployeeIds()))
         {

@@ -1,6 +1,7 @@
 package com.tianye.hrsystem.controller;
 
 import com.dingtalk.api.response.OapiAttendanceGetsimplegroupsResponse;
+import com.tianye.hrsystem.common.MonthlyFullSyncGuard;
 import com.tianye.hrsystem.config.CompanyContext;
 import com.tianye.hrsystem.model.ComboboxItem;
 import com.tianye.hrsystem.model.GroupObject;
@@ -39,6 +40,7 @@ import java.util.Collections;
 import java.util.Date;
 import java.util.List;
 import java.util.HashMap;
+import java.util.Map;
 import java.text.SimpleDateFormat;
 
 import static org.mockito.ArgumentMatchers.any;
@@ -59,6 +61,9 @@ public class HrmAttendanceDataControllerTest {
 
     @Mock
     private AttendanceSyncTaskLauncher syncTaskLauncher;
+
+    @Mock
+    private MonthlyFullSyncGuard monthlyFullSyncGuard;
 
     @Mock
     private hrmEmployeeRepository empRep;
@@ -263,23 +268,38 @@ public class HrmAttendanceDataControllerTest {
     }
 
     @Test
-    public void getData_shouldIdentifyCompanyAndAccountWhenSyncLockIsHeld() throws Exception {
+    public void getData_lockHeld_returns202AndFlagsAlreadyRunning() throws Exception {
         Date end = new Date();
         when(dateUtils.setItEnd(any(Date.class))).thenReturn(end);
         when(syncTaskLauncher.tryBegin(eq("1001"), any(LoginUserInfo.class))).thenReturn(false);
-        HashMap<String, Object> owner = new HashMap<>();
-        owner.put("companyName", "示例公司");
-        owner.put("account", "alice");
-        owner.put("userName", "Alice");
-        when(syncTaskLauncher.getRunningOwner("1001")).thenReturn(owner);
 
-        successResult result = controller.GetData("101", "2026-08-01", "2026-08-31");
+        // fullSync=false：不触达每月全量闸门，直接落到公司锁互斥判断
+        successResult result = controller.GetData("101", "2026-08-01", "2026-08-31", "false");
 
-        Assert.assertFalse(result.getSuccess());
-        Assert.assertTrue(result.getMessage().contains("示例公司"));
-        Assert.assertTrue(result.getMessage().contains("alice"));
-        Assert.assertTrue(result.getMessage().contains("当前操作账号"));
+        // 新版：锁被占用 → code=202（前端据此切进度模式），success 仍为 true，data 打 alreadyRunning
+        Assert.assertEquals(Integer.valueOf(202), result.getCode());
+        Assert.assertTrue(result.getSuccess());
+        Assert.assertTrue(result.getMessage().contains("正在进行中"));
+        @SuppressWarnings("unchecked")
+        Map<String, Object> data = (Map<String, Object>) result.getData();
+        Assert.assertEquals(Boolean.TRUE, data.get("alreadyRunning"));
+        Assert.assertEquals(Boolean.TRUE, data.get("queued"));
         verify(dataService, never()).markSyncQueued();
+        verify(monthlyFullSyncGuard, never()).isMonthlyFullSynced(any(), any());
+    }
+
+    @Test
+    public void getData_fullSyncDoneWithinMonth_rejectsWithMonthlyFullDoneCode() throws Exception {
+        when(monthlyFullSyncGuard.isMonthlyFullSynced(
+                eq(MonthlyFullSyncGuard.BIZ_ATTENDANCE), eq("1001"))).thenReturn(true);
+
+        // fullSync=true 且本月已完成一次全量 → 拒绝，返回 4001 引导定向补拉
+        successResult result = controller.GetData("101", "2026-08-01", "2026-08-31", "true");
+
+        Assert.assertEquals(Integer.valueOf(4001), result.getCode());
+        Assert.assertTrue(result.getMessage().contains("本月"));
+        // 未进到公司锁抢占/后台提交
+        verify(syncTaskLauncher, never()).tryBegin(eq("1001"), any(LoginUserInfo.class));
     }
 
     @Test

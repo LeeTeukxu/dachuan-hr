@@ -15,6 +15,7 @@ import com.tianye.hrsystem.modules.miniapp.vo.MiniAppScheduleEmployeeVO;
 import com.tianye.hrsystem.modules.miniapp.vo.MiniAppScheduleSaveBO;
 import com.tianye.hrsystem.modules.miniapp.vo.MiniAppStandardProductVO;
 import com.tianye.hrsystem.modules.workplanapplication.service.IWorkPlanApplicationService;
+import com.tianye.hrsystem.service.IWorkPlanService;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -49,6 +50,9 @@ public class MiniAppController {
 
     @Autowired
     private com.tianye.hrsystem.modules.miniapp.service.IMiniAppPermissionService permissionService;
+
+    @Autowired
+    private IWorkPlanService workPlanService;
 
     // ============ 登录/绑定 ============
 
@@ -336,6 +340,34 @@ public class MiniAppController {
             }
             MiniAppProductScheduleVO vo = scheduleService.queryProductSchedule(info.getEmployeeId(), date);
             result.setData(vo);
+        } catch (Exception ax) {
+            result.raiseException(ax);
+        }
+        return result;
+    }
+
+    /** 批量设置休息日：将生产体系月休四天的所有在职员工在指定日期设为休息 */
+    @GetMapping("/schedule/batchSetRestDay")
+    public successResult batchSetRestDay(String workDate) {
+        successResult result = new successResult();
+        try {
+            LoginUserInfo info = CompanyContext.get();
+            if (info.getEmployeeId() == null) {
+                throw new Exception("当前登录身份缺少员工信息");
+            }
+            if (!permissionService.canSchedule(info.getEmployeeId())) {
+                throw new Exception("当前员工没有被授予\"添加排班\"权限");
+            }
+            if (workDate == null || workDate.trim().isEmpty()) {
+                throw new Exception("日期不能为空");
+            }
+            SimpleDateFormat fmt = new SimpleDateFormat("yyyy-MM-dd");
+            fmt.setLenient(false);
+            Date date = fmt.parse(workDate.trim());
+            int count = workPlanService.batchSetRestDay(date);
+            Map<String, Object> data = new HashMap<>();
+            data.put("count", count);
+            result.setData(data);
         } catch (Exception ax) {
             result.raiseException(ax);
         }

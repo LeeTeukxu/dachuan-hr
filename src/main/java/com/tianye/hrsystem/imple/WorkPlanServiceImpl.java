@@ -1086,7 +1086,7 @@ public class WorkPlanServiceImpl implements IWorkPlanService {
         List<HrmEmployee> allActive = employeeRep.findAllByIsDelAndEntryStatusIn(0, Collections.singletonList(1));
         List<HrmEmployee> targets = allActive.stream()
                 .filter(e -> Integer.valueOf(2).equals(e.getAffiliationSystem())
-                        && Integer.valueOf(2).equals(e.getRestType()))
+                        || Integer.valueOf(2).equals(e.getRestType()))
                 .collect(Collectors.toList());
         if (targets.isEmpty()) {
             return 0;

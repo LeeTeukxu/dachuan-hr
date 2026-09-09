@@ -76,6 +76,7 @@ import com.tianye.hrsystem.service.IHrmAttendanceClockService;
 import com.tianye.hrsystem.service.IHrmAttendanceGroupService;
 import com.tianye.hrsystem.service.IHrmAttendanceReportDataService;
 import com.tianye.hrsystem.service.IHrmAttendanceRuleService;
+import com.tianye.hrsystem.service.IHrmDeptService;
 import com.tianye.hrsystem.service.employee.IHrmEmployeeQuitInfoService;
 import com.tianye.hrsystem.service.employee.IHrmEmployeeService;
 import com.tianye.hrsystem.util.*;
@@ -175,6 +176,21 @@ public class SalaryMonthRecordServiceNew extends BaseServiceImpl<HrmSalaryMonthR
 
     @Autowired
     private IHrmAttendanceClockService attendanceClockService;
+
+    @Autowired
+    private IHrmDeptService hrmDeptService;
+
+    /**
+     * 部门筛选递归填充子部门ID(不影响原 deptId 语义)
+     */
+    private void fillDeptIdsWithChildren(QuerySalaryPageListDto dto) {
+        if (dto != null && dto.getDeptId() != null && CollUtil.isEmpty(dto.getDeptIds())) {
+            List<Long> allDeptIds = new ArrayList<>();
+            allDeptIds.add(dto.getDeptId());
+            allDeptIds.addAll(RecursionUtil.getChildList(hrmDeptService.list(), "parentId", dto.getDeptId(), "deptId", "deptId"));
+            dto.setDeptIds(allDeptIds);
+        }
+    }
 
     @Autowired
     private IHrmAttendanceRuleService attendanceRuleService;
@@ -1240,6 +1256,7 @@ public class SalaryMonthRecordServiceNew extends BaseServiceImpl<HrmSalaryMonthR
      * @return
      */
     public BasePage<QuerySalaryPageListVO> querySalaryPageList(QuerySalaryPageListDto querySalaryPageListDto) {
+        fillDeptIdsWithChildren(querySalaryPageListDto);
         List<Long> employeeIds = new ArrayList<>();
 
         //查询薪资月记录
@@ -5175,6 +5192,7 @@ public class SalaryMonthRecordServiceNew extends BaseServiceImpl<HrmSalaryMonthR
         QuerySalaryPageListDto querySalaryPageListDto = new QuerySalaryPageListDto();
         querySalaryPageListDto.setSRecordId(querySalaryExportDto.getSalaryRecordId());
         BeanUtils.copyProperties(querySalaryExportDto,querySalaryPageListDto);
+        fillDeptIdsWithChildren(querySalaryPageListDto);
         List<QuerySalaryPageListVO> salaryPageListVOS = salaryMonthEmpRecordMapper.querySalaryMonthList(querySalaryPageListDto,employeeIds);
         if (!CollectionUtil.isEmpty(salaryPageListVOS)) {
             List<Long> exportEmployeeIds = salaryPageListVOS.stream()
@@ -5701,6 +5719,7 @@ public class SalaryMonthRecordServiceNew extends BaseServiceImpl<HrmSalaryMonthR
         QuerySalaryPageListDto querySalaryPageListDto = new QuerySalaryPageListDto();
         querySalaryPageListDto.setSRecordId(querySalaryExportDto.getSalaryRecordId());
         BeanUtils.copyProperties(querySalaryExportDto,querySalaryPageListDto);
+        fillDeptIdsWithChildren(querySalaryPageListDto);
         List<QuerySalaryPageListVO> salaryPageListVOS = salaryMonthEmpRecordMapper.querySalaryMonthList(querySalaryPageListDto,employeeIds);
         if (CollectionUtil.isEmpty(salaryPageListVOS))
         {

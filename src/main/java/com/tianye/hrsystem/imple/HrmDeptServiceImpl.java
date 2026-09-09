@@ -65,6 +65,11 @@ public class HrmDeptServiceImpl extends BaseServiceImpl<HrmDeptMapper, HrmDept> 
             HrmDept existingDept = getById(AddDeptBo.getDeptId());
             if (existingDept != null) {
                 hrmDept.setCode(existingDept.getCode());
+                // 编制(planNum)若前端未传(null)，保留原值，避免编辑时丢失编制数据
+                // （2026-09-10，4 部门统计编制真实化）
+                if (AddDeptBo.getPlanNum() == null) {
+                    hrmDept.setPlanNum(existingDept.getPlanNum());
+                }
             } else {
                 hrmDept.setCode(generateCode(null));
             }

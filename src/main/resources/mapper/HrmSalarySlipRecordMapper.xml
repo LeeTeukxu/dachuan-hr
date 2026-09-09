@@ -36,7 +36,17 @@
             and a.remarks like concat('%',#{data.remarks},'%')
         </if>
         <if test="data.deptId != null and data.deptId != ''">
-            and b.dept_id = #{data.deptId}
+            <choose>
+                <when test="data.deptIds != null and data.deptIds.size() > 0">
+                    and b.dept_id in
+                    <foreach collection="data.deptIds" item="deptId" open="(" separator="," close=")">
+                        #{deptId}
+                    </foreach>
+                </when>
+                <otherwise>
+                    and b.dept_id = #{data.deptId}
+                </otherwise>
+            </choose>
         </if>
     </select>
     <select id="querySlipEmployeeIds" resultType="java.lang.Long">
@@ -52,7 +62,17 @@
             and b.employee_name like concat('%',#{data.employeeName},'%')
         </if>
         <if test="data.deptId != null and data.deptId != ''">
-            and b.dept_id = #{data.deptId}
+            <choose>
+                <when test="data.deptIds != null and data.deptIds.size() > 0">
+                    and b.dept_id in
+                    <foreach collection="data.deptIds" item="deptId" open="(" separator="," close=")">
+                        #{deptId}
+                    </foreach>
+                </when>
+                <otherwise>
+                    and b.dept_id = #{data.deptId}
+                </otherwise>
+            </choose>
         </if>
         <if test="data.sendStatus != null">
             <if test="data.sendStatus == 1">

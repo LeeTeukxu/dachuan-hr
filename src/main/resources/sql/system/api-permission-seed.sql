@@ -90,8 +90,5 @@ INSERT INTO tb_api_permission (api_prefix, menu_paths, match_type, sortno, remar
 ('/dashboard/permission/save','/hrm/system/dashboardPermission','exact',911,'看板权限保存'),
 ('/dashboard/permission/hiddenKpis','/hrm/system/dashboardPermission','exact',912,'看板隐藏元素查询'),
 ('/companyPermission','/hrm/system/companyPermission','prefix',920,'企业权限管理'),
-('/mp/mySchedule','/miniapp/schedule/load','exact',930,'小程序-排班数据加载'),
-('/mp/mySchedule/day','/miniapp/schedule/load','exact',931,'小程序-排班数据加载(单日)'),
-('/mp/schedule/query','/miniapp/schedule/load','exact',932,'小程序-排班查询'),
 ('/mpPermission','/hrm/system/miniappPermission','prefix',933,'排班小程序权限配置页')
 ON DUPLICATE KEY UPDATE menu_paths=VALUES(menu_paths), match_type=VALUES(match_type);

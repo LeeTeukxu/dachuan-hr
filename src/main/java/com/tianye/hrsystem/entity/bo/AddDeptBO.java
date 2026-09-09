@@ -35,6 +35,10 @@ public class AddDeptBO {
     @ApiModelProperty(value = "部门编码")
     private String code;
 
+    /** 部门编制人数（2026-09-10，4 部门统计编制真实化）：NULL=未配置；>=0=与在职人数对比算缺/超/已满 */
+    @ApiModelProperty(value = "部门编制人数")
+    private Integer planNum;
+
     @ApiModelProperty(value = "部门负责人ID")
     private Long mainEmployeeId;
 

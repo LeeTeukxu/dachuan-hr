@@ -1,5 +1,6 @@
 package com.tianye.hrsystem.modules.salary.service;
 
+import cn.hutool.core.collection.CollUtil;
 import cn.hutool.core.util.StrUtil;
 import com.alibaba.fastjson.JSON;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
@@ -17,10 +18,13 @@ import com.tianye.hrsystem.modules.salary.vo.QueryHistorySalaryDetailVO;
 import com.tianye.hrsystem.modules.salary.vo.QueryHistorySalaryListVO;
 import com.tianye.hrsystem.modules.salary.vo.QuerySalaryPageListVO;
 import com.tianye.hrsystem.modules.salary.vo.SalaryOptionHeadVO;
+import com.tianye.hrsystem.util.RecursionUtil;
 import com.tianye.hrsystem.util.TransferUtil;
+import com.tianye.hrsystem.service.IHrmDeptService;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
+import java.util.ArrayList;
 import java.util.Collection;
 import java.util.HashMap;
 import java.util.List;
@@ -36,6 +40,9 @@ public class HrmSalaryMonthRecordService extends BaseServiceImpl<HrmSalaryMonthR
 
     @Autowired
     private HrmSalaryMonthOptionValueService salaryMonthOptionValueService;
+
+    @Autowired
+    private IHrmDeptService hrmDeptService;
 
     public Page<QueryHistorySalaryListVO> queryHistorySalaryList(QueryHistorySalaryListDto queryHistorySalaryListDto) {
 //        Collection<Long> employeeIds = employeeUtil.queryDataAuthEmpIdByMenuId(MenuIdConstant.SALARY_MENU_ID);
@@ -56,6 +63,13 @@ public class HrmSalaryMonthRecordService extends BaseServiceImpl<HrmSalaryMonthR
     }
 
     public QueryHistorySalaryDetailVO queryHistorySalaryDetail(QueryHistorySalaryDetailDto queryHistorySalaryDetailDto) {
+        // 递归查找选中部门的所有子部门
+        if (queryHistorySalaryDetailDto.getDeptId() != null && CollUtil.isEmpty(queryHistorySalaryDetailDto.getDeptIds())) {
+            List<Long> allDeptIds = new ArrayList<>();
+            allDeptIds.add(queryHistorySalaryDetailDto.getDeptId());
+            allDeptIds.addAll(RecursionUtil.getChildList(hrmDeptService.list(), "parentId", queryHistorySalaryDetailDto.getDeptId(), "deptId", "deptId"));
+            queryHistorySalaryDetailDto.setDeptIds(allDeptIds);
+        }
         HrmSalaryMonthRecord monthRecord = getById(queryHistorySalaryDetailDto.getSRecordId());
 //        Collection<Long> employeeIds = employeeUtil.queryDataAuthEmpIdByMenuId(MenuIdConstant.SALARY_MENU_ID);
         QueryHistorySalaryDetailVO historySalaryDetailVO = salaryMonthRecordMapper.queryHistorySalaryDetail(queryHistorySalaryDetailDto.getSRecordId());

@@ -72,6 +72,9 @@ public class HrmEmployeeController {
     @Autowired
     private com.tianye.hrsystem.autoTask.DingTalkUserMappingRetryTask dingTalkUserMappingRetryTask;
 
+    @Autowired
+    private com.tianye.hrsystem.task.AttendanceSyncTaskLauncher syncTaskLauncher;
+
     Logger logger= LoggerFactory.getLogger(HrmEmployeeController.class);
 
 //    @Autowired
@@ -747,11 +750,19 @@ public class HrmEmployeeController {
     @PostMapping("/syncDingTalkRoster")
     @ApiOperation("同步钉钉员工(dryRun=true时仅预检不落库)")
     public Result<Map<String, Object>> syncDingTalkRoster(@RequestParam(name = "dryRun", required = false, defaultValue = "false") Boolean dryRun) {
+        com.tianye.hrsystem.model.LoginUserInfo info = com.tianye.hrsystem.config.CompanyContext.get();
+        String companyId = info != null && info.getCompanyId() != null ? info.getCompanyId() : "unknown";
+        // 按公司互斥：同公司已有同步在跑则直接拒绝，不做任何后续操作（防重复点击刷钉钉配额）
+        if (!syncTaskLauncher.tryBegin(companyId, info)) {
+            return Result.error(202, "员工同步正在进行中，请稍后再试");
+        }
         try {
             return Result.ok(employeeDingTalkSyncService.syncRoster(Boolean.TRUE.equals(dryRun)));
         } catch (Exception ax) {
             logger.error("同步钉钉员工失败", ax);
             return Result.error(500, ax.getMessage());
+        } finally {
+            syncTaskLauncher.finish(companyId);
         }
     }
 }

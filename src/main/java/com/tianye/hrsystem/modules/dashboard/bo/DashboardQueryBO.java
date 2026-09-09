@@ -5,6 +5,8 @@ import io.swagger.annotations.ApiModelProperty;
 import lombok.Getter;
 import lombok.Setter;
 
+import java.util.List;
+
 /**
  * 看板通用查询参数
  */
@@ -77,4 +79,7 @@ public class DashboardQueryBO extends PageEntity {
 
     @ApiModelProperty("看板元素唯一键（board:type:key），用于权限校验申明")
     private String dashEl;
+
+    @ApiModelProperty("集团聚合白名单：仅遍历这些公司（null=全部公司）。小程序员工入口由服务端注入可见公司集合")
+    private List<String> scopeCompanyIds;
 }

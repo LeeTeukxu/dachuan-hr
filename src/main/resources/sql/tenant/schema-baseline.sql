@@ -441,6 +441,7 @@ CREATE TABLE `hrm_dept` (
   `dept_type` int DEFAULT NULL COMMENT '1 公司 2 部门',
   `name` varchar(64) CHARACTER SET utf8mb3 COLLATE utf8mb3_general_ci NOT NULL COMMENT '部门名称',
   `code` varchar(64) CHARACTER SET utf8mb3 COLLATE utf8mb3_general_ci DEFAULT NULL COMMENT '部门编码',
+  `plan_num` int DEFAULT NULL COMMENT '部门编制人数(管理员维护)；NULL=未配置，按真实在职显示',
   `main_employee_id` bigint DEFAULT NULL COMMENT '部门负责人ID',
   `leader_employee_id` bigint DEFAULT NULL COMMENT '分管领导',
   `create_user_id` bigint DEFAULT NULL COMMENT '创建人id',
@@ -2020,11 +2021,15 @@ CREATE TABLE IF NOT EXISTS `mp_schedule_permission` (
   `id` bigint NOT NULL AUTO_INCREMENT COMMENT '主键',
   `employee_id` bigint NOT NULL COMMENT '员工id(hrm_employee.employee_id)',
   `visible_scope` tinyint NOT NULL DEFAULT 1 COMMENT '审批信息可见范围 1=直属下属(默认) 2=全部员工 3=自定义',
+  `can_schedule` tinyint NOT NULL DEFAULT 0 COMMENT '可添加排班 0=否 1=是',
+  `can_view_statistics` tinyint NOT NULL DEFAULT 0 COMMENT '小程序数据统计 0=否 1=是',
+  `can_load_schedule` tinyint NOT NULL DEFAULT 0 COMMENT '小程序排班数据加载(我的排班/排班查询) 0=否 1=是',
+  `can_switch_company` tinyint NOT NULL DEFAULT 0 COMMENT '可切换公司(切到非本司) 0=否 1=是',
   `create_time` datetime DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
   `update_time` datetime DEFAULT NULL COMMENT '更新时间',
   PRIMARY KEY (`id`),
   UNIQUE KEY `uk_employee` (`employee_id`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='排班小程序员工权限';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='小程序员工权限（添加排班/数据统计/排班数据加载/可切换公司，均为员工级开关）';
 CREATE TABLE IF NOT EXISTS `mp_schedule_visible_employee` (
   `id` bigint NOT NULL AUTO_INCREMENT COMMENT '主键',
   `permission_employee_id` bigint NOT NULL COMMENT '配置的员工id',

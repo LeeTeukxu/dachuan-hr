@@ -19,11 +19,9 @@
 - 单双休表：`hrm_workweek_setting`（年+周次）、`hrm_workweek_day_setting`（年+日期）；接口 `queryYearSettings/initYearSettings/updateWeekType/queryMonthCalendar/saveMonthCalendar`。
 
 ## 近期变更
+- 2026-09-07：排班管理新增"批量设置休息"——点击日期矩阵单元格弹窗二选一（休息/继续排班），选休息调 `/workPlan/batchSetRestDay` 将生产体系月休四天的所有在职员工当日设为休息；小程序端同步。
 - 2026-09-07：排班申请审批菜单补齐——所有租户库（hr_0001~hr_0006）执行菜单补丁SQL，`seed-data.sql` 同步更新新租户开通流程；菜单路径 `/hrm/attendance/workPlanApplication`，接口权限 `/workPlanApplication` 映射到排班管理菜单。
 - 2026-09-05：排班管理"修改排班"产品/岗位/车间改为非必填——前端 `Scheduling.vue` 移除产品组数量、产品名称、岗位数量、岗位名称的验证；后端 `WorkPlanServiceImpl.buildPlanFromEmployeeDayAssignment` 移除"生产产品不能为空"和"岗位不能为空"校验。车间字段本身已无验证。
-- 2026-09-04：修复排班 Excel 上传"数字员工行/员工对不上"——导入 UserID 不再采信 `tbattendanceuser.UserID`（可能过期），统一取 `hrm_employee.dingtalk_user_id`（`resolveCanonicalPlanUserId`，与展示列表同口径）；员工缺钉钉ID时导入行明确报错（不再落库 null/兜底ID）。界面单日编辑路径（`resolveAttendanceUserByEmployeeId`）本轮未动。存量孤儿排班核查/清理 SQL 见 `docs/db-sync/plan-orphan-userid-cleanup-20260904.sql`。
-- 2026-08-25：排班矩阵车间自由输入与岗位时间组统一（`AddOrEdit.vue`/`Scheduling.vue` 均加 `workshopName`，`work-plan-utils.js` 全链路纳入）；修复新员工"未找到员工对应的考勤用户"——`resolveAttendanceUserByEmployeeId` 找不到考勤用户时从员工表取钉钉 ID 创建记录，无钉钉 ID 用员工 ID 兜底。
-- 2026-08-24：多产品多岗位修改排班（新增 query/saveEmployeeDayAssignments，完整替换 + 共享行保留）；添加排班人员缺失修复（人员改读员工表 + v3 缓存）；分页契约复核（`getData/loadIsLast` 接收 `pageNum/pageSize`，前端补映射）。
 
 ## 历史摘要
 - 2026-08-23：排班添加与单元格编辑产品模式（标准/自定义产品双轨，休息/调休免产品岗位）；岗位多行 `positionRows` 与全员补充选人。

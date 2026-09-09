@@ -25,7 +25,6 @@
   - **修复**：`ApiPermissionPathSupport` 中 `/hrmSalaryConfig` 改映射到 `/manage/salaryConfig`（菜单权限仍生效，认对菜单即可保存，员工 token 仍被第三分支拦截）；DB 种子 `sql/system/api-permission-seed.sql` 同步为 `/manage/salary,/manage/salaryConfig`，本地库已 UPDATE。`computeInsuranceData` 重构：读取 `socialSecurityStartMonth`，多格式容错解析（`yyyy-MM`/`yyyy-MM-dd`/`yyyy.MM`/`yyyy/MM`），空库首期=社保开始月、有历史则上期+1（社保开始月晚于上期+1 时切入），同年月已存在则提示不重复生成；新增 `getSuggestMonth` 返回建议月；支持前端手动传 `{year,month}`（未传自动算）。前端 `InsuranceScheme.vue`「新建次月报表」改为弹月份选择框（默认填建议月、可改）。
   - **验证**：本地 29082 实例 + 真实库——权限放开（salaryCfg token 保存成功）、空库首期按社保开始月 2026-09 生成、显式月份 2026-10 生成、重复 2026-09 被拒，全部通过；后端 `mvn compile` 通过，前端 `npm run build` 仅因沙箱 safe-delete 拦截旧产物目录而中断（SFC 已 2364 模块转译通过，非代码问题）。
 - 2026-08-22 一键设置保险金额：接口/员工级开关/前端按钮上线；修复"社保记录不能为空"（Jackson 字段名）；修复 hr_0003 2026-06 88 条"金额已含 3/15 但开关=0"脏数据（SQL 对齐后验证设置/取消闭环）；确认追加不受 type=12 启用限制。
-- 2026-08-22 医疗长期护理保险：type=12 项目行 + `is_enabled` 全链路（方案保存/月度编辑落库/合计过滤/自动补行），合计删除基本工资固定金额自动累加。
 
 ## 历史摘要
 - 2026-08-21：参保/停保名单（`insuredNum/stopNum` + 员工名单 tooltip 化）。

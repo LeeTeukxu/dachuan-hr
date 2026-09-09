@@ -1,5 +1,6 @@
 package com.tianye.hrsystem.modules.salary.dto;
 
+import com.baomidou.mybatisplus.annotation.TableField;
 import com.tianye.hrsystem.base.PageEntity;
 import io.swagger.annotations.ApiModelProperty;
 import lombok.Getter;
@@ -19,6 +20,10 @@ public class QuerySalaryArchivesListDto extends PageEntity {
 
     @ApiModelProperty("部门id")
     private Long deptId;
+
+    @ApiModelProperty(value = "部门ID列表(含子部门，由service层填充)")
+    @TableField(exist = false)
+    private List<Long> deptIds;
 
     @ApiModelProperty(value = "员工状态 1正式 2试用  3实习 4兼职 5劳务 6顾问 7返聘 8外包  11 在职 12 全职")
     private Integer status;

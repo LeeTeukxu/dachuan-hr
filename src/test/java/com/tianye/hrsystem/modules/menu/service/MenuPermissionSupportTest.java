@@ -145,6 +145,44 @@ public class MenuPermissionSupportTest {
         Assert.assertEquals("上传奖金(只计税)", tree.get(2).getChildren().get(1).getName());
     }
 
+    @Test
+    public void buildAuthorizedMenuTree_shouldKeepThirdLevelNode() {
+        List<tbmenu> menus = Arrays.asList(
+                menu(1000, 0, "权限管理", 1),
+                menu(1002, 1000, "角色权限分配", 1),
+                menu(5000, 1000, "排班小程序", 1),
+                menu(5020, 5000, "排班数据加载", 1)
+        );
+
+        List<tbmenu> tree = support.buildAuthorizedMenuTree(menus, Arrays.asList(1000, 5000, 5020));
+
+        Assert.assertEquals(1, tree.size());
+        Assert.assertEquals("权限管理", tree.get(0).getName());
+        tbmenu miniapp = tree.get(0).getChildren().get(0);
+        Assert.assertEquals("排班小程序", miniapp.getName());
+        Assert.assertNotNull(miniapp.getChildren());
+        Assert.assertEquals(1, miniapp.getChildren().size());
+        Assert.assertEquals("排班数据加载", miniapp.getChildren().get(0).getName());
+    }
+
+    @Test
+    public void buildAuthorizedMenuTree_shouldDropShellParent_whenNoAuthorizedDescendant() {
+        List<tbmenu> menus = Arrays.asList(
+                menu(1000, 0, "权限管理", 1),
+                menu(5000, 1000, "排班小程序", 1),
+                menu(5020, 5000, "排班数据加载", 1)
+        );
+
+        // 只勾了叶子节点，父链由 normalizeRoleMenus 自动补齐；若某个父节点下无任何已授权子孙则不应入树
+        List<tbmenu> tree = support.buildAuthorizedMenuTree(menus, Arrays.asList(1000, 5000));
+
+        Assert.assertEquals(1, tree.size());
+        Assert.assertEquals("权限管理", tree.get(0).getName());
+        Assert.assertEquals(1, tree.get(0).getChildren().size());
+        Assert.assertEquals("排班小程序", tree.get(0).getChildren().get(0).getName());
+        Assert.assertNull(tree.get(0).getChildren().get(0).getChildren());
+    }
+
     private static TbRoleMenu roleMenu(Integer roleId, Integer menuId) {
         TbRoleMenu roleMenu = new TbRoleMenu();
         roleMenu.setRoleId(roleId);

@@ -285,7 +285,17 @@
             and a.job_number like concat('%',#{data.jobNumber},'%')
         </if>
         <if test="data.deptId != null and data.deptId != ''">
-            and a.dept_id = #{data.deptId}
+            <choose>
+                <when test="data.deptIds != null and data.deptIds.size() > 0">
+                    and a.dept_id in
+                    <foreach collection="data.deptIds" item="deptId" open="(" separator="," close=")">
+                        #{deptId}
+                    </foreach>
+                </when>
+                <otherwise>
+                    and a.dept_id = #{data.deptId}
+                </otherwise>
+            </choose>
         </if>
         <if test="data.post != null and data.post != ''">
             and a.post like concat('%',#{data.post},'%')

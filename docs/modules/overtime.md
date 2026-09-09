@@ -27,8 +27,6 @@
 - 2026-09-07 `calc_process` 列漏执行修复：薪资导出读加班/夜班统计明细（实体含 `calcProcess`）时，租户库缺列报 `Unknown column 'calc_process'`；已在本地 6 个租户库（hr_0001~hr_0006，含脚本未覆盖的 hr_0006）补执行该列。**生产部署仍需执行 `../sql/2026-09-06_overtime_night_calc_process.sql`**（注意脚本只写了 hr_0001~hr_0005，新租户库需照 pattern 补）。
 - 2026-09-07 行政体系考勤导出批注：`downloadAdministrativeAttendance` 为事假/病假/调休/年假/出差/旷工/迟到/早退/上下班缺卡/总缺卡/加班 11 列加单元格批注（发生日期 + 计算过程，全中文）。日期来源：请假/出差/加班取 `tbattendanceapprove.workDate`（按类型分组），旷工/迟到/早退/缺卡取 `hrm_attendance_report_data` 按天明细（新查询 `queryAdministrativeAttendanceReportDetail` + `AdministrativeAttendanceReportDetailVO`）；批注文本由 `AdministrativeAttendanceExportSupport` 静态方法生成、行对象 `columnComments` 承载。**连带修复**：`resolveAdministrativeAttendanceApprovalType` 原不返回"出差"，合并分支死代码致出差列恒 0，现补 `tagName/subType 含"出差"` 判定（出差列开始有值，时数÷8 折天）。测试 `HrmProduceAttendanceServiceImplTest` 补 `salaryConfigService` mock（此前缺 mock 致 5 个下载用例在 `resolveAdministrativePayDay` NPE，属既有欠账）。
 - 2026-09-06 加班/夜班算法定版：①资格改"生产体系**或**固定月休"（OR）；②排班源切到 `tbplanlist`（钉钉排班快照弃用）；③加班按打卡分段累计有效工时（午休缺口天然排除；仅一对卡且非连班再扣2h），超8h计加班；④夜班=排班夜班别/结束过次日凌晨3点 **且** 下班时间≥次日凌晨3点；⑤明细新增 `calc_process` 计算过程列，前端明细弹窗/每日总览悬浮展示。改动 `HrmOvertimeNightStatisticsServiceImpl`、`OvertimeNightClockResolver`、明细实体/3个VO、`docs/sql/2026-09-06_overtime_night_calc_process.sql`（生产部署需全租户执行）、hr_web `Index.vue`/`DailyDetailPage.vue`/`overtime-night-utils.js`。重跑"开始统计"后生效。
-- 2026-09-05 行政考勤导出去离职员工修复：三源筛人补"在职判定"（`HrmProduceAttendanceServiceImpl`，按计薪口径判定在职/待离职/已离职+payDay）。
-- 2026-09-04 行政考勤导出漏人修复：行源改三源并集（统计明细→考勤汇总→行政员工表去重）。
 
 ## 历史摘要
 - 2026-08-26 应出勤天数修复：`rest_type=2` 员工（含行政归属）不按行政单双休误算，改"当月总天数 − productionMonthlyRestDays"。

@@ -88,12 +88,7 @@ public class MenuPermissionSupport {
             if (!isRoot(module) || !isEnabled(module) || !allowedIds.contains(module.getId())) {
                 continue;
             }
-            List<tbmenu> children = allMenus.stream()
-                    .filter(menu -> Objects.equals(menu.getPid(), module.getId()))
-                    .filter(this::isEnabled)
-                    .filter(menu -> allowedIds.contains(menu.getId()))
-                    .map(this::copyMenu)
-                    .collect(Collectors.toList());
+            List<tbmenu> children = buildAuthorizedChildren(allMenus, module.getId(), allowedIds);
             if (!children.isEmpty()) {
                 tbmenu copiedModule = copyMenu(module);
                 copiedModule.setChildren(children);
@@ -103,6 +98,31 @@ public class MenuPermissionSupport {
             }
         }
         return result;
+    }
+
+    /**
+     * 递归构建「已授权」的子菜单，支持任意层级。
+     * 原实现只挂一层子节点，三级节点（如 权限管理>排班小程序>排班数据加载）会丢失，
+     * 导致 CompanyInterceptor 按 path 鉴权时匹配不到而被拒绝。
+     * 规则：只保留 allowedIds 内且启用的节点；自身没有已授权子孙时，若是叶子页面则保留，否则整支剪掉（避免空壳父模块）。
+     */
+    private List<tbmenu> buildAuthorizedChildren(List<tbmenu> allMenus, Integer parentId, Set<Integer> allowedIds) {
+        List<tbmenu> children = new ArrayList<>();
+        if (allMenus == null) {
+            return children;
+        }
+        for (tbmenu menu : allMenus) {
+            if (!Objects.equals(menu.getPid(), parentId) || !isEnabled(menu) || !allowedIds.contains(menu.getId())) {
+                continue;
+            }
+            List<tbmenu> grandChildren = buildAuthorizedChildren(allMenus, menu.getId(), allowedIds);
+            tbmenu copied = copyMenu(menu);
+            if (!grandChildren.isEmpty()) {
+                copied.setChildren(grandChildren);
+            }
+            children.add(copied);
+        }
+        return children;
     }
 
     private void requireHasPageMenuIds(Collection<Integer> menuIds, Map<Integer, tbmenu> menuMap, String message) {

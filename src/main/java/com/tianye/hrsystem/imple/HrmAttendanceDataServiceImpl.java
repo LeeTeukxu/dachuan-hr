@@ -1,6 +1,7 @@
 package com.tianye.hrsystem.imple;
 
 import cn.hutool.core.collection.ListUtil;
+import com.tianye.hrsystem.common.MonthlyFullSyncGuard;
 import com.tianye.hrsystem.common.ProgressTracker;
 import com.tianye.hrsystem.common.Redis;
 import com.tianye.hrsystem.config.ApplicationContextHolder;
@@ -58,6 +59,8 @@ public class HrmAttendanceDataServiceImpl implements IHrmAttendanceDataService {
     // 前端用 updateTime >= queuedAt 判定完成信号属于本次运行，防止读到上一次运行的旧完成状态
     private static final String SYNC_UPDATE_TIME_KEY = "attendance:sync:update_time";
     private static final String SYNC_QUEUED_KEY = "attendance:sync:queued";
+    // 「本次运行为全量同步」待标记：Controller 校验通过后写入，后台同步成功时据此写自然月月锁、失败则清除
+    private static final String SYNC_FULLSYNC_PENDING_KEY = "attendance:sync:fullsync_pending";
     private static final String STATUS_RUNNING = "RUNNING";
     private static final String STATUS_SUCCESS = "SUCCESS";
     private static final String STATUS_FAILED = "FAILED";
@@ -108,6 +111,9 @@ public class HrmAttendanceDataServiceImpl implements IHrmAttendanceDataService {
     ProgressTracker progressTracker;
     @Autowired
     AdminMessageServiceImpl adminMessageService;
+
+    @Autowired
+    private MonthlyFullSyncGuard monthlyFullSyncGuard;
 
     // 同步失败自动重试：次数与退避基数可配（默认 2 次自动重试、60s 起步指数退避、封顶 5 分钟）
     @Value("${hrm.attendance-sync.auto-retry.attempts:2}")
@@ -471,21 +477,38 @@ public class HrmAttendanceDataServiceImpl implements IHrmAttendanceDataService {
         redis.setex(syncKey(SYNC_PROCESSED_EMPS_KEY), PROGRESS_EXPIRE_SECONDS, processedEmps);
         redis.setex(syncKey(SYNC_PARAMS_KEY), PROGRESS_EXPIRE_SECONDS, params);
         logger.info("[同步进度] 公司{} 步骤{}/7 {} 进度{}%", companyId, step, getStepLabel(step), state.progress);
-        // 同步更新通知中心的进度内容
-        updateSyncNotificationProgress(companyId, state.progress);
+        // 同步更新通知中心的进度内容（带已处理/总数明细，避免操作员干等百分比）
+        int totalCount = parseTotalCountFromParams(params);
+        int processedCount = countCsvItems(processedEmps);
+        String detail = buildSyncDetail(step, processedCount, totalCount);
+        updateSyncNotificationProgress(companyId, state.progress, detail);
+    }
+
+    /** 拼接考勤同步通知内容里百分号之后的明细段（步骤名 + 已处理员工计数）。 */
+    private String buildSyncDetail(int step, int processedCount, int totalCount) {
+        String label = getStepLabel(step);
+        if (processedCount > 0 && totalCount > 0) {
+            return label + " · 已处理 " + processedCount + " / 共 " + totalCount + " 员工";
+        }
+        return label;
     }
 
     /**
-     * 更新同步考勤通知的进度内容（实时百分比）
+     * 更新同步考勤通知的进度内容（实时百分比 + 明细）
      */
-    private void updateSyncNotificationProgress(String companyId, int percent) {
+    private void updateSyncNotificationProgress(String companyId, int percent, String detailMessage) {
         try {
             String messageIdStr = redis.get("attendance:notification:sync:" + companyId);
             if (messageIdStr == null || messageIdStr.isEmpty()) {
                 return;
             }
             Long messageId = Long.parseLong(messageIdStr);
-            adminMessageService.updateContent(messageId, "进度 " + percent + "%");
+            String content = "进度 " + percent + "%";
+            String detail = detailMessage == null ? "" : detailMessage.trim();
+            if (!detail.isEmpty()) {
+                content = content + " · " + detail;
+            }
+            adminMessageService.updateContent(messageId, content);
         } catch (Exception e) {
             logger.warn("[同步进度] 更新通知内容失败", e);
         }
@@ -504,6 +527,17 @@ public class HrmAttendanceDataServiceImpl implements IHrmAttendanceDataService {
         // 保留断点续传所需的字段
         redis.setex(syncKey(SYNC_PARAMS_KEY), PROGRESS_EXPIRE_SECONDS, params);
         logger.info("[同步进度] 公司{} 同步完成", companyId);
+
+        // 本次运行为全量同步且已成功 → 打自然月标记：本月该范围已完成一次全量同步；随后清除待标记
+        try {
+            if (redis.exists(syncKey(SYNC_FULLSYNC_PENDING_KEY))) {
+                monthlyFullSyncGuard.markFullSynced(MonthlyFullSyncGuard.BIZ_ATTENDANCE, companyId);
+                redis.del(syncKey(SYNC_FULLSYNC_PENDING_KEY));
+                logger.info("[同步进度] 公司{} 全量同步成功，已写本月标记", companyId);
+            }
+        } catch (Exception e) {
+            logger.warn("[同步进度] 公司{} 全量同步打本月标记失败", companyId, e);
+        }
         
         // 更新运行中通知的内容为"已完成"，并清理Redis标记
         try {
@@ -550,6 +584,26 @@ public class HrmAttendanceDataServiceImpl implements IHrmAttendanceDataService {
         progressTracker.saveProgress(SYNC_KEY_PREFIX, companyId, state);
         // 保留断点续传所需的字段
         redis.setex(syncKey(SYNC_PARAMS_KEY), PROGRESS_EXPIRE_SECONDS, params);
+        // 全量同步失败：清除「全量待标记」，使用户当月仍可重试
+        try {
+            if (redis.exists(syncKey(SYNC_FULLSYNC_PENDING_KEY))) {
+                redis.del(syncKey(SYNC_FULLSYNC_PENDING_KEY));
+                logger.info("[同步进度] 公司{} 全量同步失败，已清除本月全量待标记，允许当月重试", companyId);
+            }
+        } catch (Exception e) {
+            logger.warn("[同步进度] 公司{} 清除全量待标记失败", companyId, e);
+        }
+        // 更新运行中通知的内容为稳定的失败标记，并清理Redis标记（对齐审批"获取失败"语义，
+        // 供通知中心识别"该条是失败任务"并展示「继续」按钮；同时修复失败后误判仍在轮询的旧问题）
+        try {
+            String runningMsgIdStr = redis.get("attendance:notification:sync:" + companyId);
+            if (runningMsgIdStr != null && !runningMsgIdStr.isEmpty()) {
+                adminMessageService.updateContent(Long.parseLong(runningMsgIdStr), "同步失败");
+                redis.del("attendance:notification:sync:" + companyId);
+            }
+        } catch (Exception e) {
+            logger.warn("[同步进度] 更新运行中通知(失败)失败", e);
+        }
         logger.error("[同步进度] 公司{} 步骤{}/7 同步失败: {}", companyId, currentStep, message);
     }
 

@@ -11,6 +11,7 @@ import com.tianye.hrsystem.common.SMSUtils;
 import com.tianye.hrsystem.config.CompanyContext;
 import com.tianye.hrsystem.entity.po.AdminMessage;
 import com.tianye.hrsystem.entity.vo.OperationLog;
+import com.tianye.hrsystem.entity.po.HrmDept;
 import com.tianye.hrsystem.entity.po.HrmEmployee;
 import com.tianye.hrsystem.modules.salary.dto.ComputeSalaryDto;
 import com.tianye.hrsystem.modules.salary.dto.QuerySlipEmployeePageListDto;
@@ -18,7 +19,9 @@ import com.tianye.hrsystem.modules.salary.dto.SendSalarySlipDto;
 import com.tianye.hrsystem.modules.salary.dto.SmsUpDto;
 import com.tianye.hrsystem.modules.salary.entity.*;
 import com.tianye.hrsystem.modules.salary.mapper.HrmSalarySlipRecordMapper;
+import com.tianye.hrsystem.service.IHrmDeptService;
 import com.tianye.hrsystem.service.employee.IHrmEmployeeService;
+import com.tianye.hrsystem.util.RecursionUtil;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
@@ -63,6 +66,9 @@ public class HrmSalarySlipRecordService  extends BaseServiceImpl<HrmSalarySlipRe
     @Autowired
     private HrmSalarySlipService salarySlipService;
 
+    @Autowired
+    private IHrmDeptService hrmDeptService;
+
 
 //    private IAdminMessageService adminMessageService =ApplicationContextHolder.getBean(IAdminMessageService.class);
 
@@ -74,6 +80,16 @@ public class HrmSalarySlipRecordService  extends BaseServiceImpl<HrmSalarySlipRe
      */
     public Page<SlipEmployeeVO> querySlipEmployeePageList(QuerySlipEmployeePageListDto slipEmployeePageListBO)
     {
+        // 递归查找选中部门的所有子部门
+        if (slipEmployeePageListBO.getDeptId() != null) {
+            List<Long> allDeptIds = new ArrayList<>();
+            allDeptIds.add(slipEmployeePageListBO.getDeptId());
+            List<HrmDept> allDepts = hrmDeptService.list();
+            List<Long> childIds = RecursionUtil.getChildList(allDepts, "parentId", slipEmployeePageListBO.getDeptId(), "deptId", "deptId");
+            allDeptIds.addAll(childIds);
+            slipEmployeePageListBO.setDeptIds(allDeptIds);
+        }
+
         HrmSalaryMonthRecord salaryMonthRecord = salaryMonthRecordService.queryLastSalaryMonthRecord();
         Page<SlipEmployeeVO> page = slipRecordMapper.querySlipEmployeePageList(slipEmployeePageListBO.parse(), salaryMonthRecord.getSRecordId(), slipEmployeePageListBO);
         return page;

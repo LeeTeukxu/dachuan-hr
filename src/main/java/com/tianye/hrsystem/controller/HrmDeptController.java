@@ -103,6 +103,23 @@ public class HrmDeptController {
         }
     }
 
+    @PostMapping("/applyEmployeeDeptChanges")
+    @ApiOperation("确认落库：按清单批量刷新员工部门(同步钉钉部门后)")
+    public Result<java.util.Map<String, Object>> applyEmployeeDeptChanges(
+            @RequestBody java.util.Map<String, Object> body) {
+        try {
+            @SuppressWarnings("unchecked")
+            List<java.util.Map<String, String>> changes = body == null ? null
+                    : (List<java.util.Map<String, String>>) body.get("changes");
+            @SuppressWarnings("unchecked")
+            List<java.util.Map<String, String>> unmatched = body == null ? null
+                    : (List<java.util.Map<String, String>>) body.get("unmatched");
+            return Result.ok(deptDingTalkSyncService.applyEmployeeDeptChanges(changes, unmatched));
+        } catch (Exception ex) {
+            return Result.error(500, ex.getMessage());
+        }
+    }
+
     @GetMapping("/getExcludeNames")
     @ApiOperation("查询钉钉部门同步排除关键字")
     public Result<String> getExcludeNames() {

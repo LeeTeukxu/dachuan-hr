@@ -3,6 +3,7 @@ package com.tianye.hrsystem.autoTask;
 import com.tianye.hrsystem.common.EmployeeNotInDingTalkException;
 import com.tianye.hrsystem.config.CompanyContext;
 import com.tianye.hrsystem.config.CompanyDataSourceProvider;
+import com.tianye.hrsystem.enums.EmployeeEntryStatus;
 import com.tianye.hrsystem.model.HrmEmployee;
 import com.tianye.hrsystem.model.LoginUserInfo;
 import com.tianye.hrsystem.modules.company.service.TbCompanyListService;
@@ -62,27 +63,48 @@ public class DingTalkUserMappingRetryTask {
     }
 
     /**
-     * 手动重映射指定员工（员工管理「重新映射」按钮）。请求线程已带租户上下文。
+     * 手动重映射钉钉用户（员工管理「重新映射」按钮）。请求线程已带租户上下文。
      *
-     * @return mapped=本次成功映射的员工；failed=失败清单（employeeId/employeeName/message）
+     * 勾选模式：employeeIds 非空，仅处理指定的员工；
+     * 全量模式：employeeIds 为空（前端未勾选直接点按钮），自动补齐当前租户全部
+     * 「待映射」员工，即 dingtalk_user_id 为空 且 在职(is_del=0, entry_status in(1,3)) 的员工，
+     * 不再出现「未勾选=空数组=0人」的假结果。
+     *
+     * 已绑定 dingtalk_user_id 的员工一律跳过、不计数（避免「成功 N 人」里混入本就无需映射的人）。
+     *
+     * @return scope=selected|all（本次是勾选还是全量）
+     *         scanned=本次参与判断的目标人数
+     *         mapped=真正通过反查新补上 dingtalk_user_id 的员工
+     *         skipped=已绑定、无需映射而被跳过的员工
+     *         failed=映射失败清单（employeeId/employeeName/message）
      */
     public Map<String, Object> remapEmployees(List<Long> employeeIds) {
         List<Map<String, Object>> mapped = new ArrayList<>();
+        List<Map<String, Object>> skipped = new ArrayList<>();
         List<Map<String, Object>> failed = new ArrayList<>();
-        if (employeeIds == null || employeeIds.isEmpty()) {
-            return result(mapped, failed);
+        boolean selectedScope = employeeIds != null && !employeeIds.isEmpty();
+        // 目标集合：勾选模式按 id 精确取；全量模式自动取待映射在职员工
+        List<HrmEmployee> targets = new ArrayList<>();
+        if (selectedScope) {
+            for (Long employeeId : employeeIds) {
+                if (employeeId == null) {
+                    continue;
+                }
+                HrmEmployee emp = employeeRepository.findById(employeeId).orElse(null);
+                if (emp == null) {
+                    failed.add(failRow(employeeId, "", "员工不存在"));
+                    continue;
+                }
+                targets.add(emp);
+            }
+        } else {
+            targets = loadPendingEmployees();
         }
-        for (Long employeeId : employeeIds) {
-            if (employeeId == null) {
-                continue;
-            }
-            HrmEmployee employee = employeeRepository.findById(employeeId).orElse(null);
-            if (employee == null) {
-                failed.add(failRow(employeeId, "", "员工不存在"));
-                continue;
-            }
+        for (HrmEmployee employee : targets) {
+            Long employeeId = employee.getEmployeeId();
+            // 已绑定钉钉号 -> 跳过，不计数
             if (StringUtils.isNotBlank(employee.getDingtalkUserId())) {
-                mapped.add(okRow(employee));
+                skipped.add(okRow(employee));
                 continue;
             }
             try {
@@ -94,7 +116,23 @@ public class DingTalkUserMappingRetryTask {
                 failed.add(failRow(employeeId, employee.getEmployeeName(), ex.getMessage()));
             }
         }
-        return result(mapped, failed);
+        return result(selectedScope ? "selected" : "all", mapped, skipped, failed);
+    }
+
+    /**
+     * 全量模式取数：当前租户下 dingtalk_user_id 为空 且 在职（is_del=0，entry_status in(1,3)）的员工。
+     * 与员工管理其它在职口径一致（在职/待离职，排除待入职与已离职）。
+     */
+    private List<HrmEmployee> loadPendingEmployees() {
+        List<HrmEmployee> all = employeeRepository.findAllByIsDelAndEntryStatusIn(0,
+                Arrays.asList(EmployeeEntryStatus.IN.getValue(), EmployeeEntryStatus.TO_LEAVE.getValue()));
+        List<HrmEmployee> pending = new ArrayList<>();
+        for (HrmEmployee e : all) {
+            if (StringUtils.isBlank(e.getDingtalkUserId())) {
+                pending.add(e);
+            }
+        }
+        return pending;
     }
 
     private void retryCompany(String companyId) {
@@ -131,9 +169,15 @@ public class DingTalkUserMappingRetryTask {
         }
     }
 
-    private Map<String, Object> result(List<Map<String, Object>> mapped, List<Map<String, Object>> failed) {
+    private Map<String, Object> result(String scope,
+                                       List<Map<String, Object>> mapped,
+                                       List<Map<String, Object>> skipped,
+                                       List<Map<String, Object>> failed) {
         Map<String, Object> result = new LinkedHashMap<>();
+        result.put("scope", scope);
+        result.put("scanned", mapped.size() + skipped.size() + failed.size());
         result.put("mapped", mapped);
+        result.put("skipped", skipped);
         result.put("failed", failed);
         return result;
     }

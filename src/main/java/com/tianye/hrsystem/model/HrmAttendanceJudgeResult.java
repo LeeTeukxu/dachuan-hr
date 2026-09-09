@@ -2,6 +2,7 @@ package com.tianye.hrsystem.model;
 
 import javax.persistence.*;
 import java.io.Serializable;
+import java.math.BigDecimal;
 import java.util.Date;
 
 /**
@@ -70,6 +71,14 @@ public class HrmAttendanceJudgeResult implements Serializable {
     @Column(name = "miss_card_count")
     private Integer missCardCount;
 
+    /** 上班缺卡次数（钉钉报表"上班缺卡次数"列；与下班缺卡分列，避免考勤汇总把合计重复累加） */
+    @Column(name = "miss_card_on_count")
+    private Integer missCardOnCount;
+
+    /** 下班缺卡次数（钉钉报表"下班缺卡次数"列） */
+    @Column(name = "miss_card_off_count")
+    private Integer missCardOffCount;
+
     /** 旷工（应出勤日全天无有效打卡且无补卡） */
     @Column(name = "absenteeism")
     private Boolean absenteeism;
@@ -77,6 +86,10 @@ public class HrmAttendanceJudgeResult implements Serializable {
     /** 休息日出勤（不计缺勤，供加班统计复核） */
     @Column(name = "rest_day_work")
     private Boolean restDayWork;
+
+    /** 当日出勤工时（小时，保留2位；对齐钉钉"工作时长"：按打卡分段累计，连班不扣午休，不连班未分段扣2h） */
+    @Column(name = "work_hours")
+    private BigDecimal workHours;
 
     /** 判定时间 */
     @Column(name = "judge_time")
@@ -110,10 +123,16 @@ public class HrmAttendanceJudgeResult implements Serializable {
     public void setEarlyMinutes(Integer earlyMinutes) { this.earlyMinutes = earlyMinutes; }
     public Integer getMissCardCount() { return missCardCount; }
     public void setMissCardCount(Integer missCardCount) { this.missCardCount = missCardCount; }
+    public Integer getMissCardOnCount() { return missCardOnCount; }
+    public void setMissCardOnCount(Integer missCardOnCount) { this.missCardOnCount = missCardOnCount; }
+    public Integer getMissCardOffCount() { return missCardOffCount; }
+    public void setMissCardOffCount(Integer missCardOffCount) { this.missCardOffCount = missCardOffCount; }
     public Boolean getAbsenteeism() { return absenteeism; }
     public void setAbsenteeism(Boolean absenteeism) { this.absenteeism = absenteeism; }
     public Boolean getRestDayWork() { return restDayWork; }
     public void setRestDayWork(Boolean restDayWork) { this.restDayWork = restDayWork; }
+    public BigDecimal getWorkHours() { return workHours; }
+    public void setWorkHours(BigDecimal workHours) { this.workHours = workHours; }
     public Date getJudgeTime() { return judgeTime; }
     public void setJudgeTime(Date judgeTime) { this.judgeTime = judgeTime; }
 }

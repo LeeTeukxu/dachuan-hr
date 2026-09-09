@@ -12,8 +12,10 @@ import org.springframework.stereotype.Service;
 import org.springframework.web.bind.annotation.RequestBody;
 
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Objects;
+import java.util.Set;
 import java.util.stream.Collectors;
 
 @Service
@@ -37,18 +39,13 @@ public class TbMenuService extends BaseServiceImpl<TbMenuMapper, TbMenu> {
          if (listMenus.size() > 0) {
             List<tbmenu> listParents = listMenus.stream().filter(f -> f.getPid() == 0).collect(Collectors.toList());
             if (listParents.size() > 0) {
+                Set<Integer> visited = new HashSet<>();
                 listParents.forEach(f -> {
-                    tbmenu parentMenu = new tbmenu();
-                    parentMenu = f;
-                    List<tbmenu> listChildren = listMenus.stream().filter(x -> Objects.equals(x.getPid(), f.getId())).collect(Collectors.toList());
+                    tbmenu parentMenu = f;
+                    // 递归挂载子孙：原实现只挂一层子节点，三级节点（如 权限管理>排班小程序>排班数据加载）会丢失
+                    List<tbmenu> listChildren = buildChildren(listMenus, f.getId(), visited);
                     if (listChildren.size() > 0) {
-                        List<tbmenu> listChildrenResult = new ArrayList<>();
-                        listChildren.forEach(x -> {
-                            tbmenu childrenMenu = new tbmenu();
-                            childrenMenu = x;
-                            listChildrenResult.add(childrenMenu);
-                        });
-                        parentMenu.setChildren(listChildrenResult);
+                        parentMenu.setChildren(listChildren);
                     }
                     listResult.add(parentMenu);
                 });
@@ -57,5 +54,34 @@ public class TbMenuService extends BaseServiceImpl<TbMenuMapper, TbMenu> {
 
 //        return tbMenuMapper.queryMenuList(queryMenuBO);
         return listResult;
+    }
+
+    /**
+     * 递归构建指定父节点的子节点树，支持任意层级。
+     * 注意：pid/id 均为 Integer，必须用 Objects.equals 比较（超出 -128~127 缓存时 == 会误判）。
+     * visited 防止脏数据 pid 成环导致无限递归。
+     */
+    private List<tbmenu> buildChildren(List<tbmenu> listMenus, Integer parentId, Set<Integer> visited) {
+        List<tbmenu> listChildrenResult = new ArrayList<>();
+        for (tbmenu menu : listMenus) {
+            if (!Objects.equals(menu.getPid(), parentId)) {
+                continue;
+            }
+            Integer id = menu.getId();
+            if (id != null) {
+                if (visited.contains(id)) {
+                    continue;
+                }
+                visited.add(id);
+            }
+            if (id != null) {
+                List<tbmenu> grandChildren = buildChildren(listMenus, id, visited);
+                if (grandChildren.size() > 0) {
+                    menu.setChildren(grandChildren);
+                }
+            }
+            listChildrenResult.add(menu);
+        }
+        return listChildrenResult;
     }
 }

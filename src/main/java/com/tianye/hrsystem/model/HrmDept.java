@@ -35,6 +35,12 @@ public class HrmDept implements Serializable {
   @Column(name = "code")
   private String code;
 	/**
+	 * 部门编制人数（2026-09-10，4 部门统计编制真实化）：
+	 * NULL=未配置（按真实在职显示，无缺超编角标）；非 NULL=与在职人数对比算缺/超/已满。
+	 */
+  @Column(name = "plan_num")
+  private Integer planNum;
+	/**
 	 * 部门负责人ID
 	 */
   @Column(name = "main_employee_id")
@@ -102,6 +108,14 @@ public class HrmDept implements Serializable {
   }
   public void setCode(String code) {
     this.code = code;
+  }
+
+
+  public Integer getPlanNum() {
+    return planNum;
+  }
+  public void setPlanNum(Integer planNum) {
+    this.planNum = planNum;
   }
 
 

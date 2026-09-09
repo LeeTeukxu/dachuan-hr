@@ -11,6 +11,7 @@ import com.tianye.hrsystem.common.JWTTokenUtils;
 import com.tianye.hrsystem.entity.vo.EmployeeInfo;
 import com.tianye.hrsystem.model.LoginUserInfo;
 import com.tianye.hrsystem.model.successResult;
+import com.tianye.hrsystem.model.tbmenu;
 import com.tianye.hrsystem.modules.menu.service.ApiPermissionPathSupport;
 import org.apache.commons.lang.StringUtils;
 import org.slf4j.Logger;
@@ -43,6 +44,8 @@ public class CompanyInterceptor extends HandlerInterceptorAdapter {
 ApiPermissionPathSupport apiPermissionPathSupport;
 @Autowired
 com.tianye.hrsystem.common.TokenRevocationService tokenRevocationService;
+@Autowired
+com.tianye.hrsystem.modules.miniapp.service.IMiniAppPermissionService miniAppPermissionService;
 @Autowired
 com.tianye.hrsystem.mapper.LoginUserMapper loginUserMapper;
 Logger logger= LoggerFactory.getLogger(CompanyInterceptor.class);
@@ -116,6 +119,10 @@ Logger logger= LoggerFactory.getLogger(CompanyInterceptor.class);
                 List<String> requiredMenuPaths = apiPermissionPathSupport.resolveRequiredMenuPaths(urlPath, request.getContextPath());
                 String miniappPrefix = request.getContextPath() + "/mp";
                 boolean isMiniappPath = urlPath.equals(miniappPrefix) || urlPath.startsWith(miniappPrefix + "/");
+                String strippedPath = apiPermissionPathSupport.stripContextPath(urlPath, request.getContextPath());
+                // 小程序员工级能力（2026-09-09 起）：/mp/dashboard/* 等接口不再挂菜单，
+                // 改为按员工在 mp_schedule_permission 的配置判定，粒度到员工而非公司。
+                String requiredAbility = isMiniappPath ? apiPermissionPathSupport.resolveRequiredAbility(strippedPath) : null;
                 boolean allowed;
                 if (!requiredMenuPaths.isEmpty()) {
                     // 命中菜单权限映射：PC 账号按菜单权限校验；
@@ -128,6 +135,13 @@ Logger logger= LoggerFactory.getLogger(CompanyInterceptor.class);
                         allowed = hasMenuPermission(Info, requiredMenuPaths);
                         if (!allowed) result.raiseException(new Exception("当前账号没有访问该功能的权限"));
                     }
+                } else if (requiredAbility != null) {
+                    // 小程序员工级能力：按员工在 mp_schedule_permission 的配置判定（严格模式，未配置一律拒绝）
+                    Long employeeId = Info.getEmployeeId();
+                    boolean abilityOk = employeeId != null
+                            && miniAppPermissionService.hasAbility(employeeId, requiredAbility);
+                    allowed = abilityOk;
+                    if (!allowed) result.raiseException(new Exception("当前员工未开通该小程序功能，请联系管理员在「小程序权限」中配置"));
                 } else if (isMiniappPath) {
                     // 小程序端：员工身份无菜单树，仅校验 token；数据权限（本人数据/直属上级）在各接口内校验
                     allowed = true;
@@ -208,13 +222,28 @@ Logger logger= LoggerFactory.getLogger(CompanyInterceptor.class);
         if (info == null || info.getMenuTree() == null || info.getMenuTree().isEmpty()) {
             return false;
         }
-        return requiredMenuPaths.stream().anyMatch(requiredMenuPath -> info.getMenuTree().stream().anyMatch(module -> {
-                    if (requiredMenuPath.equals(module.getPath())) {
-                        return true;
-                    }
-                    return module.getChildren() != null && module.getChildren().stream()
-                            .anyMatch(menu -> requiredMenuPath.equals(menu.getPath()));
-                })
-        );
+        return requiredMenuPaths.stream().anyMatch(requiredMenuPath -> matchesMenuPath(info.getMenuTree(), requiredMenuPath));
+    }
+
+    /**
+     * 递归匹配任意层级菜单 path。原实现只匹配「模块 + 一层子菜单」，
+     * 三级菜单（如 权限管理>排班小程序>排班数据加载）会匹配不到而被误拒。
+     */
+    private boolean matchesMenuPath(List<tbmenu> menus, String requiredMenuPath) {
+        if (menus == null || menus.isEmpty()) {
+            return false;
+        }
+        for (tbmenu menu : menus) {
+            if (menu == null) {
+                continue;
+            }
+            if (requiredMenuPath.equals(menu.getPath())) {
+                return true;
+            }
+            if (matchesMenuPath(menu.getChildren(), requiredMenuPath)) {
+                return true;
+            }
+        }
+        return false;
     }
 }

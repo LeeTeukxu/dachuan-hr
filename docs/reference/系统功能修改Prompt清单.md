@@ -70,6 +70,8 @@
 - Service:`src/main/java/com/tianye/hrsystem/modules/dashboard/service/imple/DashboardServiceImpl.java`
 - Mapper:`src/main/resources/mapper/DashboardAggMapper.xml`
 - Vue:`src/views/hrm/home/Blank.vue`、`src/api/hrm/home/dashboard.js`、`src/views/hrm/system/DashboardPermission.vue`
+- 小程序统计端点:Controller=`src/main/java/com/tianye/hrsystem/controller/MiniAppDashboardController.java`
+- 小程序统计页(数据统计+部门统计两页,2026-09-10 持续演进:公司切换/编制/入离职趋势增强/横向条形图自绘/苹果风配色):`miniapp/hr_miniapp/src/pages/statistics/statistics.vue`、`miniapp/hr_miniapp/src/pages/statistics/deptStatistics.vue`、`src/api/modules/miniapp.js`(getFlowDetail/getPersonnelDetail 等)、自绘底栏组件 `miniapp/hr_miniapp/src/components/miniapp-tabbar/miniapp-tabbar.vue`
 
 ### 2.2 报表(旧版统计报表)
 **Prompt:**
@@ -79,6 +81,8 @@
 - Controller:`src/main/java/com/tianye/hrsystem/controller/HrmReportController.java`
 - Mapper:`src/main/resources/mapper/HrmAttendanceReportDataMapper.xml`
 - Entity:`src/main/java/com/tianye/hrsystem/model/HrmAttendanceReportData.java`、`HrmAttendanceReportField.java`
+
+**报表生成本地化(2026-09-08,钉钉月配额治理):** 报表 type=1/type=2 生成改走本地,不再调钉钉 `getcolumnval`/`getleavetimebynames`。核心 `imple/ddTalk/HrmAttendanceReportManager.java`(`UpdateAttendanceReport/Quick`→`generateLocalReportData` 遍历 `hrm_attendance_judge_result` 按 fieldName 映射本地值、`UpdateHolidayReport/Quick`→`generateLocalHolidayData` 读 `tbattendanceapprove` 按工作日均摊跨天假)。**新增依赖表**:`hrm_attendance_judge_result`(判定结果/出勤工时/缺卡分列)、`hrm_attendance_clock`(打卡多段)、`hrm_employee_over_time_record`(加班)、`tbattendanceapprove`(补卡/出差/外出/请假)、`hrm_workweek_setting`(跨天假工作日判定)。前置依赖:报表本地值来自判定表,须先 `/attendanceData/judgeRecompute` 重算本地判定。
 
 ## 三、组织与员工
 
@@ -97,6 +101,8 @@
 
 **同步钉钉数据(watch 迁移,2026-09-06):**`/hrmDept/syncDingTalkDept|getExcludeNames|saveExcludeNames`,核心 `imple/HrmDeptDingTalkSyncService.java`(listsub 递归+按名称 upsert+归属以钉钉为准覆盖+全量模式完全覆盖删除多余部门/分公司模式删关键字命中部门+员工自动转根部门+同名未占用行认领保证幂等+拉取失败重试3次),配置表 `hrm_dept_sync_config`,凭据 `imple/ddTalk/DDAccessToken.java`。
 
+**同步部门后同步该部门下员工部门(2026-09-08):**在同步钉钉部门基础上加"同步该部门下员工部门",端点 `/hrmDept/syncDingTalkDept`(改造,部门树落库后计算变更清单) + 新增 `/hrmDept/applyEmployeeDeptChanges`(body {changes,unmatched},确认落库刷 `hrm_employee.dept_id`),核心 `imple/HrmDeptDingTalkSyncService.java`(`collectEmployeeDeptChanges`/`resolveDingUseridByMobile`(getbymobile 反查仲裁)/`resolveDingMainDept`/`unmatchedOf`/`joinMobiles`/`notifyUnmatchedDeptSync`)。认人口径:userid 唯一命中优先,同 userid 绑多档案用各自手机号去钉钉反查定本人,不用姓名认人;离职档案照刷。未匹配项 `{name,dingMobile,sysMobile,reason}`(手机号拆两列仅展示参考,不参与认人);落库后有未匹配发 type=208 系统通知(`admin_message`,content JSON,recipientUser=0,label=8),枚举 `common/AdminMessageEnum`+`enums/AdminMessageEnum` 补 `HRM_DEPT_SYNC_UNMATCHED(208)`,发送照 `RetirementReminderTask.saveRemindMessage`。无表结构变更。前端:`src/views/hrm/dept/Dept.vue`(同步部门成功后弹「同步员工部门」两段式确认框,含未匹配明细拆「钉钉/系统手机号」两列)+`src/api/hrm/dept/dept.js`(applyEmployeeDeptChanges 传{changes,unmatched});通知中心 type=208 弹窗明细:`src/views/notification/NotificationList.vue`+`src/components/NotificationCenter.vue`。凭据同 `DDAccessToken`。
+
 ### 3.2 员工管理(花名册/列表/新增编辑/导入导出/动态字段)
 **Prompt:**
 这是 SpringBoot 多租户 SaaS 系统,我要修改【员工管理:员工花名册列表与筛选、员工新增/编辑/再次入职/办理离职/转正/调岗、花名册导入导出、部门明细导出、员工自定义动态字段】,相关数据库表:hrm_employee、hrm_employee_data、hrm_employee_field、hrm_employee_field_manage、hrm_employee_field_config、hrm_employee_change_record、hrm_employee_abnormal_change_record、hrm_employee_quit_info、hrm_key_post_config。只输出需要修改的 Controller、Service、Mapper、Entity、Vue 文件完整路径列表,不要生成修改代码,不要执行修改。
@@ -110,6 +116,8 @@
 - Vue:`src/views/hrm/employee/Index.vue` 及 `src/views/hrm/employee/Components/`(含 `attendance-sync-progress-utils.js`、`AddOrEdit.vue`、`DepAddEmployeeDialog.vue`)、`src/api/hrm/employee/employee.js`
 
 **批量设置与同步钉钉员工(watch 迁移,2026-09-06):**`/hrmEmployee/listForBatchSetting|batchSetting/save|syncDingTalkRoster`,核心 `imple/employee/HrmEmployeeDingTalkSyncService.java`(userid 绑定+手机号优先+姓名唯一兜底+预检 dryRun,冲突只报告,姓名/手机号/部门/工号不改仅预检提示,源头字段岗位/邮箱/入职日期/工作地点以钉钉覆盖,拉取失败重试3次),批量设置字段白名单在 `HrmEmployeeServiceImpl` switch 映射;需 DDL `docs/sql/2026-09-06_dingtalk_sync_and_batch_setting.sql`。
+
+**重新映射钉钉「未勾选=0人」bug 修复(2026-09-09):**员工管理顶栏「重新映射钉钉」按钮 → `POST /hrmEmployee/remapDingTalkUser` → `autoTask/DingTalkUserMappingRetryTask.remapEmployees`。原逻辑 `employeeIds` 为空(前端未勾选 `selectionList`=空数组)直接返回空结果 → 前端弹「成功 0 人」假结果。修复:空=全量模式,后端自动补齐当前租户待映射员工(`dingtalk_user_id` 空且 `is_del=0` 且 `entry_status in(1,3)`,复用 `hrmEmployeeRepository.findAllByIsDelAndEntryStatusIn`,口径同在职名单);返回升级 `{scope:selected|all, scanned, mapped:[], skipped:[], failed:[]}`,已绑定钉钉号者勾选/全量一律跳过不计数。底层 `ensureDingTalkUserId`(HrmAttendanceApprovalSyncServiceImpl)对已有号直接短路返回、不重查钉钉(本次不改)。前端 `src/views/hrm/employee/Index.vue` `handleRemapDingTalk`:未勾选点按钮先 `ElMessageBox.confirm` 提示将全量补齐,结果文案区分全量/勾选并展示 检查N/成功N/已绑定跳过N/失败N。无表结构变更。
 
 ### 3.3 员工合同
 **Prompt:**
@@ -482,13 +490,13 @@
 
 ### 7.12 排班小程序权限(员工级授权+审批可见范围)
 **Prompt:**
-这是 SpringBoot 多租户 SaaS 系统,我要修改【排班小程序权限:PC 配置页按员工授予"可添加排班"与审批可见范围三档(直属下属/全部员工/自定义指定),租户级菜单开关控制 /mp/mySchedule 等端点】,相关数据库表:mp_schedule_permission、mp_schedule_visible_employee、tbmenu(1021/5000/5020)、tb_api_permission、hrm_employee(parent_id 直属上级)。只输出需要修改的 Controller、Service、Mapper、Entity、Vue 文件完整路径列表,不要生成修改代码,不要执行修改。
+这是 SpringBoot 多租户 SaaS 系统,我要修改【排班小程序权限:PC 配置页(菜单 1021「小程序权限」,路径 /hrm/system/miniappPermission)按员工授予三项能力(可添加排班/数据统计/排班数据加载)与审批可见范围三档(直属下属/全部员工/自定义指定);三项能力由员工级字段 mp_schedule_permission.can_schedule|can_view_statistics|can_load_schedule(默认 0=关,严格模式)控制 /mp/schedule/*、/mp/dashboard/*、/mp/mySchedule*、/mp/schedule/query 等端点,未配置即拒,不再走租户级菜单开关】,相关数据库表:mp_schedule_permission、mp_schedule_visible_employee、tbmenu(1021)、tb_api_permission(仅留 /mpPermission)、hrm_employee(parent_id 直属上级)。只输出需要修改的 Controller、Service、Mapper、Entity、Vue 文件完整路径列表,不要生成修改代码,不要执行修改。
 
 **参考文件清单:**
-- Controller:`hainan/src/main/java/com/tianye/hrsystem/modules/miniapp/controller/MiniAppPermissionController.java`(/mpPermission/employeeList|save)、`controller/MiniAppController.java`(isSupervisor 返回 {isSupervisor,canSchedule}/save/employees 权限校验)、`config/CompanyInterceptor.java`(租户级菜单开关分支)
-- Service:`hainan/src/main/java/com/tianye/hrsystem/modules/miniapp/service/IMiniAppPermissionService.java` 及 impl、`WorkPlanApplicationServiceImpl.java`(listToApprove 三档可见范围；done=我批的∪可见已处理并集)
-- SQL:`hainan/docs/sql/2026-09-06_miniapp_schedule_permission.sql`(存量租户补数)、`schema-baseline.sql`/`seed-data.sql`/`api-permission-seed.sql`
-- Vue:`hr_web/src/views/hrm/system/MiniappPermission.vue`(员工列表+穿梭框选员工:按人员/按部门)、`hr_web/src/api/hrm/system/permission.js`
+- Controller:`hainan/src/main/java/com/tianye/hrsystem/modules/miniapp/controller/MiniAppPermissionController.java`(/mpPermission/employeeList|save|batchSave)、`controller/MiniAppController.java`(isSupervisor 返回 {isSupervisor,canSchedule}/save/employees 权限校验)、`config/CompanyInterceptor.java`(员工级能力分支:命中 ApiPermissionPathSupport.ABILITY_* 按 employeeId+mp_schedule_permission 判定,未配置即拒)
+- Service:`hainan/src/main/java/com/tianye/hrsystem/modules/miniapp/service/IMiniAppPermissionService.java`(hasAbility/saveSetting/batchSaveSettings) 及 impl、`modules/menu/service/ApiPermissionPathSupport.java`(ABILITY_STATISTICS|SCHEDULE_VIEW|SCHEDULE_CREATE + 接口→能力映射)、`WorkPlanApplicationServiceImpl.java`(listToApprove 三档可见范围；done=我批的∪可见已处理并集)
+- SQL:`hainan/docs/sql/2026-09-06_miniapp_schedule_permission.sql`(存量租户补数)、`2026-09-09_mp_employee_permission.sql`(员工级改造:各租户库加三列+存量 can_schedule=1+菜单 1021 改名/删 1030/5000/5020;hrsystem 清 /mp 菜单映射保留 /mpPermission)、`schema-baseline.sql`/`seed-data.sql`/`api-permission-seed.sql`
+- Vue:`hr_web/src/views/hrm/system/MiniappPermission.vue`(员工列表+三能力开关[添加排班/数据统计/排班数据加载]+审批可见范围三档+批量设置弹窗)、`hr_web/src/api/hrm/system/permission.js`(mpPermissionEmployeeList/mpPermissionSave/mpPermissionBatchSave)
 - 小程序:`miniapp/hr_miniapp/src/pages/index/index.vue`(添加排班入口按 canSchedule 显隐)、`miniapp/hr_miniapp/src/pages/addschedule/addschedule.vue`(onLoad canSchedule 门禁)、`miniapp/hr_miniapp/src/api/modules/miniapp.js`(isSupervisor)
 
 ### 7.13 本地考勤判定引擎(弃用钉钉排班推送)
@@ -501,7 +509,7 @@
 - 映射前置:`hainan/src/main/java/com/tianye/hrsystem/imple/HrmAttendanceApprovalSyncServiceImpl.java`(ensureDingTalkUserId)、`imple/employee/HrmEmployeeServiceImpl.java`(add/updateInformation/updateCommunication 钩子)、`autoTask/DingTalkUserMappingRetryTask.java`(每日重试+remapEmployees)、`common/EmployeeNotInDingTalkException.java`
 - 降表依赖:`modules/miniapp/service/impl/MiniAppScheduleServiceImpl.java`、`modules/workplanapplication/service/impl/WorkPlanApplicationServiceImpl.java`、`modules/workplan/service/impl/WorkPlanProductServiceImpl.java`、`controller/WorkPlanListController.java`
 - 接口:`controller/HrmAttendanceDataController.java`(/attendanceData/judgeRecompute)
-- SQL:`hainan/docs/sql/2026-09-06_attendance_judge.sql`(租户库)
+- SQL:`hainan/docs/sql/2026-09-06_attendance_judge.sql`(租户库)、`2026-09-08_hrm_attendance_judge_result_work_hours.sql`(加 work_hours/miss_card_on_count/miss_card_off_count 三列,本地 6 库已执行,生产待执行;供报表 type=1 本地化算出勤工时与缺卡分列)
 
 ---
 

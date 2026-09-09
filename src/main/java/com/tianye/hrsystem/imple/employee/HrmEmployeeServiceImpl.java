@@ -52,6 +52,7 @@ import com.tianye.hrsystem.service.IHrmDeptService;
 import com.tianye.hrsystem.service.IHrmRecruitCandidateService;
 import com.tianye.hrsystem.service.employee.*;
 import com.tianye.hrsystem.util.EmployeeUtil;
+import com.tianye.hrsystem.util.RecursionUtil;
 import com.tianye.hrsystem.util.FieldUtil;
 import com.tianye.hrsystem.util.TransferUtil;
 import org.slf4j.Logger;
@@ -1682,6 +1683,16 @@ public class HrmEmployeeServiceImpl extends BaseServiceImpl<HrmEmployeeMapper, H
 
     @Override
     public BasePage<Map<String, Object>> queryPageList(QueryEmployeePageListBO employeePageListBO) {
+        // 递归查找选中部门的所有子部门
+        if (employeePageListBO.getDeptId() != null) {
+            List<Long> allDeptIds = new ArrayList<>();
+            allDeptIds.add(employeePageListBO.getDeptId());
+            List<HrmDept> allDepts = hrmDeptService.list();
+            List<Long> childIds = RecursionUtil.getChildList(allDepts, "parentId", employeePageListBO.getDeptId(), "deptId", "deptId");
+            allDeptIds.addAll(childIds);
+            employeePageListBO.setDeptIds(allDeptIds);
+        }
+
         List<Long> birthdayEmpList = null;
         int six = 6;
         if (employeePageListBO.getToDoRemind() != null && employeePageListBO.getToDoRemind() == six) {
@@ -4395,11 +4406,19 @@ public class HrmEmployeeServiceImpl extends BaseServiceImpl<HrmEmployeeMapper, H
 
     @Override
     public List<SimpleHrmEmployeeVO> listForBatchSetting(List<Long> deptIds) {
+        // 递归查找所有选中部门的子部门
+        List<Long> allDeptIds = new ArrayList<>(deptIds);
+        List<HrmDept> allDepts = hrmDeptService.list();
+        for (Long deptId : deptIds) {
+            List<Long> childIds = RecursionUtil.getChildList(allDepts, "parentId", deptId, "deptId", "deptId");
+            allDeptIds.addAll(childIds);
+        }
+
         List<HrmEmployee> employees = lambdaQuery()
                 .select(HrmEmployee::getEmployeeId, HrmEmployee::getEmployeeName, HrmEmployee::getMobile,
                         HrmEmployee::getDeptId, HrmEmployee::getPost, HrmEmployee::getJobNumber)
                 .eq(HrmEmployee::getIsDel, 0)
-                .in(CollectionUtil.isNotEmpty(deptIds), HrmEmployee::getDeptId, deptIds)
+                .in(CollectionUtil.isNotEmpty(allDeptIds), HrmEmployee::getDeptId, allDeptIds)
                 .list();
         return employees.stream().map(e -> {
             SimpleHrmEmployeeVO vo = new SimpleHrmEmployeeVO();

@@ -86,27 +86,75 @@
     <select id="personnelOverview" resultType="java.util.Map">
         SELECT
             (SELECT COUNT(*) FROM hrm_employee e WHERE <include refid="activeCond"/>
-              <if test="deptId != null">AND e.dept_id = #{deptId}</if>
+              <if test="deptId != null">AND e.dept_id IN (
+                WITH RECURSIVE dept_tree AS (
+                    SELECT dept_id FROM hrm_dept WHERE dept_id = #{deptId}
+                    UNION ALL
+                    SELECT d2.dept_id FROM hrm_dept d2
+                    JOIN dept_tree dt ON d2.parent_id = dt.dept_id
+                )
+                SELECT dept_id FROM dept_tree
+            )</if>
               <include refid="companyDeptFilter"/>) AS activeCount,
             (SELECT COUNT(*) FROM hrm_employee e
              WHERE e.is_del = 0 AND e.entry_time BETWEEN #{start} AND #{end}
-              <if test="deptId != null">AND e.dept_id = #{deptId}</if>
+              <if test="deptId != null">AND e.dept_id IN (
+                WITH RECURSIVE dept_tree AS (
+                    SELECT dept_id FROM hrm_dept WHERE dept_id = #{deptId}
+                    UNION ALL
+                    SELECT d2.dept_id FROM hrm_dept d2
+                    JOIN dept_tree dt ON d2.parent_id = dt.dept_id
+                )
+                SELECT dept_id FROM dept_tree
+            )</if>
               <include refid="companyDeptFilter"/>) AS hiredCount,
             (SELECT COUNT(*) FROM hrm_employee_quit_info q
               JOIN hrm_employee e ON e.employee_id = q.employee_id AND e.is_del = 0
-              <if test="deptId != null">AND e.dept_id = #{deptId}</if>
+              <if test="deptId != null">AND e.dept_id IN (
+                WITH RECURSIVE dept_tree AS (
+                    SELECT dept_id FROM hrm_dept WHERE dept_id = #{deptId}
+                    UNION ALL
+                    SELECT d2.dept_id FROM hrm_dept d2
+                    JOIN dept_tree dt ON d2.parent_id = dt.dept_id
+                )
+                SELECT dept_id FROM dept_tree
+            )</if>
               <include refid="companyDeptFilter"/>
              WHERE COALESCE(q.salary_settlement_time, q.plan_quit_time, q.apply_quit_time) BETWEEN #{start} AND #{end}) AS quitCount,
             (SELECT COUNT(*) FROM hrm_employee e WHERE e.is_del = 0 AND e.entry_status IN (1, 3) AND e.entry_time &lt;= #{prevEnd}
-              <if test="deptId != null">AND e.dept_id = #{deptId}</if>
+              <if test="deptId != null">AND e.dept_id IN (
+                WITH RECURSIVE dept_tree AS (
+                    SELECT dept_id FROM hrm_dept WHERE dept_id = #{deptId}
+                    UNION ALL
+                    SELECT d2.dept_id FROM hrm_dept d2
+                    JOIN dept_tree dt ON d2.parent_id = dt.dept_id
+                )
+                SELECT dept_id FROM dept_tree
+            )</if>
               <include refid="companyDeptFilter"/>) AS prevActiveCount,
             (SELECT ROUND(AVG(TIMESTAMPDIFF(YEAR, e.date_of_birth, #{end})), 1) FROM hrm_employee e
               WHERE <include refid="activeCond"/> AND e.date_of_birth IS NOT NULL
-              <if test="deptId != null">AND e.dept_id = #{deptId}</if>
+              <if test="deptId != null">AND e.dept_id IN (
+                WITH RECURSIVE dept_tree AS (
+                    SELECT dept_id FROM hrm_dept WHERE dept_id = #{deptId}
+                    UNION ALL
+                    SELECT d2.dept_id FROM hrm_dept d2
+                    JOIN dept_tree dt ON d2.parent_id = dt.dept_id
+                )
+                SELECT dept_id FROM dept_tree
+            )</if>
               <include refid="companyDeptFilter"/>) AS avgAge,
             (SELECT ROUND(AVG(TIMESTAMPDIFF(YEAR, e.entry_time, #{end})), 1) FROM hrm_employee e
               WHERE <include refid="activeCond"/>
-              <if test="deptId != null">AND e.dept_id = #{deptId}</if>
+              <if test="deptId != null">AND e.dept_id IN (
+                WITH RECURSIVE dept_tree AS (
+                    SELECT dept_id FROM hrm_dept WHERE dept_id = #{deptId}
+                    UNION ALL
+                    SELECT d2.dept_id FROM hrm_dept d2
+                    JOIN dept_tree dt ON d2.parent_id = dt.dept_id
+                )
+                SELECT dept_id FROM dept_tree
+            )</if>
               <include refid="companyDeptFilter"/>) AS avgTenure
         FROM DUAL
     </select>
@@ -148,7 +196,15 @@
         FROM hrm_employee e
         LEFT JOIN hrm_dept d ON d.dept_id = e.dept_id
         WHERE <include refid="activeCond"/>
-        <if test="deptId != null">AND e.dept_id = #{deptId}</if>
+        <if test="deptId != null">AND e.dept_id IN (
+                WITH RECURSIVE dept_tree AS (
+                    SELECT dept_id FROM hrm_dept WHERE dept_id = #{deptId}
+                    UNION ALL
+                    SELECT d2.dept_id FROM hrm_dept d2
+                    JOIN dept_tree dt ON d2.parent_id = dt.dept_id
+                )
+                SELECT dept_id FROM dept_tree
+            )</if>
         <include refid="companyDeptFilter"/>
         <choose>
             <when test="dim == 'sex'">GROUP BY e.sex</when>
@@ -183,7 +239,15 @@
                    THEN 1 END) AS value
             FROM hrm_dept d
             LEFT JOIN hrm_employee e ON e.dept_id = d.dept_id
-            <if test="deptId != null">WHERE d.dept_id = #{deptId}</if>
+            <if test="deptId != null">WHERE d.dept_id IN (
+                WITH RECURSIVE dept_tree AS (
+                    SELECT dept_id FROM hrm_dept WHERE dept_id = #{deptId}
+                    UNION ALL
+                    SELECT d2.dept_id FROM hrm_dept d2
+                    JOIN dept_tree dt ON d2.parent_id = dt.dept_id
+                )
+                SELECT dept_id FROM dept_tree
+            )</if>
             <if test="deptId == null and rootDeptId != null">WHERE d.dept_id IN (
                 WITH RECURSIVE dept_tree AS (
                     SELECT dept_id FROM hrm_dept WHERE dept_id = #{rootDeptId}
@@ -216,7 +280,15 @@
         SELECT DATE_FORMAT(e.entry_time, '${granule}') AS period, COUNT(*) AS cnt
         FROM hrm_employee e
         WHERE e.is_del = 0 AND e.entry_time BETWEEN #{start} AND #{end}
-        <if test="deptId != null">AND e.dept_id = #{deptId}</if>
+        <if test="deptId != null">AND e.dept_id IN (
+                WITH RECURSIVE dept_tree AS (
+                    SELECT dept_id FROM hrm_dept WHERE dept_id = #{deptId}
+                    UNION ALL
+                    SELECT d2.dept_id FROM hrm_dept d2
+                    JOIN dept_tree dt ON d2.parent_id = dt.dept_id
+                )
+                SELECT dept_id FROM dept_tree
+            )</if>
         <include refid="companyDeptFilter"/>
         GROUP BY period
         ORDER BY period
@@ -227,7 +299,15 @@
                COUNT(*) AS cnt
         FROM hrm_employee_quit_info q
         JOIN hrm_employee e ON e.employee_id = q.employee_id AND e.is_del = 0
-        <if test="deptId != null">AND e.dept_id = #{deptId}</if>
+        <if test="deptId != null">AND e.dept_id IN (
+                WITH RECURSIVE dept_tree AS (
+                    SELECT dept_id FROM hrm_dept WHERE dept_id = #{deptId}
+                    UNION ALL
+                    SELECT d2.dept_id FROM hrm_dept d2
+                    JOIN dept_tree dt ON d2.parent_id = dt.dept_id
+                )
+                SELECT dept_id FROM dept_tree
+            )</if>
         <include refid="companyDeptFilter"/>
         WHERE COALESCE(q.salary_settlement_time, q.plan_quit_time, q.apply_quit_time) BETWEEN #{start} AND #{end}
         <if test="quitType != null">AND q.quit_type = #{quitType}</if>
@@ -244,7 +324,15 @@
         LEFT JOIN hrm_dept d ON d.dept_id = e.dept_id
         JOIN hrm_key_post_config k ON k.post_name = e.post
         WHERE COALESCE(q.salary_settlement_time, q.plan_quit_time, q.apply_quit_time) BETWEEN #{start} AND #{end}
-        <if test="deptId != null">AND e.dept_id = #{deptId}</if>
+        <if test="deptId != null">AND e.dept_id IN (
+                WITH RECURSIVE dept_tree AS (
+                    SELECT dept_id FROM hrm_dept WHERE dept_id = #{deptId}
+                    UNION ALL
+                    SELECT d2.dept_id FROM hrm_dept d2
+                    JOIN dept_tree dt ON d2.parent_id = dt.dept_id
+                )
+                SELECT dept_id FROM dept_tree
+            )</if>
         <include refid="companyDeptFilter"/>
         <if test="quitType != null">AND q.quit_type = #{quitType}</if>
         GROUP BY period, d.dept_id
@@ -258,7 +346,15 @@
         LEFT JOIN hrm_dept d ON d.dept_id = e.dept_id
         JOIN hrm_key_post_config k ON k.post_name = e.post
         WHERE COALESCE(q.salary_settlement_time, q.plan_quit_time, q.apply_quit_time) BETWEEN #{start} AND #{end}
-        <if test="deptId != null">AND e.dept_id = #{deptId}</if>
+        <if test="deptId != null">AND e.dept_id IN (
+                WITH RECURSIVE dept_tree AS (
+                    SELECT dept_id FROM hrm_dept WHERE dept_id = #{deptId}
+                    UNION ALL
+                    SELECT d2.dept_id FROM hrm_dept d2
+                    JOIN dept_tree dt ON d2.parent_id = dt.dept_id
+                )
+                SELECT dept_id FROM dept_tree
+            )</if>
         <include refid="companyDeptFilter"/>
         <if test="quitType != null">AND q.quit_type = #{quitType}</if>
     </select>
@@ -273,7 +369,15 @@
         FROM hrm_employee e
         LEFT JOIN hrm_dept d ON d.dept_id = e.dept_id
         WHERE <include refid="activeCond"/>
-        <if test="deptId != null">AND e.dept_id = #{deptId}</if>
+        <if test="deptId != null">AND e.dept_id IN (
+                WITH RECURSIVE dept_tree AS (
+                    SELECT dept_id FROM hrm_dept WHERE dept_id = #{deptId}
+                    UNION ALL
+                    SELECT d2.dept_id FROM hrm_dept d2
+                    JOIN dept_tree dt ON d2.parent_id = dt.dept_id
+                )
+                SELECT dept_id FROM dept_tree
+            )</if>
         <include refid="companyDeptFilter"/>
         GROUP BY kx, ks
     </select>
@@ -390,7 +494,15 @@
         JOIN hrm_employee e ON e.employee_id = q.employee_id AND e.is_del = 0
         LEFT JOIN hrm_dept d ON d.dept_id = e.dept_id
         WHERE COALESCE(q.salary_settlement_time, q.plan_quit_time, q.apply_quit_time) BETWEEN #{start} AND #{end}
-        <if test="deptId != null">AND e.dept_id = #{deptId}</if>
+        <if test="deptId != null">AND e.dept_id IN (
+                WITH RECURSIVE dept_tree AS (
+                    SELECT dept_id FROM hrm_dept WHERE dept_id = #{deptId}
+                    UNION ALL
+                    SELECT d2.dept_id FROM hrm_dept d2
+                    JOIN dept_tree dt ON d2.parent_id = dt.dept_id
+                )
+                SELECT dept_id FROM dept_tree
+            )</if>
         <include refid="companyDeptFilter"/>
         <if test="quitType != null">AND q.quit_type = #{quitType}</if>
         <choose>
@@ -424,7 +536,15 @@
             LEFT JOIN hrm_dept d ON d.dept_id = e.dept_id
             WHERE e.is_del = 0
             <if test="entryStatus != null">AND e.entry_status = #{entryStatus}</if>
-            <if test="deptId != null">AND e.dept_id = #{deptId}</if>
+            <if test="deptId != null">AND e.dept_id IN (
+                WITH RECURSIVE dept_tree AS (
+                    SELECT dept_id FROM hrm_dept WHERE dept_id = #{deptId}
+                    UNION ALL
+                    SELECT d2.dept_id FROM hrm_dept d2
+                    JOIN dept_tree dt ON d2.parent_id = dt.dept_id
+                )
+                SELECT dept_id FROM dept_tree
+            )</if>
             <include refid="companyDeptFilter"/>
             <if test="sex != null">AND e.sex = #{sex}</if>
             <if test="edu != null">AND (<include refid="eduExpr"/>) = #{edu}</if>
@@ -462,7 +582,15 @@
             FROM hrm_employee e
             LEFT JOIN hrm_dept d ON d.dept_id = e.dept_id
             WHERE e.is_del = 0 AND e.entry_time BETWEEN #{start} AND #{end}
-            <if test="deptId != null">AND e.dept_id = #{deptId}</if>
+            <if test="deptId != null">AND e.dept_id IN (
+                WITH RECURSIVE dept_tree AS (
+                    SELECT dept_id FROM hrm_dept WHERE dept_id = #{deptId}
+                    UNION ALL
+                    SELECT d2.dept_id FROM hrm_dept d2
+                    JOIN dept_tree dt ON d2.parent_id = dt.dept_id
+                )
+                SELECT dept_id FROM dept_tree
+            )</if>
             <include refid="companyDeptFilter"/>
             UNION ALL
             SELECT
@@ -483,7 +611,15 @@
             JOIN hrm_employee e ON e.employee_id = q.employee_id AND e.is_del = 0
             LEFT JOIN hrm_dept d ON d.dept_id = e.dept_id
             WHERE COALESCE(q.salary_settlement_time, q.plan_quit_time, q.apply_quit_time) BETWEEN #{start} AND #{end}
-            <if test="deptId != null">AND e.dept_id = #{deptId}</if>
+            <if test="deptId != null">AND e.dept_id IN (
+                WITH RECURSIVE dept_tree AS (
+                    SELECT dept_id FROM hrm_dept WHERE dept_id = #{deptId}
+                    UNION ALL
+                    SELECT d2.dept_id FROM hrm_dept d2
+                    JOIN dept_tree dt ON d2.parent_id = dt.dept_id
+                )
+                SELECT dept_id FROM dept_tree
+            )</if>
             <include refid="companyDeptFilter"/>
             <if test="quitType != null">AND q.quit_type = #{quitType}</if>
         ) t
@@ -593,7 +729,15 @@
             JOIN hrm_employee e ON e.employee_id = er.employee_id AND e.is_del = 0
             LEFT JOIN hrm_dept d ON d.dept_id = e.dept_id
             WHERE er.year = #{year} AND er.month = #{month}
-            <if test="deptId != null">AND e.dept_id = #{deptId}</if>
+            <if test="deptId != null">AND e.dept_id IN (
+                WITH RECURSIVE dept_tree AS (
+                    SELECT dept_id FROM hrm_dept WHERE dept_id = #{deptId}
+                    UNION ALL
+                    SELECT d2.dept_id FROM hrm_dept d2
+                    JOIN dept_tree dt ON d2.parent_id = dt.dept_id
+                )
+                SELECT dept_id FROM dept_tree
+            )</if>
             <include refid="companyDeptFilter"/>
             GROUP BY er.s_emp_record_id, e.employee_id, e.employee_name, d.name, e.post
         ) t
@@ -612,7 +756,15 @@
         WHERE i.indicator_type = #{indicatorType}
           AND (i.stat_year > #{startYear} OR (i.stat_year = #{startYear} AND i.stat_month >= #{startMonth}))
           AND (i.stat_year &lt; #{endYear} OR (i.stat_year = #{endYear} AND i.stat_month &lt;= #{endMonth}))
-        <if test="deptId != null">AND i.dept_id = #{deptId}</if>
+        <if test="deptId != null">AND i.dept_id IN (
+            WITH RECURSIVE dept_tree AS (
+                SELECT dept_id FROM hrm_dept WHERE dept_id = #{deptId}
+                UNION ALL
+                SELECT d2.dept_id FROM hrm_dept d2
+                JOIN dept_tree dt ON d2.parent_id = dt.dept_id
+            )
+            SELECT dept_id FROM dept_tree
+        )</if>
         <if test="rootDeptId != null">AND i.dept_id IN (
             WITH RECURSIVE dept_tree AS (
                 SELECT dept_id FROM hrm_dept WHERE dept_id = #{rootDeptId}
@@ -639,7 +791,15 @@
         FROM hrm_performance_indicator i
         WHERE (i.stat_year > #{startYear} OR (i.stat_year = #{startYear} AND i.stat_month >= #{startMonth}))
           AND (i.stat_year &lt; #{endYear} OR (i.stat_year = #{endYear} AND i.stat_month &lt;= #{endMonth}))
-        <if test="deptId != null">AND i.dept_id = #{deptId}</if>
+        <if test="deptId != null">AND i.dept_id IN (
+            WITH RECURSIVE dept_tree AS (
+                SELECT dept_id FROM hrm_dept WHERE dept_id = #{deptId}
+                UNION ALL
+                SELECT d2.dept_id FROM hrm_dept d2
+                JOIN dept_tree dt ON d2.parent_id = dt.dept_id
+            )
+            SELECT dept_id FROM dept_tree
+        )</if>
         <if test="rootDeptId != null">AND i.dept_id IN (
             WITH RECURSIVE dept_tree AS (
                 SELECT dept_id FROM hrm_dept WHERE dept_id = #{rootDeptId}

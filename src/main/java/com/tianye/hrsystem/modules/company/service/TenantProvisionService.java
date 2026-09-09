@@ -370,16 +370,33 @@ public class TenantProvisionService {
      */
     private void insertDdAccount(Connection conn, String systemDb, String companyId,
                                  String appKey, String appsecret, String agentId) throws Exception {
+        // ddAccount.id 为主键 int NOT NULL，但历史建表未设 AUTO_INCREMENT 也无默认值，
+        // 插入时必须显式提供 id（全环境通用，无需依赖库表结构是否为自增）。
+        long id = nextDdAccountId(conn, systemDb);
         String sql = "INSERT INTO `" + systemDb + "`.`ddAccount` " +
-                "(companyId, appKey, appsecret, agentId, createTime) " +
-                "VALUES (?,?,?,?,NOW())";
+                "(id, companyId, appKey, appsecret, agentId, createTime) " +
+                "VALUES (?,?,?,?,?,NOW())";
         try (PreparedStatement ps = conn.prepareStatement(sql)) {
-            ps.setString(1, companyId);
-            ps.setString(2, appKey);
-            ps.setString(3, appsecret);
-            ps.setString(4, agentId);
+            ps.setLong(1, id);
+            ps.setString(2, companyId);
+            ps.setString(3, appKey);
+            ps.setString(4, appsecret);
+            ps.setString(5, agentId);
             ps.executeUpdate();
         }
+    }
+
+    /** 取 ddAccount 下一个可用 id（MAX(id)+1）；表为空时从 1 开始 */
+    private long nextDdAccountId(Connection conn, String systemDb) throws Exception {
+        long max = 0;
+        try (Statement st = conn.createStatement();
+             ResultSet rs = st.executeQuery(
+                     "SELECT IFNULL(MAX(id),0) FROM `" + systemDb + "`.`ddAccount`")) {
+            if (rs.next()) {
+                max = rs.getLong(1);
+            }
+        }
+        return max + 1;
     }
 
     /**

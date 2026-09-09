@@ -26,6 +26,7 @@ import com.tianye.hrsystem.modules.role.bo.QueryRoleTypesBO;
 import com.tianye.hrsystem.modules.role.service.TbRoleTypesService;
 import com.tianye.hrsystem.modules.role.vo.QueryRoleTypesVO;
 import com.tianye.hrsystem.model.LoginUserInfo;
+import com.tianye.hrsystem.model.tbmenu;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -656,6 +657,24 @@ public class DashboardServiceImpl implements DashboardService {
         return target;
     }
 
+    /**
+     * 集团聚合的公司范围：若 BO 指定了 scopeCompanyIds 白名单则只遍历白名单内公司（员工入口权限收敛），
+     * 否则遍历全量公司。
+     */
+    private List<QueryCompanyListVO> resolveScopeCompanies(DashboardQueryBO bo) {
+        List<QueryCompanyListVO> all = companyService.getCompanyList();
+        if (bo == null || bo.getScopeCompanyIds() == null || bo.getScopeCompanyIds().isEmpty()) {
+            return all;
+        }
+        List<QueryCompanyListVO> scoped = new ArrayList<>();
+        for (QueryCompanyListVO comp : all) {
+            if (bo.getScopeCompanyIds().contains(comp.getCompanyId())) {
+                scoped.add(comp);
+            }
+        }
+        return scoped;
+    }
+
     @Override
     public boolean isAdminManager() {
         LoginUserInfo user = CompanyContext.get();
@@ -907,7 +926,7 @@ public class DashboardServiceImpl implements DashboardService {
     public Map<String, Object> personnelGroupOverview(DashboardQueryBO bo) {
         Period p = Period.of(bo);
         LoginUserInfo original = CompanyContext.get();
-        List<QueryCompanyListVO> companies = companyService.getCompanyList();
+        List<QueryCompanyListVO> companies = resolveScopeCompanies(bo);
 
         long totalActive = 0, totalHired = 0, totalQuit = 0;
         List<Map<String, Object>> companyDetails = new ArrayList<>();
@@ -950,7 +969,7 @@ public class DashboardServiceImpl implements DashboardService {
     public Map<String, Object> salaryGroupOverview(DashboardQueryBO bo) {
         Period p = Period.of(bo);
         LoginUserInfo original = CompanyContext.get();
-        List<QueryCompanyListVO> companies = companyService.getCompanyList();
+        List<QueryCompanyListVO> companies = resolveScopeCompanies(bo);
 
         double totalPay = 0, totalNet = 0, totalBonus = 0, totalTax = 0;
         List<Map<String, Object>> companyDetails = new ArrayList<>();
@@ -962,9 +981,11 @@ public class DashboardServiceImpl implements DashboardService {
             try {
                 Map<String, Object> cur = single(dashboardAggMapper.salaryOverview(p.startYear, p.startMonth, p.endYear, p.endMonth));
                 Map<String, Object> curBonus = dashboardAggMapper.bonusOverview(p.startYear, p.startMonth, p.endYear, p.endMonth);
-                double pay = toDouble(cur.get("totalPay"));
-                double net = toDouble(cur.get("totalNet"));
-                double tax = toDouble(cur.get("totalTax"));
+                // salaryOverview 实际返回 expectedPay/realPay/personalTax（应发/实发/个税），
+                // 旧键名 totalPay/totalNet/totalTax 取不到恒为 0，此处修正为正确键名
+                double pay = toDouble(cur.get("expectedPay"));
+                double net = toDouble(cur.get("realPay"));
+                double tax = toDouble(cur.get("personalTax"));
                 double bonus = curBonus == null ? 0 : toDouble(curBonus.get("bonus"));
                 totalPay += pay;
                 totalNet += net;
@@ -1199,12 +1220,29 @@ public class DashboardServiceImpl implements DashboardService {
             throw new CrmException(403, "无权限配置看板权限");
         }
         // 拥有权限管理模块（看板权限菜单）的用户即可配置并持久化看板权限
-        boolean hasMenu = user.getMenuTree().stream().anyMatch(m ->
-                DASHBOARD_PERMISSION_MENU_PATH.equals(m.getPath())
-                        || (m.getChildren() != null && m.getChildren().stream()
-                        .anyMatch(c -> DASHBOARD_PERMISSION_MENU_PATH.equals(c.getPath()))));
+        boolean hasMenu = user.getMenuTree().stream().anyMatch(m -> containsMenuPath(m, DASHBOARD_PERMISSION_MENU_PATH));
         if (!hasMenu) {
             throw new CrmException(403, "无权限配置看板权限");
         }
+    }
+
+    /** 递归匹配任意层级菜单 path（菜单层级可能不止两层） */
+    private boolean containsMenuPath(tbmenu menu, String targetPath) {
+        if (menu == null) {
+            return false;
+        }
+        if (targetPath.equals(menu.getPath())) {
+            return true;
+        }
+        List<tbmenu> children = menu.getChildren();
+        if (children == null || children.isEmpty()) {
+            return false;
+        }
+        for (tbmenu child : children) {
+            if (containsMenuPath(child, targetPath)) {
+                return true;
+            }
+        }
+        return false;
     }
 }

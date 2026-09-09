@@ -1,6 +1,7 @@
 package com.tianye.hrsystem.imple;
 
 import com.tianye.hrsystem.common.BasePage;
+import com.tianye.hrsystem.common.MonthlyFullSyncGuard;
 import com.tianye.hrsystem.common.ProgressTracker;
 import com.tianye.hrsystem.common.Redis;
 import com.tianye.hrsystem.config.CompanyContext;
@@ -109,6 +110,12 @@ public class HrmAttendanceApprovalServiceImpl implements IHrmAttendanceApprovalS
 
     @Autowired
     private Redis redis;
+
+    @Autowired
+    private MonthlyFullSyncGuard monthlyFullSyncGuard;
+
+    @Autowired
+    private com.tianye.hrsystem.common.ResumableJobCheckpoint resumableJobCheckpoint;
 
     @Autowired
     private AdminMessageServiceImpl adminMessageService;
@@ -369,7 +376,15 @@ public class HrmAttendanceApprovalServiceImpl implements IHrmAttendanceApprovalS
             // 未传(老调用方/定时任务)时由 sync 回退到目标业务月窗口。
             Long fetchStartTime = queryBO != null ? queryBO.getFetchStartTime() : null;
             Long fetchEndTime = queryBO != null ? queryBO.getFetchEndTime() : null;
-            long insertedCount = approvalSyncService.fetchMonthData(month, fetchStartTime, fetchEndTime, employeeIds, approvalTypes);
+            long insertedCount;
+            // 每次点击"获取审批数据"都是真实全量抓取（不区分强制/普通，无员工冷却跳过）。
+            // 降钉钉 API 配额靠运营"月全量≤2次 + 补拉用定向指定人"，不在代码层做冷却/强制分流。
+            insertedCount = approvalSyncService.fetchMonthData(month, fetchStartTime, fetchEndTime,
+                    employeeIds, approvalTypes);
+            // 本次为覆盖全部员工的成功获取 → 打自然月标记：本月该范围已完成一次（用于下次拦截）
+            if (employeeIds.isEmpty()) {
+                monthlyFullSyncGuard.markFullSynced(MonthlyFullSyncGuard.BIZ_APPROVAL, getCompanyId());
+            }
             Map<String, Object> result = new LinkedHashMap<>();
             result.put("success", true);
             result.put("month", month.format(MONTH_FORMATTER));
@@ -466,13 +481,13 @@ public class HrmAttendanceApprovalServiceImpl implements IHrmAttendanceApprovalS
             redis.setex(FETCH_KEY_PREFIX + ":inserted:" + key, 7200, String.valueOf(insertedCount));
         }
         // 同步更新通知中心的进度内容
-        updateNotificationProgress("attendance:notification:fetch:" + key, progress, done, success);
+        updateNotificationProgress("attendance:notification:fetch:" + key, progress, done, success, message);
     }
 
     /**
-     * 更新通知中心的进度内容（实时百分比）
+     * 更新通知中心的进度内容（实时百分比 + 当前处理明细；done 时写稳定终态标记）
      */
-    private void updateNotificationProgress(String redisKey, Integer progress, boolean done, boolean success) {
+    private void updateNotificationProgress(String redisKey, Integer progress, boolean done, boolean success, String detailMessage) {
         try {
             String messageIdStr = redis.get(redisKey);
             if (messageIdStr == null || messageIdStr.isEmpty()) {
@@ -486,6 +501,10 @@ public class HrmAttendanceApprovalServiceImpl implements IHrmAttendanceApprovalS
                 redis.del(redisKey);
             } else if (progress != null) {
                 content = "进度 " + progress + "%";
+                String detail = detailMessage == null ? "" : detailMessage.trim();
+                if (!detail.isEmpty() && !detail.equals(content)) {
+                    content = content + " · " + detail;
+                }
             } else {
                 return;
             }
@@ -605,7 +624,15 @@ public class HrmAttendanceApprovalServiceImpl implements IHrmAttendanceApprovalS
             } catch (Exception ex) {
                 String message = ex.getMessage() == null ? "" : ex.getMessage();
                 if (attempt >= maxAttempts || message.contains("请选择") || message.contains("重复员工")) {
-                    throw ex; // fetchMonthData 内部已把进度标为 FAILED
+                    // 终态失败：自动重试全部耗尽(或不可重试的参数类错误)。此刻任务彻底结束、运行锁将释放，
+                    // 才把断点置为 FAILED，前端据此显示「继续」(手动断点续传)。与考勤语义一致：仅最终失败才 FAILED。
+                    try {
+                        resumableJobCheckpoint.markTerminalFailed(
+                                com.tianye.hrsystem.common.ResumableJobCheckpoint.BIZ_APPROVAL, getCompanyId());
+                    } catch (Exception ckEx) {
+                        logger.warn("审批获取终态失败时打断点FAILED异常(忽略): {}", ckEx.getMessage());
+                    }
+                    throw ex; // ProgressTracker/通知 的终态 FAILED 由 fetchMonthData 内 catch 标好
                 }
                 logger.warn("审批数据获取第{}次运行失败，{}ms 后自动重试: {}", attempt, backoffMs, message);
                 updateFetchProgress(buildFetchProgressKey(), null, FETCH_STATUS_RUNNING,

@@ -14,16 +14,20 @@ import com.dingtalk.api.response.OapiAttendanceGetupdatedataResponse;
 import com.dingtalk.api.response.OapiSmartworkHrmEmployeeQueryonjobResponse;
 import com.dingtalk.api.response.OapiSmartworkHrmEmployeeV2ListResponse;
 import com.tianye.hrsystem.common.BaseUtil;
+import com.tianye.hrsystem.common.DDTalkResposeLogger;
 import com.tianye.hrsystem.common.EmployeeNotInDingTalkException;
 import com.tianye.hrsystem.common.ProgressTracker;
+import com.tianye.hrsystem.common.ResumableJobCheckpoint;
 import com.tianye.hrsystem.common.Redis;
 import com.tianye.hrsystem.config.CompanyContext;
 import com.tianye.hrsystem.model.HrmAttendanceApprovalFetchMark;
 import com.tianye.hrsystem.model.HrmEmployee;
+import com.tianye.hrsystem.model.HrmEmployeeQuitInfo;
 import com.tianye.hrsystem.model.tbattendanceapprove;
 import com.tianye.hrsystem.model.tbattendanceuser;
 import com.tianye.hrsystem.repository.hrmAttendanceApprovalFetchMarkRepository;
 import com.tianye.hrsystem.repository.hrmEmployeeRepository;
+import com.tianye.hrsystem.repository.hrmEmployeeQuitInfoRepository;
 import com.tianye.hrsystem.repository.tbattendanceapproveRepository;
 import com.tianye.hrsystem.repository.tbattendanceuserRepository;
 import com.tianye.hrsystem.service.IHrmAttendanceApprovalSyncService;
@@ -52,6 +56,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.stream.Collectors;
 
 @Service
@@ -143,6 +148,9 @@ public class HrmAttendanceApprovalSyncServiceImpl implements IHrmAttendanceAppro
     private tbattendanceuserRepository attendanceUserRepository;
 
     @Autowired
+    private hrmEmployeeQuitInfoRepository quitInfoRepository;
+
+    @Autowired
     private tbattendanceapproveRepository approvalRepository;
 
     @Autowired
@@ -160,6 +168,18 @@ public class HrmAttendanceApprovalSyncServiceImpl implements IHrmAttendanceAppro
     @Autowired
     private AdminMessageServiceImpl adminMessageService;
 
+    @Autowired
+    private DDTalkResposeLogger ddLogger;
+
+    // L1-a：反查花名册缓存。同一 token（同一公司）本次运行内只拉一次钉钉全量在职花名册，
+    // 后续缺号员工直接本地比对，避免每个缺号员工重复翻页拉全公司花名册产生的 N 倍浪费。
+    // 用 token 作 key 隔离各公司，避免 @Service 单例跨公司/跨运行串数据。
+    private final Map<String, Object> rosterCacheLocks = new ConcurrentHashMap<>();
+    private final Map<String, List<DingTalkEmployeeProfile>> rosterCacheByToken = new ConcurrentHashMap<>();
+
+    @Autowired
+    private ResumableJobCheckpoint resumableJobCheckpoint;
+
     // ProgressTracker 前缀（与 HrmAttendanceApprovalServiceImpl 保持一致）
     private static final String FETCH_KEY_PREFIX = "attendance:fetch";
 
@@ -176,6 +196,16 @@ public class HrmAttendanceApprovalSyncServiceImpl implements IHrmAttendanceAppro
     private Long requestFetchStartTime;
     private Long requestFetchEndTime;
 
+    /** 全量名单"近两月离职"判定的离职窗口下界（epoch millis，仅全量抓取时使用）。
+     *  窗口模式 = 用户选择开始时间；老入口(业务月/定时任务) = month 首日。
+     *  离职日 ∈ [该锚点, 锚点 + 1 月) 的员工视为近两月离职，纳入全量抓取（须本地已有钉钉号）；其余离职者排除。
+     *  随 requestFetch* 一起在 fetchMonthData finally 复位。 */
+    private long quitWindowAnchorMillis = 0L;
+
+    /** 本次抓取激活的断点会话（doFetchMonthData 内 begin 后持有；正常完成置 null，异常离开由 fetchMonthData finally 置 FAILED）。
+     *  与 requestFetchStartTime 同理：fetch 按公司互斥 + 单实例任务线程串行，实例字段安全。 */
+    private ResumableJobCheckpoint.ResumeContext activeResumeCtx;
+
     @Override
     public long fetchMonthData(YearMonth month, List<Long> employeeIds, List<String> approvalTypes) throws Exception {
         // 老入口/定时任务：业务月抓取。不设发起窗口（requestFetch 字段保持 null）→
@@ -184,10 +214,14 @@ public class HrmAttendanceApprovalSyncServiceImpl implements IHrmAttendanceAppro
             throw new IllegalArgumentException("请选择月份");
         }
         try {
+            // 老入口/定时任务：全量名单"近两月离职"以所选业务月首日为离职窗口下界
+            this.quitWindowAnchorMillis = month.atDay(1).atStartOfDay(ZONE_ID).toInstant().toEpochMilli();
             return doFetchMonthData(month, employeeIds, approvalTypes);
         } finally {
             requestFetchStartTime = null;
             requestFetchEndTime = null;
+            this.quitWindowAnchorMillis = 0L;
+            clearActiveResumeCtxIfNeeded();
         }
     }
 
@@ -207,11 +241,27 @@ public class HrmAttendanceApprovalSyncServiceImpl implements IHrmAttendanceAppro
                 employeeIds == null ? 0 : employeeIds.size(),
                 summarizeStringList(normalizeApprovalTypes(approvalTypes), 10));
         try {
+            // 前端手动(窗口模式)：全量名单"近两月离职"以所选开始时间为离职窗口下界
+            this.quitWindowAnchorMillis = (requestFetchStartTime != null) ? requestFetchStartTime
+                    : (month != null ? month.atDay(1).atStartOfDay(ZONE_ID).toInstant().toEpochMilli() : 0L);
             return doFetchMonthData(month, employeeIds, approvalTypes);
         } finally {
             requestFetchStartTime = null;
             requestFetchEndTime = null;
+            this.quitWindowAnchorMillis = 0L;
+            clearActiveResumeCtxIfNeeded();
         }
+    }
+
+    /**
+     * 单次尝试结束(含异常)时释放本次在内存中的 activeResumeCtx。
+     * <p>注意：此处【不】置断点 FAILED——因为 doFetchMonthData 单次失败可能只是自动重试的中间尝试，
+     * 断点应保持 RUNNING 供下次 auto-retry 续传；真正的终态 FAILED 由上层 auto-retry 全部耗尽后在
+     * {@link com.tianye.hrsystem.imple.HrmAttendanceApprovalServiceImpl#fetchMonthDataWithAutoRetry}
+     * 统一通过 markTerminalFailed 置位（对齐考勤：仅最终失败才 FAILED）。
+     */
+    private void clearActiveResumeCtxIfNeeded() {
+        activeResumeCtx = null;
     }
 
     /**
@@ -271,6 +321,16 @@ public class HrmAttendanceApprovalSyncServiceImpl implements IHrmAttendanceAppro
                     month, summarizeLongList(employeeIds, 20));
             return 0L;
         }
+        // —— 断点续传登记：以「员工」为工作项。指纹用「原请求意图」(业务月/窗口/类型/目标员工) 判定是否同任务；
+        //    发起参数(payload) 存同一份 canonical 串，供「通知中心-继续/重发」用同参重建请求。 ——
+        String jobKey = buildApprovalJobKey(month, employeeIds, normalizedApprovalTypes);
+        activeResumeCtx = resumableJobCheckpoint.begin(
+                ResumableJobCheckpoint.BIZ_APPROVAL, getCompanyId(), jobKey, jobKey, null);
+        Set<String> resumeSkipEmpIds = new HashSet<>();
+        if (activeResumeCtx != null && activeResumeCtx.resumed && activeResumeCtx.completed != null) {
+            resumeSkipEmpIds.addAll(activeResumeCtx.completed);
+            logger.info("审批抓取断点续传开启：将跳过已完成的 {} 名员工", resumeSkipEmpIds.size());
+        }
         Set<String> retainedApprovalIds = new LinkedHashSet<>();
         logger.info("开始手工抓取审批数据, month={}, requestedEmployeeIds={}, resolvedUserCount={}, resolvedUsers={}, approvalTypes={}",
                 month,
@@ -289,6 +349,12 @@ public class HrmAttendanceApprovalSyncServiceImpl implements IHrmAttendanceAppro
         for (int userIndex = 0; userIndex < users.size(); userIndex++) {
             tbattendanceuser user = users.get(userIndex);
             if (user == null || user.getUserId() == null || user.getUserId().trim().isEmpty()) {
+                continue;
+            }
+            // 断点续传：该员工上一轮已完整抓完 → 直接跳过（省掉其 listids + 全部 get 详情）
+            if (resumeSkipEmpIds.contains(empIdAsString(user.getEmpId()))) {
+                logger.info("审批抓取断点续传跳过已完成员工, month={}, employeeId={}, userName={}",
+                        month, user.getEmpId(), user.getUserName());
                 continue;
             }
             // 更新员工处理进度
@@ -445,6 +511,8 @@ public class HrmAttendanceApprovalSyncServiceImpl implements IHrmAttendanceAppro
             }
             if (userFetchCompleted) {
                 completedUserIds.add(user.getUserId());
+                // 断点续传：该员工全部模板/实例已完整落库 → 登记已完成（中断后可跳过）
+                resumableJobCheckpoint.markProcessed(activeResumeCtx, empIdAsString(user.getEmpId()));
             }
         }
         if (completedUserIds.isEmpty() && !missingDingTalkUsers.isEmpty()) {
@@ -459,7 +527,42 @@ public class HrmAttendanceApprovalSyncServiceImpl implements IHrmAttendanceAppro
         saveFetchMarks(month, completedUsers, completedUserIds, normalizedApprovalTypes);
         // 进度：保存完成，等待外层设置最终100%
         updateFetchProgress(95, "审批数据已保存，正在完成收尾");
+        // 断点续传：整轮成功 → 置 SUCCESS 并清 processed（完成即清除）
+        resumableJobCheckpoint.complete(activeResumeCtx);
+        activeResumeCtx = null;
         return insertedCount;
+    }
+
+    /** 员工主键 → 工作项字符串（断点续传用）；null/<=0 → 空串（不会被跳过/登记） */
+    private String empIdAsString(Long empId) {
+        return empId != null && empId > 0 ? String.valueOf(empId) : "";
+    }
+
+    /**
+     * 构建审批抓取任务的 canonical 指纹/发起参数。
+     * 用「原请求意图」表达：业务月 + 发起窗口 + 审批类型(排序) + 目标员工(排序；空=全量 ALL)。
+     * 既用于断点续传判等(fingerprint)，也存为 payload 供「通知中心-继续/重发」用同参重建请求。
+     */
+    private String buildApprovalJobKey(YearMonth month, List<Long> employeeIds, List<String> approvalTypes) {
+        StringBuilder sb = new StringBuilder();
+        sb.append("month=").append(month == null ? "NA" : month).append('|');
+        sb.append("start=").append(requestFetchStartTime == null ? "NA" : requestFetchStartTime).append('|');
+        sb.append("end=").append(requestFetchEndTime == null ? "NA" : requestFetchEndTime).append('|');
+        List<String> types = approvalTypes == null ? new ArrayList<>() : new ArrayList<>(approvalTypes);
+        Collections.sort(types);
+        sb.append("types=").append(String.join(",", types)).append('|');
+        List<Long> emps = (employeeIds == null) ? new ArrayList<>() : new ArrayList<>(employeeIds);
+        Collections.sort(emps);
+        if (emps.isEmpty()) {
+            sb.append("emps=ALL");
+        } else {
+            List<String> empStrs = new ArrayList<>();
+            for (Long e : emps) {
+                empStrs.add(String.valueOf(e));
+            }
+            sb.append("emps=").append(String.join(",", empStrs));
+        }
+        return sb.toString();
     }
 
     protected List<String> resolveProcessCodes(String token, String userId, List<String> approvalTypes) throws ApiException {
@@ -495,6 +598,8 @@ public class HrmAttendanceApprovalSyncServiceImpl implements IHrmAttendanceAppro
             request.setOffset(offset);
             request.setSize(100L);
             OapiProcessListbyuseridResponse response = client.execute(request, token);
+            // L1-b：监控补盲，让该直连调用计入 /dingTalkApiUsage 用量统计
+            ddLogger.Info(response, "https://oapi.dingtalk.com/topapi/process/listbyuserid", new Date(), getClass());
             // 串行外呼间隔 100ms，降低 1 号集中抓取触发钉钉频控的概率
             try {
                 Thread.sleep(100L);
@@ -586,6 +691,19 @@ public class HrmAttendanceApprovalSyncServiceImpl implements IHrmAttendanceAppro
         List<EmployeeResolutionFailure> resolutionFailures = new ArrayList<>();
         for (HrmEmployee employee : employees) {
             try {
+                // 离职员工(entry_status=4，全量名单里已是"近两月离职"者)：本地已有钉钉号则直接 trust 复用，
+                // 不再做 v2/list 校验或 姓名+手机号 queryonjob 反查——离职者在钉钉在职花名册/在职用户查询中
+                // 查不到，反查必然失败，只烧配额还误报 warn；本地缺钉钉号的离职者历史单无法可靠定位，静默跳过。
+                if (isLeftEmployee(employee)) {
+                    String trustedUserId = normalizeText(employee.getDingtalkUserId());
+                    if (trustedUserId.isEmpty()) {
+                        logger.info("审批抓取跳过无本地钉钉号的离职员工, employeeId={}, employeeName={}",
+                                employee.getEmployeeId(), employee.getEmployeeName());
+                        continue;
+                    }
+                    result.add(saveAttendanceUserMapping(employee, trustedUserId));
+                    continue;
+                }
                 Optional<tbattendanceuser> resolvedUser = resolveAttendanceUserForEmployee(token, employee, false);
                 if (resolvedUser.isPresent()) {
                     result.add(resolvedUser.get());
@@ -653,8 +771,14 @@ public class HrmAttendanceApprovalSyncServiceImpl implements IHrmAttendanceAppro
             if (employees == null) {
                 return new ArrayList<>();
             }
+            // 全量名单口径：未删除 + (在职(entry_status≠4) 或 近两月离职)。
+            // 早年离职者(离职日早于[离职窗口下界,+1月))一律排除——他们钉钉早已无号/无审批，之前
+            // 会把大量历史离职者纳入遍历并逐人触发姓名+手机号钉钉反查(必然失败)导致配额浪费 + 误报 warn。
+            Set<Long> recentlyQuitEmpIds = resolveRecentlyQuitEmployeeIds(employees);
             return employees.stream()
-                    .filter(this::isActiveEmployee)
+                    .filter(emp -> emp != null && (emp.getIsDel() == null || emp.getIsDel() != 1))
+                    .filter(emp -> !isLeftEmployee(emp)
+                            || (emp.getEmployeeId() != null && recentlyQuitEmpIds.contains(emp.getEmployeeId())))
                     .collect(Collectors.toList());
         }
         employees = hrmEmployeeRepository.findAllByEmployeeIdIn(normalizedEmployeeIds);
@@ -677,6 +801,47 @@ public class HrmAttendanceApprovalSyncServiceImpl implements IHrmAttendanceAppro
 
     private boolean isActiveEmployee(HrmEmployee employee) {
         return employee != null && (employee.getIsDel() == null || employee.getIsDel() != 1);
+    }
+
+    /** 是否离职员工：entry_status=4 */
+    private boolean isLeftEmployee(HrmEmployee employee) {
+        return employee != null && employee.getEntryStatus() != null && employee.getEntryStatus() == 4;
+    }
+
+    /** 全量名单里"近两月离职"的 employeeId 集合：离职日 ∈ [quitWindowAnchorMillis, +1月)。
+     *  锚点 ≤0(未设置，异常路径) 时返回空集 = 不纳入任何离职者(仅抓在职)。 */
+    private Set<Long> resolveRecentlyQuitEmployeeIds(List<HrmEmployee> allEmployees) {
+        long anchor = this.quitWindowAnchorMillis;
+        if (anchor <= 0) {
+            return new HashSet<>();
+        }
+        List<Long> quitEmpIds = allEmployees.stream()
+                .filter(this::isLeftEmployee)
+                .map(HrmEmployee::getEmployeeId)
+                .filter(id -> id != null)
+                .collect(Collectors.toList());
+        if (quitEmpIds.isEmpty()) {
+            return new HashSet<>();
+        }
+        java.time.ZonedDateTime anchorAt = java.time.ZonedDateTime.ofInstant(
+                java.time.Instant.ofEpochMilli(anchor), ZONE_ID);
+        long lower = anchorAt.toLocalDate().atStartOfDay(ZONE_ID).toInstant().toEpochMilli();
+        long upperExclusive = anchorAt.plusMonths(1).toLocalDate().atStartOfDay(ZONE_ID).toInstant().toEpochMilli();
+        Set<Long> result = new HashSet<>();
+        List<HrmEmployeeQuitInfo> quitInfos = quitInfoRepository.findAllByEmployeeIdIn(quitEmpIds);
+        if (quitInfos == null) {
+            return result;
+        }
+        for (HrmEmployeeQuitInfo qi : quitInfos) {
+            if (qi == null || qi.getEmployeeId() == null || qi.getPlanQuitTime() == null) {
+                continue;
+            }
+            long quit = qi.getPlanQuitTime().getTime();
+            if (quit >= lower && quit < upperExclusive) {
+                result.add(qi.getEmployeeId());
+            }
+        }
+        return result;
     }
 
     private Optional<tbattendanceuser> resolveAttendanceUserForEmployee(String token,
@@ -1171,20 +1336,20 @@ public class HrmAttendanceApprovalSyncServiceImpl implements IHrmAttendanceAppro
         if (normalizedName.isEmpty() || normalizedMobile.isEmpty()) {
             return Optional.empty();
         }
-        List<String> userIds = fetchOnJobDingTalkUserIds(token);
-        if (userIds.isEmpty()) {
+        // L1-a：本轮只拉一次全量在职花名册（按 token=公司隔离），后续缺号员工本地比对，
+        // 避免每个缺号员工都翻页重拉全公司花名册产生的 N 倍浪费。
+        List<DingTalkEmployeeProfile> profiles = getRosterProfiles(token);
+        if (profiles.isEmpty()) {
             return Optional.empty();
         }
         Set<String> matchedUserIds = new LinkedHashSet<>();
-        for (List<String> batch : partition(userIds, 50)) {
-            for (DingTalkEmployeeProfile profile : fetchDingTalkEmployeeProfiles(token, batch)) {
-                if (profile == null) {
-                    continue;
-                }
-                if (normalizedName.equals(normalizeEmployeeName(profile.name))
-                        && normalizedMobile.equals(normalizePhoneNumber(profile.mobile))) {
-                    matchedUserIds.add(profile.userId);
-                }
+        for (DingTalkEmployeeProfile profile : profiles) {
+            if (profile == null) {
+                continue;
+            }
+            if (normalizedName.equals(normalizeEmployeeName(profile.name))
+                    && normalizedMobile.equals(normalizePhoneNumber(profile.mobile))) {
+                matchedUserIds.add(profile.userId);
             }
         }
         if (matchedUserIds.size() > 1) {
@@ -1194,6 +1359,39 @@ public class HrmAttendanceApprovalSyncServiceImpl implements IHrmAttendanceAppro
             return Optional.empty();
         }
         return Optional.of(matchedUserIds.iterator().next());
+    }
+
+    /**
+     * L1-a：按 token（同一公司）懒加载并缓存全量在职花名册（userId→姓名/手机号）。
+     * 同一 token 本次运行内只调一次钉钉（queryonjob + v2/list），后续缺号员工直接本地比对。
+     */
+    private List<DingTalkEmployeeProfile> getRosterProfiles(String token) throws ApiException {
+        List<DingTalkEmployeeProfile> cached = rosterCacheByToken.get(token);
+        if (cached != null) {
+            return cached;
+        }
+        Object lock = rosterCacheLocks.computeIfAbsent(token, k -> new Object());
+        synchronized (lock) {
+            cached = rosterCacheByToken.get(token);
+            if (cached != null) {
+                return cached;
+            }
+            List<DingTalkEmployeeProfile> loaded = loadAllDingTalkEmployeeProfiles(token);
+            rosterCacheByToken.put(token, loaded);
+            return loaded;
+        }
+    }
+
+    private List<DingTalkEmployeeProfile> loadAllDingTalkEmployeeProfiles(String token) throws ApiException {
+        List<String> userIds = fetchOnJobDingTalkUserIds(token);
+        if (userIds.isEmpty()) {
+            return new ArrayList<>();
+        }
+        List<DingTalkEmployeeProfile> all = new ArrayList<>();
+        for (List<String> batch : partition(userIds, 50)) {
+            all.addAll(fetchDingTalkEmployeeProfiles(token, batch));
+        }
+        return all;
     }
 
     private List<String> fetchOnJobDingTalkUserIds(String token) throws ApiException {
@@ -1206,6 +1404,8 @@ public class HrmAttendanceApprovalSyncServiceImpl implements IHrmAttendanceAppro
             request.setOffset(offset);
             request.setSize(50L);
             OapiSmartworkHrmEmployeeQueryonjobResponse response = client.execute(request, token);
+            // L1-b：监控补盲，让该直连调用计入 /dingTalkApiUsage 用量统计
+            ddLogger.Info(response, "https://oapi.dingtalk.com/topapi/smartwork/hrm/employee/queryonjob", new Date(), getClass());
             if (response == null || !Boolean.TRUE.equals(response.getSuccess()) || response.getResult() == null) {
                 throw new IllegalStateException(buildWorkflowApiErrorDetail(
                         "topapi/smartwork/hrm/employee/queryonjob",
@@ -1241,6 +1441,8 @@ public class HrmAttendanceApprovalSyncServiceImpl implements IHrmAttendanceAppro
             request.setAgentid(Long.parseLong(agentId.trim()));
         }
         OapiSmartworkHrmEmployeeV2ListResponse response = client.execute(request, token);
+        // L1-b：监控补盲，让该直连调用计入 /dingTalkApiUsage 用量统计
+        ddLogger.Info(response, "https://oapi.dingtalk.com/topapi/smartwork/hrm/employee/v2/list", new Date(), getClass());
         if (response == null || response.getResult() == null) {
             throw new IllegalStateException(buildWorkflowApiErrorDetail(
                     "topapi/smartwork/hrm/employee/v2/list",
@@ -1327,8 +1529,12 @@ public class HrmAttendanceApprovalSyncServiceImpl implements IHrmAttendanceAppro
                 request.setStartTime(sliceStart);
                 request.setEndTime(sliceEnd);
                 request.setCursor(cursor);
+                // 钉钉 processinstance/listids 的 size 参数上限为 20（超过报 errcode=200003 分页大小不合法）。
+                // 曾改为 50 想减翻页次数 → 直接触发 200003，审批抓取全线失败。必须保持 ≤20，减页在此接口不可行。
                 request.setSize(20L);
                 OapiProcessinstanceListidsResponse response = client.execute(request, token);
+                // L1-b：监控补盲，让该直连调用（审批抓取最大头）计入 /dingTalkApiUsage 用量统计
+                ddLogger.Info(response, "https://oapi.dingtalk.com/topapi/processinstance/listids", new Date(), getClass());
                 // 串行外呼间隔 100ms，降低 1 号集中抓取触发钉钉频控的概率
                 try {
                     Thread.sleep(100L);
@@ -1797,21 +2003,26 @@ public class HrmAttendanceApprovalSyncServiceImpl implements IHrmAttendanceAppro
         if (progressTracker != null) {
             progressTracker.saveProgress(FETCH_KEY_PREFIX, companyId, state);
         }
-        // 同步更新通知中心的进度内容
-        updateNotificationProgress(companyId, percent);
+        // 同步更新通知中心的进度内容（带当前处理明细，便于操作员看到"拉到哪"而非干等百分比）
+        updateNotificationProgress(companyId, percent, message);
     }
 
     /**
-     * 更新通知中心的进度内容（实时百分比）
+     * 更新通知中心的进度内容（实时百分比 + 当前员工/进度明细）
      */
-    private void updateNotificationProgress(String companyId, int percent) {
+    private void updateNotificationProgress(String companyId, int percent, String detailMessage) {
         try {
             String messageIdStr = redis.get("attendance:notification:fetch:" + companyId);
             if (messageIdStr == null || messageIdStr.isEmpty()) {
                 return;
             }
             Long messageId = Long.parseLong(messageIdStr);
-            adminMessageService.updateContent(messageId, "进度 " + percent + "%");
+            String content = "进度 " + percent + "%";
+            String detail = detailMessage == null ? "" : detailMessage.trim();
+            if (!detail.isEmpty() && !detail.equals(content)) {
+                content = content + " · " + detail;
+            }
+            adminMessageService.updateContent(messageId, content);
         } catch (Exception e) {
             logger.warn("[审批获取进度] 更新通知内容失败", e);
         }

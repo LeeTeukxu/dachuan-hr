@@ -21,8 +21,6 @@
 - 2026-09-06 租户基线补钉钉同步配置：`schema-baseline.sql` 新增 `hrm_dept_sync_config` 表与 `hrm_employee.idx_dingtalk_user_id` 索引（部门钉钉同步/员工同步钉钉功能迁移配套，DDL 见 `docs/sql/2026-09-06_dingtalk_sync_and_batch_setting.sql`，存量租户库需补执行）。注意基线脚本已统一为 Oracle 版 MySQL 8 兼容写法（不支持 ADD COLUMN IF NOT EXISTS）。
 - 2026-09-02 租户开通补考试表：`TenantProvisionService` 新增 `EXAM_SCRIPT` 常量，基线表结构后执行 `exam-schema.sql`，新开租户自动创建考试相关表（exam_paper/question/material/assignment 等 10 张表 + hrm_employee 考试字段），与已有租户结构对齐。
 - 2026-09-02 备份目录 fallback：`createBackup()` 配置目录不可用时自动回退 `./backup/{timestamp}`，防止 Windows 无对应盘符时启动报错。
-- 2026-08-31 数据库备份列表过滤：`discoverDatabases` 改查 `tbCompanyList` 已注册库（不再用 `SHOW DATABASES`）；`listRecords` 过滤无效库记录；`cleanupExpired` 先清理无效库历史记录——消除未注册残留库（如 hr_0006）出现在备份列表的问题。
-- 2026-08-30 性能审查第二批（本模块部分）：动态调度修复、`AttendanceDbLock` 改按 companyId 锁、Redis TTL 补齐与 mSet 修复、附件/FTP/导出资源泄漏收口、日志保留期清理任务上线、prod mapper DEBUG 降 INFO、备份快照目录清理。
 
 ## 历史摘要
 - 2026-08-18：服务器部署跨域修复（CrossDomainFilter bean 化 + OPTIONS 放行 + 线上核验）；prod 一键打包脚本；Maven 默认 profile 回归守卫。

@@ -1,11 +1,10 @@
 package com.tianye.hrsystem.controller;
 
 import com.alibaba.fastjson.JSON;
-import com.dingtalk.api.DefaultDingTalkClient;
-import com.dingtalk.api.DingTalkClient;
 import com.dingtalk.api.request.*;
 import com.dingtalk.api.response.*;
-import com.taobao.api.ApiException;
+import com.tianye.hrsystem.common.MonthlyFullSyncGuard;
+import com.tianye.hrsystem.common.ProgressTracker;
 import com.tianye.hrsystem.common.Redis;
 import com.tianye.hrsystem.config.CompanyContext;
 import com.tianye.hrsystem.imple.HrmAttendanceDataServiceImpl;
@@ -18,7 +17,6 @@ import com.tianye.hrsystem.repository.hrmEmployeeRepository;
 import com.tianye.hrsystem.repository.tbattendanceuserRepository;
 import com.tianye.hrsystem.service.IHrmAttendanceDataService;
 import com.tianye.hrsystem.service.IWorkPlanService;
-import com.tianye.hrsystem.service.ddTalk.IAccessToken;
 import com.tianye.hrsystem.util.MyDateUtils;
 import org.apache.commons.lang.StringUtils;
 import org.slf4j.Logger;
@@ -33,7 +31,6 @@ import org.springframework.web.bind.annotation.ResponseBody;
 import java.text.SimpleDateFormat;
 import java.util.concurrent.TimeUnit;
 import java.util.*;
-import java.util.concurrent.atomic.AtomicReference;
 import java.util.stream.Collectors;
 
 /**
@@ -53,8 +50,6 @@ public class HrmAttendanceDataController {
     @Autowired
     hrmEmployeeRepository empRep;
     @Autowired
-    IAccessToken tokener;
-    @Autowired
     tbattendanceuserRepository userRep;
     @Autowired
     StringRedisTemplate redisRep;
@@ -73,6 +68,14 @@ public class HrmAttendanceDataController {
 
     @Autowired
     private com.tianye.hrsystem.service.IHrmAttendanceJudgeService attendanceJudgeService;
+
+    @Autowired
+    private MonthlyFullSyncGuard monthlyFullSyncGuard;
+
+    /** 业务码：本月该范围已完成一次全量同步，禁止再次全量（前端据此弹提示引导定向补拉） */
+    private static final int CODE_MONTHLY_FULL_DONE = 4001;
+    /** 业务码：无可续传任务（「继续」时提示） */
+    private static final int CODE_NOT_RESUMABLE = 4002;
 
     @PostMapping("/judgeQuery")
     @ResponseBody
@@ -124,12 +127,19 @@ public class HrmAttendanceDataController {
 
     @RequestMapping("/sync")
     @ResponseBody
-    public successResult GetData(String EmpID, String Begin, String End) {
+    public successResult GetData(String EmpID, String Begin, String End, String fullSync) {
         successResult result = new successResult();
         LoginUserInfo Info = CompanyContext.get();
         String companyId = Info != null && Info.getCompanyId() != null ? Info.getCompanyId() : "unknown";
         boolean lockHeld = false;
         try {
+            // 自然月「每月一次」闸门：前端标记本次为覆盖全部员工的全量同步，且本月该范围已完成一次成功同步 → 拒绝，引导定向补拉
+            if (Boolean.parseBoolean(fullSync)
+                    && monthlyFullSyncGuard.isMonthlyFullSynced(MonthlyFullSyncGuard.BIZ_ATTENDANCE, companyId)) {
+                result.setCode(CODE_MONTHLY_FULL_DONE);
+                result.setMessage("本月该范围考勤数据已完成同步，如需补拉请先勾选指定员工");
+                return result;
+            }
             if (StringUtils.isBlank(EmpID)) {
                 throw new IllegalArgumentException("EmpID不能为空");
             }
@@ -165,7 +175,80 @@ public class HrmAttendanceDataController {
             }
             // 已移交后台任务，由后台任务 finally 归还公司锁
             lockHeld = false;
+            // 本次为全量同步且已通过月锁检查 → 写「全量待标记」，后台同步成功时据此打本月月锁
+            if (Boolean.parseBoolean(fullSync)) {
+                try {
+                    redis.setex("attendance:sync:fullsync_pending:" + companyId, 86400, String.valueOf(System.currentTimeMillis()));
+                } catch (Exception e) {
+                    logger.warn("公司{}写全量待标记失败", companyId, e);
+                }
+            }
             logger.info("公司{}考勤同步已提交后台执行: {} ~ {}", companyId, Begin, End);
+            result.setMessage("考勤同步已开始，请通过进度条查看进展");
+            Map<String, Object> data = new HashMap<>();
+            data.put("queued", true);
+            data.put("queuedAt", queuedAt);
+            result.setData(data);
+        } catch (Exception ax) {
+            if (lockHeld) {
+                syncTaskLauncher.finish(companyId);
+            }
+            result.raiseException(ax);
+        }
+        return result;
+    }
+
+    @RequestMapping("/continueSync")
+    @ResponseBody
+    public successResult continueSync() {
+        successResult result = new successResult();
+        LoginUserInfo Info = CompanyContext.get();
+        String companyId = Info != null && Info.getCompanyId() != null ? Info.getCompanyId() : "unknown";
+        boolean lockHeld = false;
+        try {
+            // 读上次失败同步的断点参数(EmpIDs|yyyy-MM-dd|yyyy-MM-dd)；考勤仅在终态失败(status=FAILED)才可续
+            Map<String, Object> progress = dataService.getSyncProgress();
+            boolean failed = progress != null
+                    && ProgressTracker.STATUS_FAILED.equals(progress.get("status"));
+            String params = progress != null ? String.valueOf(progress.get("params") == null ? "" : progress.get("params")) : "";
+            if (!failed || StringUtils.isBlank(params)) {
+                result.setCode(CODE_NOT_RESUMABLE);
+                result.setMessage("暂无可继续的任务，请重新发起同步");
+                return result;
+            }
+            String[] parts = params.split("\\|");
+            if (parts.length != 3 || StringUtils.isBlank(parts[0])
+                    || StringUtils.isBlank(parts[1]) || StringUtils.isBlank(parts[2])) {
+                throw new IllegalStateException("断点参数不完整，请重新发起同步");
+            }
+            String empIds = parts[0].trim();
+            Date beginDate = FORMAT.get().parse(parts[1].trim());
+            Date endDate = dateUtils.setItEnd(FORMAT.get().parse(parts[2].trim()));
+            // 按公司互斥：提交路径同步抢占
+            if (!syncTaskLauncher.tryBegin(companyId, Info)) {
+                result.setCode(202);
+                result.setMessage("考勤同步正在进行中，已自动切换到查看进度模式");
+                Map<String, Object> data = new HashMap<>();
+                data.put("alreadyRunning", true);
+                data.put("queued", true);
+                result.setData(data);
+                return result;
+            }
+            lockHeld = true;
+            long queuedAt = dataService.markSyncQueued();
+            boolean submitted = syncTaskLauncher.submit(companyId, Info, () -> {
+                try {
+                    dataService.SyncDataWithAutoRetry(empIds, beginDate, endDate);
+                } catch (Exception e) {
+                    logger.error("公司{}考勤同步(继续)后台任务失败: {}", companyId, e.getMessage(), e);
+                }
+            });
+            if (!submitted) {
+                throw new IllegalStateException("当前同步任务较多，请稍后再试");
+            }
+            // 已移交后台任务，由后台任务 finally 归还公司锁
+            lockHeld = false;
+            logger.info("公司{}考勤同步(继续)已提交后台执行: empIds={} ~ {}", companyId, empIds, parts[2]);
             result.setMessage("考勤同步已开始，请通过进度条查看进展");
             Map<String, Object> data = new HashMap<>();
             data.put("queued", true);
@@ -306,74 +389,9 @@ public class HrmAttendanceDataController {
     }
 
 
-    @RequestMapping("/getOverTime")
-    @ResponseBody
-    public successResult getOvertTime(String Begin, String End) {
-        successResult result = new successResult();
-        try {
-            String Ids = "1078299679";
-            result.setData(getTotalByFields(Begin, End, Ids));
-        } catch (Exception ax) {
-            result.raiseException(ax);
-        }
-        return result;
-    }
-
-    private Map<String, Double> getTotalByFields(String Begin, String End, String Field) throws Exception {
-        LoginUserInfo Info = CompanyContext.get();
-        List<tbattendanceuser> allUsers = userRep.findAll();
-        List<String> userIds = allUsers.stream().map(f -> f.getUserId()).collect(Collectors.toList());
-        Date begin = FORMAT.get().parse(Begin);
-        Date end = FORMAT.get().parse(End);
-        String password = tokener.Refresh(Info.getCompanyId());
-        // 客户端可复用：逐用户 new 客户端只会放大对象/连接开销
-        DingTalkClient client = new DefaultDingTalkClient("https://oapi.dingtalk.com/topapi/attendance/getcolumnval");
-        Map<String, Double> Nums = new HashMap<>();
-        userIds.forEach(userId -> {
-            AtomicReference<Double> Total = new AtomicReference<>(0.0);
-            String userName =
-                    allUsers.stream().filter(f -> f.getUserId().equals(userId)).findFirst().get().getUserName();
-            OapiAttendanceGetcolumnvalRequest req = new OapiAttendanceGetcolumnvalRequest();
-            req.setFromDate(begin);
-            req.setToDate(end);
-            req.setColumnIdList(Field);
-            req.setUserid(userId);
-            OapiAttendanceGetcolumnvalResponse rsp = null;
-            try {
-                rsp = client.execute(req, password);
-                // 串行外呼间隔 100ms，降低触发钉钉频控的概率
-                Thread.sleep(100L);
-            } catch (ApiException e) {
-                throw new RuntimeException(e);
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-                throw new RuntimeException(e);
-            }
-            if (rsp != null && rsp.isSuccess()) {
-                OapiAttendanceGetcolumnvalResponse.ColumnValListForTopVo rr = rsp.getResult();
-                rr.getColumnVals().forEach(fs -> {
-                    fs.getColumnVals().forEach(f -> {
-                        String Value = f.getValue();
-                        // 个别列值非数字时跳过该列，而不是让整个请求 500
-                        if (Value == null || Value.trim().isEmpty()) {
-                            return;
-                        }
-                        try {
-                            Double Num = Double.parseDouble(Value.trim());
-                            Total.updateAndGet(v -> v + Num);
-                        } catch (NumberFormatException ex) {
-                            logger.warn("加班列值非数字，已跳过: userId={}, value={}", userId, Value);
-                        }
-                    });
-                });
-            }
-            if (Total.get() > 0) {
-                logger.info(userName + begin + "至" + end + "加班：" + Double.toString(Total.get()) + "小时");
-                Nums.put(userId, Total.get());
-            }
-        });
-        return Nums;
-    }
+    // 【2026-09-08 下线】原 /attendanceData/getOverTime 逐全员调钉钉 getcolumnval（硬编码加班列），
+    // 无缓存无锁、不走用量日志（隐形消耗）、且经核实无任何前端/后端调用方（死端点）。
+    // 加班合计已由本地加班统计模块（hrm_employee_over_time_record）承接，故直接删除，不再调钉钉。
 
     /**
      * create by: mmzs

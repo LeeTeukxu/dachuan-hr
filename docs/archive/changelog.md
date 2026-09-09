@@ -12,6 +12,9 @@
 - 2026-06-17 Tomcat 请求头 400：管理员 token 约 7.9KB + 浏览器头超默认 8KB；三个 profile 增加 `server.max-http-header-size=65536`。
 - 2026-06-17 登录用户默认部门与删除：新建缺省部门取顶级部门；`Delete` 同时删租户用户与系统库账号索引（`runWithDefaultCompanyContext` 切默认数据源）。
 - 2026-08-21 `cfy` 登录修复（详见 system.md 近期变更）；现场重复索引仅 `cfy` 一例，发布后编辑/保存该账号会顺带清理。
+- 2026-09-05 前端算法知识库上线（后端零改动）+ 新开户 exam_notification 表补全 + 个人信息「切换企业」上线：前端算法知识库弹窗数据 `hr_web/src/constants/knowledgeBase.js`（业务公式 + `文件:行号` 代码位置），后端算法改动须同步该文件；开户脚本补 `exam_notification` 表结构；切换企业 `LoginController#switchCompany` 换发绑目标企业的新 JWT 并重载 menuTree。
+- 2026-09-06 修复租户管理钉钉应用配置"绑定已有租户"列表为空（`Illegal mix of collations`）：`TenantProvisionService.listDdAccounts()` JOIN 条件显式 `COLLATE utf8mb4_0900_ai_ci` 兜底；根治 DDL 见 `docs/sql/2026-09-06_ddaccount_collation_fix.sql`（生产需手工执行 ALTER，含诊断/验证查询）。开户与 `/tenant/compare` 链路核实无同类跨表比较风险。
+- 2026-09-07 批量角色权限同步：保存角色权限时可选择同步到指定企业的相同角色（`TbRoleMenuService#syncRoleToOtherCompanies`）；新增企业列表查询接口（`/tbRoleMenu/companies`）；前端保存时弹确认框 + 企业选择列表。
 
 ## 员工管理（employee.md）
 - 2026-06-10：批量设置参保方案（`/hrmEmployee/updateInsuranceScheme` 事务整体回滚 + 空列表/缺方案校验）；员工编辑部门/学历保存修复（学历空指针、雪花 ID 字符串兼容）。
@@ -23,6 +26,11 @@
 - 2026-07-17：唯一性校验统一（validateEmployeeUniqueFields 覆盖新增/导入/转正/调岗/通讯保存）+ 删除"是否有全勤/是否加入钉钉"表单。
 - 2026-08-19/20：部门明细导出多轮结构补齐（顶部统计区、成本区、人员总表、合同到期日、数据对账 92 人全对）；员工新增/编辑薪资字段（三个动态字段幂等补齐、转正/调岗/晋升弹窗接入）；花名册模板运行时插列（固定绩效/职务补助，父表头合并处理）。
 - 2026-08-21：其他补助第 4 个薪资动态字段 + 导入"姓名+身份证号"兜底；合同无固定期限（保存/导入清空 endTime/term、导出显示"无固定期限"、到期提醒不统计）。
+- 2026-09-06：watch 迁移员工三件套（员工批量设置 10 字段白名单、同步钉钉员工 userid 绑定+预检+源头字段钉钉覆盖、组织管理同步钉钉数据全量/分公司模式）；新建在职员工查无钉钉此人拒绝保存与钉钉权限错误用户指引。DDL `docs/sql/2026-09-06_dingtalk_sync_and_batch_setting.sql`。
+- 2026-09-06：到龄退休推算与站内信（男63/女58，type=207，触发主路径 `/adminMessage/unreadCount` 前置钩子、9 点定时被 scheduling.enabled=false 抑制、手动端点 `/hrmEmployee/retirementRemind`；`RetirementReminderTask`）。
+- 2026-09-07：分管领导↔直属上级联动（组织管理保存同步部门员工 parent_id 为分管领导、新增 `/hrmDept/queryDeptLeader/{deptId}`、员工新建/花名册导入/岗位编辑兜底取分管领导、前端选部门自动带出、自指防护、DeptItem 字段名修正）。
+- 2026-09-08：按部门递归含子部门（`RecursionUtil.getChildList` 递归解析子部门 IN 查询，BO 增 deptIds；同轮 DashboardAggMapper 19 处改 WITH RECURSIVE 见 salary.md）。
+- 2026-09-08：同步部门后同步该部门下员工部门（`/hrmDept/applyEmployeeDeptChanges` 收 {changes,unmatched}、`resolveDingUseridByMobile` 反查仲裁、`notifyUnmatchedDeptSync` type=208；两段式确认；详见模块契约段）。
 
 ## 排班与单双休（attendance-scheduling.md）
 - 2026-04-06：每周单双休生成上线（`modules/workweek`、`hrm_workweek_setting` 建表脚本、单/双休交替、修改向后重算）。
@@ -35,6 +43,10 @@
 - 2026-07-25：连班自动带出（`is_continuous_shift` 字段、批量按员工拆分、显式值保护 customContinuousShiftExplicit）+ 导入电话匹配规则（"姓名+电话"或纯姓名）。
 - 2026-08-17：单日排班删除（共享行只移除目标员工）；白班未勾连班显式保存。
 - 2026-08-22：生产产品/岗位/员工配置上线（三表 + /workPlanProduct 全套接口 + 菜单权限 SQL + 排序自动生成/拖拽持久化/岗位员工替换语义）。
+
+- 2026-08-24：多产品多岗位修改排班（query/saveEmployeeDayAssignments 完整替换 + 共享行保留）；添加排班人员缺失修复（人员改读员工表 + v3 缓存）；分页契约复核（getData/loadIsLast 收 pageNum/pageSize）。
+- 2026-08-25：排班矩阵车间自由输入与岗位时间组统一（workshopName 全链路）；修复新员工找不到考勤用户（从员工表取钉钉 ID 创建记录，无钉钉 ID 用员工 ID 兜底）。
+- 2026-09-04：修复排班 Excel 上传数字员工行/员工对不上（导入 UserID 统一取 `hrm_employee.dingtalk_user_id` 的 `resolveCanonicalPlanUserId`，缺钉钉 ID 导入行明确报错；孤儿排班清理 SQL `docs/db-sync/plan-orphan-userid-cleanup-20260904.sql`）。
 
 ## 考勤同步（attendance-sync.md）
 - 2026-03-27：多租户打卡缺失专项（移除 create_time 拦截；并行流竞态、clock_stage 误过滤、高频回查超时三项修复）。
@@ -53,6 +65,14 @@
 - 2026-09-02 公共进度条组件与审批获取细粒度进度：新增 `ProgressDialog.vue` 公共组件（支持步骤条、统计信息、错误列表）和 `useProgressManager.js` composable（封装轮询逻辑）；后端 `HrmAttendanceApprovalSyncServiceImpl.fetchMonthData` 注入 `ProgressTracker`，按员工粒度更新进度（15%→90%），消息显示"正在处理员工 3/10 - 张三"；前端审批获取、考勤同步、社保报表三个页面统一使用公共组件，消除重复代码约 200+ 行。
 - 2026-09-01 同步可靠性修复：进度 Redis 值统一字符串写入/读取，解决重试时间戳与阶段值的序列化失败；公司锁记录企业名、账号、姓名和建立时间，重复提示明确显示企业（名称+ID）及当前操作账号。新版残留锁在两种情况下由下一次提交立即回收：①进度为 `SUCCESS/FAILED` 且终态更新时间晚于锁建立时间；②单机服务重启后，锁建立时间早于当前 JVM 启动时间（重启已中断原后台线程）。当前 JVM 内的 `RUNNING` 锁仍保持互斥；旧版 `"1"` 锁缺少时间信息，仍按 TTL 或人工核实后清理。前端轮询超时不再伪装成"完成"，且 F5 后不自动弹共享进度，只有再次点击"同步考勤"并检测到当前公司 `RUNNING` 才恢复；新登录令牌补充 `companyName`，提交成功判断兼容 `success=true`/`code=200`。
 
+- 2026-09-04 自动同步定时任务（默认关）+ 跨月抓取丢数据修复（V4）+ 农谷 userId 列扩 varchar(100)+openid：`DingTalkAutoSyncConfig`/`DingTalkAttendanceAutoSyncTask`/`DingTalkApprovalAutoSyncTask`（有界线程池、复用公司互斥锁、运行中接口返 202）；「获取审批数据」新增发起窗口入口（5 参 fetchMonthData(month,start,end,empIds,types)），窗口内已通过审批全量幂等落库、不再按业务月丢弃（发起月≠业务月不再永久丢失），落库与展示解耦。方案文档 `../plans/2026-09-04-attendance-approval-cross-month-fetch-review.md`。
+- 2026-09-05 跨月请假单（调休/年假）按月拆分显示 + 请假日期解析加固：`Parser#resolveLeaveDateRange` 请假审批优先取请假控件 ext_value 权威 start_time/end_time；`queryPageList` 展示层 `clampCrossMonthRowsForDisplay` 按月截断区间+时长按工作日占比折算；公开口径入口 `calculateMonthPortion`（返回该月区间/时长/天数/工作日数，现算不落库）。仅改展示，库内单条完整、统计口径不变。
+- 2026-09-05 请假审批时长解析错误 + 时长"天"口径持久化：`resolveComplexLeaveDuration` 判 `durationInDay×2` 整数=按天填写→小时=durationInDay×8；否则才用 durationInHour（修半天年假错存 12h 问题）；表加派生列 `durationDay`(恒=小时/8)，抓取/手动新增/行内改三入口同步写，列表加"天数"列。SQL `../sql/2026-09-05_tbattendanceapprove_duration_day.sql`。
+- 2026-09-06 进度弹窗假完成修复（前端）：弹窗先归零、轮询挪到提交响应返回后才开始；`useProgressPolling.js` 加防呆（未见 RUNNING 先读完成态不当完成，20s 宽限继续轮询）；连带修等待循环卡死（加 `!isPolling` 立即退出）。
+- 2026-09-07 本地考勤判定引擎上线（弃用钉钉排班推送）：`hrm.dingtalk.schedule-push.enabled` 默认 false，排班只落本地；`HrmAttendanceJudgeServiceImpl` 以 tbplanlist 为应出勤基准判迟到/早退/缺卡/旷工，结果落新表 `hrm_attendance_judge_result`；补卡取审批数据（每月前 N 张）；考勤汇总加"本地判定"列组+「重算本地判定」按钮（`/attendanceData/judgeRecompute`、`judgeQuery`）。SQL `docs/sql/2026-09-06_attendance_judge.sql`。详见 `miniapp/docs/完成情况.md` 第二十七轮与 Prompt 清单 7.13。
+- 2026-09-08 考勤报表 type=1 字段整批本地化（去钉钉 `getcolumnval`，14308→0 次/月）：`hrm_attendance_judge_result` 加 `work_hours`；`generateLocalReportData` 按 fieldName 映射本地值落 `hrm_attendance_report_data`（写入前删旧幂等）；来源=判定结果表/打卡流水/审批/加班记录；6 列留空+type=2 请假仍走钉钉（本轮后已另修）。
+- 2026-09-08 考勤报表 type=2（请假）本地化（去钉钉 `getleavetimebynames`，3466→0）+ 缺卡分列修复：`generateLocalHolidayData` 数据源 tbattendanceapprove（tagName=请假）；单位复刻钉钉（durationDay×2 整数记天/否则记小时）；跨天假按工作日均摊；`hrm_attendance_judge_result` 加 `miss_card_on/off_count` 两列（修缺卡翻倍 bug）。
+
 ## 加班/夜班统计 与 考勤汇总（overtime.md）
 - 2026-04-04：功能一期（实时计算、OvertimeNightClockResolver 下班打卡兜底）；2026-04-05：落库设计/实现（明细表 employee_id+work_date 唯一）；2026-04-05：明细总览页；2026-05-08：员工月度明细按月份过滤。
 - 2026-04-07：兼容既有加班记录（hrm_employee_over_time_record 回填）；重算唯一键冲突修复（按 work_date 整月删除）；后端专项测试链路恢复（SalaryMonthRecordServiceNewTest 签名对齐）。
@@ -65,6 +85,9 @@
 - 2026-07-15：生产体系实际出勤加班来源修正（与行政一致只取审批加班）+ 2026-06 行政体系 Excel 对账（27 人差异分类）+ 王芳钉钉映射对调复核（通讯录校验刷新 dingtalk_user_id）+ 生产月休应出勤（30−4−1=25 天）。
 - 2026-07-15/17：考勤汇总同步加班/夜班统计（syncFromOvertimeNightStatistics、overtime_pay 字段、潘红琼 department 刷新、mapper select * 显式别名）。
 - 2026-07-23：固定月休应出勤修复（restType 优先）+ 开始统计范围选择前端合并。
+
+- 2026-09-04 行政考勤导出漏人修复：行源改三源并集（统计明细→考勤汇总→行政员工表去重）。
+- 2026-09-05 行政考勤导出去离职员工修复：三源筛人补"在职判定"（按计薪口径判在职/待离职/已离职+payDay，`HrmProduceAttendanceServiceImpl`）。
 
 ## 薪资管理（salary.md）
 - 2026-04-02：核算真实进度（queryComputeProgress，按租户+记录+范围隔离）；6012 社保校验放宽（有 status=1 员工明细即放行）；部门查询 JPA VO 转换异常修复。
@@ -90,6 +113,7 @@
 - 2026-07-17/18 农谷数据整理：7 月社保/公积金表方案落库（85 人）与 6 月工资表重整（82 人），含回滚 SQL 与异常清单（马国华/谢杰杰/程传祥同名未自动更新）。
 - 2026-07-20 薪资个人社保多 3 元排查：固定金额叠加 + 月记录早于方案重整的时序根因（黎冬霜专项）；结论"修正月记录后重算，不在导出层减 3"。
 - 2026-08-22 一键设置/长期护理详情见模块文档（含 hr_0003 88 条脏数据 SQL 修正与 cdadmin/hr_0002 验证）。
+- 2026-08-22 医疗长期护理保险（type=12 项目行 + is_enabled 全链路：方案保存/月度编辑落库/合计过滤/自动补默认启用行；合计不再自动累加基本工资固定金额 15/3）。
 
 ## 数据与运行配置（dataconfig.md）
 - 2026-04-03：连接池统一配置（DataSourcePoolConfigurator）与同步链路连接异常重试。
@@ -100,7 +124,12 @@
 - 2026-08-18：服务器部署跨域修复（CrossDomainFilter、OPTIONS 放行、局部 @CrossOrigin 清理、线上 OPTIONS/POST 核验）；prod 一键打包脚本（package-prod.sh/.command）；Maven 默认 profile 回归。
 - 2026-08-30 性能审查（完整清单，含跨模块项）：死循环快速失败与事务收缩（AttendanceUserManager/AttendanceGroupManager）；单例共享 users 清除（7 个类）；SimpleDateFormat ThreadLocal（10+ 处）；同步防重入 Redis 锁；线程池租户校验前置；薪资锁规范；社保 tryLock；动态调度修复；AttendanceDbLock 按 companyId；Redis TTL（排班元数据 30 天、ClassList 30 分钟）与 mSet 修复；FTP/附件/zip4j/ExcelWriter 资源释放；DingTalkLogRetentionCleanupTask；getOvertTime 复用客户端+100ms；FETCH_PROGRESS_MAP 过期清理；进度类字段 volatile；prod mapper 日志降级。全量 634 项测试回到 16 个存量失败基线（ApplicationProfileConfigTest×1、合同导入×6、LoginControllerTest×3、加班统计断言×5、司龄 mock×1）。
 
+- 2026-08-31：数据库备份列表过滤（`discoverDatabases` 改查 `tbCompanyList` 已注册库、`listRecords` 过滤无效库记录、`cleanupExpired` 先清理无效库历史记录，消除未注册残留库如 hr_0006 出现在备份列表）；契约见 dataconfig.md 需求要点。
+
 ## 文档与流程类（已并入 development.md/PRD）
 - 2026-04-19/20：新增 PRD.md；新增钉钉接口及数据库 .md/.xlsx 与生成脚本。
 - 2026-05-31 打卡记录 proxy request failed 排查（本地代理链路，前端配套 formatProxyRequestError）。
 - 2026-06-16 远端 404 类排查（exportBasicInfoTemplate 旧包、generateCode 404 兼容）属发布流程记录，处置规则已并入对应模块文档。
+
+## 考勤同步与审批获取（attendance-sync.md）
+- 2026-09-09 审批「全量获取人员」名单收窄+离职不再无谓反查(根治缺号离职者反复warn/配额浪费)：全量名单=未删除+(在职entry_status≠4含null)或近两月离职(entry_status=4且plan_quit_time∈[锚点,+1月))；锚点=窗口模式requestFetchStartTime/老入口·定时=month首日/finally复位/≤0离职全排除；离职本地有号trust复用不校验、不反查、缺号静默skip；定向勾人不套过滤(勾谁抓谁)。注入hrmEmployeeQuitInfoRepository；测试HrmAttendanceApprovalSyncEmployeeScopeTest(3绿)。大头listids不受影响。

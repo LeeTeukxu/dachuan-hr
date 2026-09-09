@@ -34,6 +34,27 @@ public class MpSchedulePermission implements Serializable {
     @Column(name = "visible_scope", nullable = false)
     private Integer visibleScope = SCOPE_SUBORDINATES;
 
+    /** 可添加排班（/mp/schedule/save 等）。2026-09-09 起由显式字段控制，不再用“有记录”表达 */
+    @Column(name = "can_schedule", nullable = false)
+    private Integer canSchedule = 0;
+
+    /** 小程序数据统计（/mp/dashboard/*） */
+    @Column(name = "can_view_statistics", nullable = false)
+    private Integer canViewStatistics = 0;
+
+    /** 小程序排班数据加载（/mp/mySchedule、/mp/mySchedule/day、/mp/schedule/query） */
+    @Column(name = "can_load_schedule", nullable = false)
+    private Integer canLoadSchedule = 0;
+
+    /**
+     * 可切换公司（2026-09-10，2a 闭环）：
+     * 与 can_view_statistics 组合控制"切到非本登录公司"的细粒度权限——
+     * can_view_statistics=1 且 can_switch_company=1 才允许带非本司 companyId 访问 dashboard 端点；
+     * 仅 can_view_statistics=1 时只能看本公司（默认安全）。
+     */
+    @Column(name = "can_switch_company", nullable = false)
+    private Integer canSwitchCompany = 0;
+
     @Column(name = "create_time")
     private Date createTime;
 
@@ -46,6 +67,14 @@ public class MpSchedulePermission implements Serializable {
     public void setEmployeeId(Long employeeId) { this.employeeId = employeeId; }
     public Integer getVisibleScope() { return visibleScope; }
     public void setVisibleScope(Integer visibleScope) { this.visibleScope = visibleScope; }
+    public Integer getCanSchedule() { return canSchedule; }
+    public void setCanSchedule(Integer canSchedule) { this.canSchedule = canSchedule; }
+    public Integer getCanViewStatistics() { return canViewStatistics; }
+    public void setCanViewStatistics(Integer canViewStatistics) { this.canViewStatistics = canViewStatistics; }
+    public Integer getCanLoadSchedule() { return canLoadSchedule; }
+    public void setCanLoadSchedule(Integer canLoadSchedule) { this.canLoadSchedule = canLoadSchedule; }
+    public Integer getCanSwitchCompany() { return canSwitchCompany; }
+    public void setCanSwitchCompany(Integer canSwitchCompany) { this.canSwitchCompany = canSwitchCompany; }
     public Date getCreateTime() { return createTime; }
     public void setCreateTime(Date createTime) { this.createTime = createTime; }
     public Date getUpdateTime() { return updateTime; }

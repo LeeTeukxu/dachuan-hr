@@ -1,5 +1,6 @@
 package com.tianye.hrsystem.entity.bo;
 
+import com.baomidou.mybatisplus.annotation.TableField;
 import com.tianye.hrsystem.base.PageEntity;
 import io.swagger.annotations.ApiModel;
 import io.swagger.annotations.ApiModelProperty;
@@ -64,6 +65,10 @@ public class QueryEmployeePageListBO extends PageEntity {
 
     @ApiModelProperty(value = "部门ID")
     private Long deptId;
+
+    @ApiModelProperty(value = "部门ID列表(含子部门，由service层填充)")
+    @TableField(exist = false)
+    private List<Long> deptIds;
 
     @ApiModelProperty(value = "岗位")
     private String post;

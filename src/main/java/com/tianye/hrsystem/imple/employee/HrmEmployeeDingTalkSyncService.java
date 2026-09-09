@@ -49,6 +49,8 @@ public class HrmEmployeeDingTalkSyncService {
         List<String> warnings = new ArrayList<>();
         List<String> fieldDiffs = new ArrayList<>();
         List<String> newEmployees = new ArrayList<>();
+        // 钉钉权限缺失收集器(本次同步内传递，避免多租户并发下用实例字段)
+        PermissionIssues permIssues = new PermissionIssues();
 
         try {
             String token = tokenCreator.Refresh();
@@ -61,7 +63,7 @@ public class HrmEmployeeDingTalkSyncService {
 
             // 递归拉取钉钉全部部门
             List<OapiV2DepartmentListsubResponse.DeptBaseResponse> dingDepts = new ArrayList<>();
-            loadAllDepts(token, 1L, dingDepts);
+            loadAllDepts(token, 1L, dingDepts, permIssues);
             Map<Long, String> dingDeptIdNameMap = dingDepts.stream()
                     .filter(d -> d.getName() != null)
                     .collect(Collectors.toMap(OapiV2DepartmentListsubResponse.DeptBaseResponse::getDeptId, OapiV2DepartmentListsubResponse.DeptBaseResponse::getName, (a, b) -> a));
@@ -76,7 +78,7 @@ public class HrmEmployeeDingTalkSyncService {
             Map<String, OapiV2UserListResponse.ListUserResponse> dingUserMap = new LinkedHashMap<>();
             Map<String, Long> userDeptMap = new HashMap<>();
             for (OapiV2DepartmentListsubResponse.DeptBaseResponse dept : dingDepts) {
-                List<OapiV2UserListResponse.ListUserResponse> users = loadDeptUsers(token, dept.getDeptId());
+                List<OapiV2UserListResponse.ListUserResponse> users = loadDeptUsers(token, dept.getDeptId(), permIssues);
                 for (OapiV2UserListResponse.ListUserResponse user : users) {
                     if (user.getUserid() == null || dingUserMap.containsKey(user.getUserid())) {
                         continue;
@@ -103,6 +105,14 @@ public class HrmEmployeeDingTalkSyncService {
             int insertCount = 0;
             List<HrmEmployee> toInsert = new ArrayList<>();
             List<HrmEmployee> toUpdate = new ArrayList<>();
+
+            // 预统计：钉钉拉到多少人、其中多少人带手机号(用于"缺手机号字段权限"启发式)
+            int dingWithMobile = 0;
+            for (OapiV2UserListResponse.ListUserResponse u : dingUserMap.values()) {
+                if (u.getMobile() != null && !u.getMobile().trim().isEmpty()) {
+                    dingWithMobile++;
+                }
+            }
 
             for (OapiV2UserListResponse.ListUserResponse user : dingUserMap.values()) {
                 String userid = user.getUserid();
@@ -221,6 +231,8 @@ public class HrmEmployeeDingTalkSyncService {
                 }
             }
 
+            fillPermissionTips(result, permIssues, dingUserMap.size(), dingWithMobile);
+
             result.put("dingCount", dingUserMap.size());
             result.put("insertCount", insertCount);
             result.put("updateCount", updateCount);
@@ -245,31 +257,38 @@ public class HrmEmployeeDingTalkSyncService {
         return result;
     }
 
-    private void loadAllDepts(String token, Long parentDeptId, List<OapiV2DepartmentListsubResponse.DeptBaseResponse> collector) throws Exception {
+    private void loadAllDepts(String token, Long parentDeptId, List<OapiV2DepartmentListsubResponse.DeptBaseResponse> collector,
+                              PermissionIssues permIssues) throws Exception {
         DingTalkClient client = new DefaultDingTalkClient("https://oapi.dingtalk.com/topapi/v2/department/listsub");
         OapiV2DepartmentListsubRequest request = new OapiV2DepartmentListsubRequest();
         request.setDeptId(parentDeptId);
-        // 失败重试3次，仍失败抛异常中止(静默返回会漏部门/漏人)
+        // 失败重试3次；权限类错误(errcode=88/60011/未开通)不重试、记录缺失权限后跳过该分支，避免整棵树崩掉导致一个员工都同步不到
         OapiV2DepartmentListsubResponse response = null;
         for (int retry = 0; retry < 3; retry++) {
             response = client.execute(request, token);
             if (response != null && response.isSuccess() && response.getResult() != null) {
                 break;
             }
-            String err = response == null ? "返回null" : "errcode=" + response.getErrcode() + "," + response.getErrmsg();
-            logger.warn("拉取钉钉子部门(parentId={})第{}次失败({})", parentDeptId, retry + 1, err);
+            String errmsg = response == null ? "返回null" : ("errcode=" + response.getErrcode() + "," + response.getErrmsg());
+            if (isDingPermissionError(response == null ? 0 : response.getErrcode(),
+                    response == null ? "" : response.getErrmsg())) {
+                permIssues.addFromError(errmsg);
+                logger.warn("拉取钉钉子部门(parentId={})失败：钉钉权限未开通，跳过该分支。{}", parentDeptId, errmsg);
+                return;
+            }
+            logger.warn("拉取钉钉子部门(parentId={})第{}次失败({})", parentDeptId, retry + 1, errmsg);
             if (retry == 2) {
-                throw new RuntimeException("拉取钉钉部门(parentId=" + parentDeptId + ")连续3次失败: " + err);
+                throw new RuntimeException("拉取钉钉部门(parentId=" + parentDeptId + ")连续3次失败: " + errmsg);
             }
             Thread.sleep(500L);
         }
         for (OapiV2DepartmentListsubResponse.DeptBaseResponse dept : response.getResult()) {
             collector.add(dept);
-            loadAllDepts(token, dept.getDeptId(), collector);
+            loadAllDepts(token, dept.getDeptId(), collector, permIssues);
         }
     }
 
-    private List<OapiV2UserListResponse.ListUserResponse> loadDeptUsers(String token, Long deptId) throws Exception {
+    private List<OapiV2UserListResponse.ListUserResponse> loadDeptUsers(String token, Long deptId, PermissionIssues permIssues) throws Exception {
         List<OapiV2UserListResponse.ListUserResponse> users = new ArrayList<>();
         long cursor = 0L;
         while (true) {
@@ -278,22 +297,18 @@ public class HrmEmployeeDingTalkSyncService {
             request.setDeptId(deptId);
             request.setCursor(cursor);
             request.setSize(100L);
-            // 失败重试3次，仍失败抛异常中止(静默返回会漏人，预检结果失真)
-            OapiV2UserListResponse response = null;
-            for (int retry = 0; retry < 3; retry++) {
-                response = client.execute(request, token);
-                if (response != null && response.isSuccess() && response.getResult() != null) {
-                    break;
-                }
+            OapiV2UserListResponse response = client.execute(request, token);
+            if (response == null || !response.isSuccess() || response.getResult() == null) {
                 String err = response == null ? "返回null" : "errcode=" + response.getErrcode() + "," + response.getErrmsg();
-                logger.warn("拉取钉钉部门人员(deptId={})第{}次失败({})", deptId, retry + 1, err);
-                if (retry == 2) {
-                    if (com.tianye.hrsystem.common.EmployeeNotInDingTalkException.isDingTalkPermissionError(err)) {
-                        throw new RuntimeException(com.tianye.hrsystem.common.EmployeeNotInDingTalkException.DINGTALK_PERMISSION_GUIDANCE);
-                    }
-                    throw new RuntimeException("拉取钉钉部门人员(deptId=" + deptId + ")连续3次失败: " + err);
+                // 该接口需通讯录成员读权限，普通应用无权限时100%失败；权限类错误记录缺失权限便于提示操作者，其余不再重试浪费钉钉配额
+                if (isDingPermissionError(response == null ? 0 : response.getErrcode(),
+                        response == null ? "" : response.getErrmsg())) {
+                    permIssues.addFromError(err);
+                    logger.warn("拉取钉钉部门人员(deptId={})失败：钉钉权限未开通，跳过该部门。{}", deptId, err);
+                } else {
+                    logger.warn("拉取钉钉部门人员(deptId={})失败，跳过该部门(无接口权限将不再重试): {}", deptId, err);
                 }
-                Thread.sleep(500L);
+                return users;
             }
             List<OapiV2UserListResponse.ListUserResponse> list = response.getResult().getList();
             if (list != null) {
@@ -316,5 +331,164 @@ public class HrmEmployeeDingTalkSyncService {
             return null;
         }
         return Instant.ofEpochMilli(hiredDate).atZone(ZoneId.systemDefault()).toLocalDate();
+    }
+
+    /**
+     * 钉钉同步权限缺失收集器(单次 syncRoster 内传递；不落实例字段避免多租户并发串扰)。
+     * scope 用 LinkedHashSet 保序去重；fieldMobile(手机号字段)缺失钉钉不报错，由主流程启发式补入。
+     */
+    private static class PermissionIssues {
+        final Set<String> scopes = new LinkedHashSet<>();
+        final List<String> rawMsgs = new ArrayList<>();
+
+        /** 从钉钉报错文本(errmsg/sub_msg)里提取缺失权限点 scope 并登记 */
+        void addFromError(String errMsg) {
+            if (errMsg == null) {
+                return;
+            }
+            rawMsgs.add(errMsg);
+            // 钉钉错误形如: subcode=60011,submsg=应用尚未开通所需的权限：[qyapi_get_department_member],点击链接申请...
+            // 也可能 errmsg 包裹: ding talk error[subcode=60011,submsg=...[qyapi_xxx]...申请...]
+            java.util.regex.Matcher m = java.util.regex.Pattern.compile("\\[([a-zA-Z_][a-zA-Z0-9_]*)\\]")
+                    .matcher(errMsg);
+            while (m.find()) {
+                String scope = m.group(1);
+                // 只收集典型的钉钉权限 scope，避免把部门名/其它方括号内容误收
+                if (scope.startsWith("qyapi_") || scope.startsWith("field") || scope.startsWith("Contact")
+                        || scope.contains("Mobile") || scope.contains("mobile")) {
+                    scopes.add(scope);
+                }
+            }
+        }
+
+        void addScope(String scope) {
+            if (scope != null && !scope.isEmpty()) {
+                scopes.add(scope);
+            }
+        }
+
+        boolean isEmpty() {
+            return scopes.isEmpty();
+        }
+    }
+
+    /** 判断是否为钉钉"权限未开通/无权限"类错误(errmsg 含 60011 / 尚未开通所需权限 / 无权限调用) */
+    private boolean isDingPermissionError(long errcode, String errmsg) {
+        if (errcode == 88) {
+            return true;
+        }
+        if (errmsg == null) {
+            return false;
+        }
+        return errmsg.contains("60011") || errmsg.contains("尚未开通所需") || errmsg.contains("尚未开通所需权限")
+                || errmsg.contains("无权限调用") || errmsg.contains("无权限");
+    }
+
+    /** 权限点 → 人话展示名(未收录的原样保留) */
+    private String dingScopeName(String scope) {
+        switch (scope) {
+            case "qyapi_get_department_list":
+                return "通讯录部门信息读(拉取部门列表)";
+            case "qyapi_get_department_member":
+                return "通讯录部门成员读(拉取各部门员工列表)";
+            case "qyapi_get_member":
+                return "通讯录成员信息读(查单个员工详情)";
+            case "qyapi_get_member_by_mobile":
+            case "qyapi_get_member_by_moblie":
+                return "按手机号查询成员(getbymobile)";
+            case "fieldMobile":
+            case "Contact.User.mobile":
+                return "企业员工手机号信息(返回员工手机号字段)";
+            case "fieldEmail":
+                return "邮箱等个人信息(返回邮箱字段)";
+            default:
+                return scope;
+        }
+    }
+
+    /** 从钉钉报错文本提取"申请开通权限"直达链接(形如 https://open-dev.dingtalk.com/appscope/apply?content=...#scope) */
+    private String extractApplyUrl(String errMsg) {
+        if (errMsg == null) {
+            return null;
+        }
+        java.util.regex.Matcher m = java.util.regex.Pattern
+                .compile("https://open-dev\\.dingtalk\\.com/appscope/apply[^\\s,\"\\]]*").matcher(errMsg);
+        return m.find() ? m.group(0) : null;
+    }
+
+    /** 把收集到的缺失权限组装成前端可见的 permissionTips 数组 */
+    private List<Map<String, String>> assemblePermissionTips(PermissionIssues permIssues) {
+        List<Map<String, String>> tips = new ArrayList<>();
+        if (permIssues == null || permIssues.isEmpty()) {
+            return tips;
+        }
+        List<String> rawMsgs = new ArrayList<>(new LinkedHashSet<>(permIssues.rawMsgs));
+        for (String scope : permIssues.scopes) {
+            // 找一条含该 scope 的原始报错，用于提取申请链接
+            String hitRaw = null;
+            for (String raw : rawMsgs) {
+                if (raw.contains("[" + scope + "]")) {
+                    hitRaw = raw;
+                    break;
+                }
+            }
+            String applyUrl = hitRaw == null ? null : extractApplyUrl(hitRaw);
+            Map<String, String> tip = new LinkedHashMap<>();
+            tip.put("scope", scope);
+            tip.put("name", dingScopeName(scope));
+            tip.put("effect", dingPermissionEffect(scope));
+            tip.put("applyUrl", applyUrl == null ? "" : applyUrl);
+            tip.put("guide", dingPermissionGuide(scope));
+            tips.add(tip);
+        }
+        return tips;
+    }
+
+    /** 各权限缺失时的"现象"文案(供操作者理解缺了会怎样) */
+    private String dingPermissionEffect(String scope) {
+        switch (scope) {
+            case "qyapi_get_department_list":
+                return "无法读取钉钉部门树，同步将无法进行";
+            case "qyapi_get_department_member":
+                return "无法读取各部门员工，钉钉员工总数会显示为0，同步不到任何人";
+            case "qyapi_get_member":
+                return "无法读取单个员工详情(影响部分字段)，建议一并开通";
+            case "qyapi_get_member_by_mobile":
+                return "无法按手机号反查钉钉用户，手机号兜底匹配会失效";
+            case "fieldMobile":
+            case "Contact.User.mobile":
+                return "员工手机号字段返回为空，已匹配到的大量员工会报\"未返回手机号，已跳过\"";
+            default:
+                return "该权限缺失会导致相关同步步骤失败";
+        }
+    }
+
+    /** 各权限的后台开通指引(含"通讯录管理"子页这一步) */
+    private String dingPermissionGuide(String scope) {
+        switch (scope) {
+            case "qyapi_get_department_list":
+            case "qyapi_get_department_member":
+            case "qyapi_get_member":
+            case "qyapi_get_member_by_mobile":
+                return "钉钉开放平台→企业内部开发→该应用→开发配置→权限管理，在接口权限列表找到并开通[" + dingScopeName(scope) + "]对应权限";
+            case "fieldMobile":
+            case "Contact.User.mobile":
+                return "钉钉开放平台→企业内部开发→该应用→开发配置→权限管理→【通讯录管理】页，勾选\"企业员工手机号信息\"后点\"申请权限\"(手机号/邮箱属敏感字段，接口权限开了也拿不到，必须在此单独勾选)";
+            default:
+                return "钉钉开放平台→该应用→权限管理→搜索对应权限并开通";
+        }
+    }
+
+    /** 主流程收尾：根据收集结果 + 手机号全空启发式，产出 permissionTips 写入 result */
+    private void fillPermissionTips(Map<String, Object> result, PermissionIssues permIssues, int dingUserCount, int dingWithMobile) {
+        // 启发式补 fieldMobile：能拉到人(dingUserCount>0) 但所有人手机号都为空 → 极可能是缺手机号字段权限。
+        // 仅当"有人但0个带手机号"才触发，避免个别员工没录号(其余有号)时误报为权限问题。
+        boolean allMobileEmpty = dingUserCount > 0 && dingWithMobile == 0;
+        if (allMobileEmpty) {
+            permIssues.addScope("fieldMobile");
+        }
+        List<Map<String, String>> tips = assemblePermissionTips(permIssues);
+        result.put("permissionIssues", !tips.isEmpty());
+        result.put("permissionTips", tips);
     }
 }

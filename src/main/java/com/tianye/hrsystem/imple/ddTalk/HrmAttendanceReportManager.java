@@ -25,7 +25,9 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.support.TransactionTemplate;
 
+import java.math.BigDecimal;
 import java.text.SimpleDateFormat;
+import java.time.LocalDate;
 import java.util.*;
 import java.util.stream.Collectors;
 
@@ -45,6 +47,16 @@ public class HrmAttendanceReportManager implements IHrmAttendanceReport {
     @Autowired
     hrmAttendanceReportDataRepository dataRep;
     @Autowired
+    hrmAttendanceJudgeResultRepository judgeResultRepository;
+    @Autowired
+    hrmEmployeeRepository employeeRepository;
+    @Autowired
+    tbattendanceapproveRepository approveRepository;
+    @Autowired
+    hrmAttendanceClockRepository clockRepository;
+    @Autowired
+    com.tianye.hrsystem.modules.workweek.service.HrmWorkweekSettingService workweekService;
+    @Autowired
     hrmEmployeeLeaveRecordRepository leaveRep;
     @Autowired
     hrmEmployeeOverTimeRecordRepository overTimeRep;
@@ -54,6 +66,9 @@ public class HrmAttendanceReportManager implements IHrmAttendanceReport {
     private static final ThreadLocal<SimpleDateFormat> SHORT_FORMAT =
             ThreadLocal.withInitial(() -> new SimpleDateFormat("yyyy-MM-dd"));
     List<String> overTimes = Arrays.asList("工作日加班", "休息日加班", "节假日加班");
+    /** 打卡类型：1 上班打卡 2 下班打卡 */
+    private static final int PUNCH_TYPE_ON = 1;
+    private static final int PUNCH_TYPE_OFF = 2;
 
     Logger logger = LoggerFactory.getLogger(HrmAttendanceReportManager.class);
     @Autowired
@@ -107,105 +122,15 @@ public class HrmAttendanceReportManager implements IHrmAttendanceReport {
     @Override
     @Transactional
     public void UpdateAttendanceReport(String userId, Long empId, Date begin, Date end) throws ApiException {
-        int pageIndex = 0;
-        LoginUserInfo Info=CompanyContext.get();
-        List<HrmAttendanceReportField> allFields = fieldRep.findAll();
-        while (true) {
-            List<HrmAttendanceReportField> fields = allFields.stream().filter(f -> f.getType() == 1).skip(pageIndex * 20L).limit(20L).collect(Collectors.toList());
-            if (fields.size() > 0) {
-                String password = tokener.Refresh();
-                String Ids = String.join(",", fields.stream().map(f -> Long.toString(f.getFieldId())).collect(Collectors.toList()));
-                for(int i=0;i<3;i++){
-                    DingTalkClient client = new DefaultDingTalkClient("https://oapi.dingtalk.com/topapi/attendance/getcolumnval");
-                    OapiAttendanceGetcolumnvalRequest req = new OapiAttendanceGetcolumnvalRequest();
-                    req.setFromDate(begin);
-                    req.setToDate(end);
-                    req.setColumnIdList(Ids);
-                    req.setUserid(userId);
-                    OapiAttendanceGetcolumnvalResponse rsp = client.execute(req, password);
-                    if (rsp.isSuccess()) {
-                        Ddtaskresult result=new Ddtaskresult();
-                        result.setProcessed(0);
-                        result.setClassName("UpdateAttendanceRepot");
-                        result.setResult("未处理");
-                        result.setCreatetime(new Date());
-                        result.setCompanyId(Info.getCompanyId());
-                        result.setContent(JSON.toJSONString(rsp));
-                        result.setBegin(CIMPLE.get().format(begin));
-                        result.setEnd(CIMPLE.get().format(end));
-                        result.setEmpId(empId);
-                        result.setUserId(userId);  // 【修复重名员工问题】：保存userId用于去重
-                        ddRep.save(result);
-                        logger.info("插入了一条"+SHORT_FORMAT.get().format(begin)+"-"+SHORT_FORMAT.get().format(end)+"的考勤报表数据!");
-                        break;
-                    } else {
-                        if(i==2){
-                            logger.info(rsp.getErrmsg());
-                            throw new ApiException("超过最大重试次数，程序退出");
-                        } else {
-                            logger.info("拉取数据失败:"+rsp.getErrmsg()+"进行重试!");
-                            try {
-                                Thread.sleep(100);
-                            } catch (InterruptedException e) {
-                                throw new RuntimeException(e);
-                            }
-                        }
-                    }
-                }
-                pageIndex++;
-                try {
-                    Thread.sleep(10);
-                } catch (InterruptedException e) {
-                    throw new RuntimeException(e);
-                }
-            } else break;
-        }
+        // 本地计算，不再调用钉钉 getcolumnval（降配额；原逻辑存 ddtaskresult 待解析，现已直接落 report_data）
+        generateLocalReportData(empId, begin, end);
     }
 
     @Override
+    @Transactional
     public void UpdateAttendanceReportQuick(String userId, Long empId, Date begin, Date end) throws ApiException {
-        int pageIndex = 0;
-        LoginUserInfo Info=CompanyContext.get();
-        List<HrmAttendanceReportField> allFields = fieldRep.findAll();
-        while (true) {
-            List<HrmAttendanceReportField> fields = allFields.stream().filter(f -> f.getType() == 1).skip(pageIndex * 20L).limit(20L).collect(Collectors.toList());
-            if (fields.size() > 0) {
-                String password = tokener.Refresh();
-                String Ids = String.join(",", fields.stream().map(f -> Long.toString(f.getFieldId())).collect(Collectors.toList()));
-                for(int i=0;i<3;i++){
-                    DingTalkClient client = new DefaultDingTalkClient("https://oapi.dingtalk.com/topapi/attendance/getcolumnval");
-                    OapiAttendanceGetcolumnvalRequest req = new OapiAttendanceGetcolumnvalRequest();
-                    req.setFromDate(begin);
-                    req.setToDate(end);
-                    req.setColumnIdList(Ids);
-                    req.setUserid(userId);
-                    OapiAttendanceGetcolumnvalResponse rsp = client.execute(req, password);
-                    if (rsp.isSuccess()) {
-                        SaveReportData(empId,rsp);
-                        logger.info("插入了一条"+SHORT_FORMAT.get().format(begin)+"-"+SHORT_FORMAT.get().format(end)+"的考勤报表数据!");
-                        break;
-                    } else {
-                        if(i==2){
-                            logger.info(rsp.getErrmsg());
-                            throw new ApiException("超过最大重试次数，程序退出");
-                        } else {
-                            logger.info("拉取数据失败:"+rsp.getErrmsg()+"进行重试!");
-                            try {
-                                Thread.sleep(1000);
-                            } catch (InterruptedException e) {
-                                throw new RuntimeException(e);
-                            }
-                        }
-                    }
-                }
-                pageIndex++;
-                try {
-                    Thread.sleep(10);
-                } catch (InterruptedException e) {
-                    throw new RuntimeException(e);
-                }
-            } else break;
-        }
+        // 本地计算，不再调用钉钉 getcolumnval（降配额）
+        generateLocalReportData(empId, begin, end);
     }
 
     @Autowired
@@ -213,91 +138,584 @@ public class HrmAttendanceReportManager implements IHrmAttendanceReport {
     private static final ThreadLocal<SimpleDateFormat> CIMPLE =
             ThreadLocal.withInitial(() -> new SimpleDateFormat("yyyyMMdd"));
     @Override
+    @Transactional
     public void UpdateHolidayReport(String userId, Long empId, Date begin, Date end) throws ApiException {
-        List<HrmAttendanceReportField> allFields = fieldRep.findAll();
-        List<HrmAttendanceReportField> fields = allFields.stream().filter(f -> f.getType() == 2).collect(Collectors.toList());
-        LoginUserInfo Info=CompanyContext.get();
-        if (fields.size() > 0) {
-            String password = tokener.Refresh();
-            List<Long> idd=fields.stream().map(f->f.getFieldId()).collect(Collectors.toList());
-            int count=dataRep.countAllByEmpIdAndWorkDateBetweenAndFieldIdIn(empId,begin,end,idd);
-            if(count==0){
-                String Ids = String.join(",", fields.stream().map(f -> f.getFieldName()).collect(Collectors.toList()));
-                for(int i=0;i<3;i++){
-                    DingTalkClient client = new DefaultDingTalkClient("https://oapi.dingtalk.com/topapi/attendance/getleavetimebynames");
-                    OapiAttendanceGetleavetimebynamesRequest req = new OapiAttendanceGetleavetimebynamesRequest();
-
-                    req.setFromDate(begin);
-                    req.setToDate(end);
-                    req.setLeaveNames(Ids);
-                    req.setUserid(userId);
-                    OapiAttendanceGetleavetimebynamesResponse rsp = client.execute(req, password);
-                    if(rsp.isSuccess()){
-                        //ddLogger.Info(rsp,((DefaultDingTalkClient)client).getRequestUrl(),begin,end,HrmAttendanceReportManager.class);
-
-                        Ddtaskresult result=new Ddtaskresult();
-                        result.setProcessed(0);
-                        result.setClassName("UpdateHolidayReport");
-                        result.setResult("未处理");
-                        result.setCreatetime(new Date());
-                        result.setEmpId(empId);
-                        result.setUserId(userId);  // 【修复重名员工问题】：保存userId用于去重
-                        result.setBegin(CIMPLE.get().format(begin));
-                        result.setEnd(CIMPLE.get().format(end));
-                        result.setCompanyId(Info.getCompanyId());
-                        result.setContent(JSON.toJSONString(rsp));
-                        ddRep.save(result);
-                        logger.info("插入了一条"+SHORT_FORMAT.get().format(begin)+"-"+SHORT_FORMAT.get().format(end)+"的请假报表数据!");
-                        break;
-                    } else {
-                        if(i==2){
-                            logger.info(rsp.getErrmsg());
-                            throw new ApiException("超过最大重试次数，程序退出");
-                        } else {
-                            logger.info("拉取数据失败:"+rsp.getErrmsg()+"进行重试!");
-                            try {
-                                Thread.sleep(1000);
-                            } catch (InterruptedException e) {
-                                throw new RuntimeException(e);
-                            }
-                        }
-                    }
-                }
-
-            } else {
-                logger.info(Long.toString(empId)+"已保存了："+Integer.toString(count)+"条记录!");
-            }
-        }
+        // 本地计算，不再调用钉钉 getleavetimebynames（降配额）
+        generateLocalHolidayData(empId, begin, end);
     }
 
     @Override
+    @Transactional
     public void UpdateHolidayReportQuick(String userId, Long empId, Date begin, Date end) throws ApiException {
+        // 本地计算，不再调用钉钉 getleavetimebynames（降配额）
+        generateLocalHolidayData(empId, begin, end);
+    }
+
+    /**
+     * 本地生成 type=2 请假报表数据（替代钉钉 getleavetimebynames）。
+     * 数据源：本地审批 tbattendanceapprove（tagName=请假，subType=假别）。
+     * 单位复刻钉钉：按天请的假记"天"（durationDay），按小时请的记"小时"（duration）。
+     * 跨天假按区间内"工作日"均摊到每一天，保证月报按天累加的总量不重复、不放大。
+     */
+    private void generateLocalHolidayData(Long empId, Date begin, Date end) {
         List<HrmAttendanceReportField> allFields = fieldRep.findAll();
         List<HrmAttendanceReportField> fields = allFields.stream().filter(f -> f.getType() == 2).collect(Collectors.toList());
-        LoginUserInfo Info=CompanyContext.get();
-        if (fields.size() > 0) {
-            String password = tokener.Refresh();
-            List<Long> idd=fields.stream().map(f->f.getFieldId()).collect(Collectors.toList());
-            int count=dataRep.countAllByEmpIdAndWorkDateBetweenAndFieldIdIn(empId,begin,end,idd);
-            if(count==0){
-                String Ids = String.join(",", fields.stream().map(f -> f.getFieldName()).collect(Collectors.toList()));
-                DingTalkClient client = new DefaultDingTalkClient("https://oapi.dingtalk.com/topapi/attendance/getleavetimebynames");
-                OapiAttendanceGetleavetimebynamesRequest req = new OapiAttendanceGetleavetimebynamesRequest();
+        if (fields.isEmpty()) {
+            return;
+        }
+        List<Long> fieldIds = fields.stream().map(HrmAttendanceReportField::getFieldId).collect(Collectors.toList());
+        dataRep.deleteAllByEmpIdAndWorkDateBetweenAndFieldIdIn(empId, begin, end, fieldIds);
 
-                req.setFromDate(begin);
-                req.setToDate(end);
-                req.setLeaveNames(Ids);
-                req.setUserid(userId);
-                OapiAttendanceGetleavetimebynamesResponse rsp = client.execute(req, password);
-                if(rsp.isSuccess()){
-                    SaveHolidayData(empId,rsp);
-                    logger.info("插入了一条"+SHORT_FORMAT.get().format(begin)+"-"+SHORT_FORMAT.get().format(end)+"的请假报表数据!");
-                }
+        Map<Date, Map<String, Double>> leaveByDay = loadLeaveByDay(empId, begin, end);
+        List<HrmAttendanceReportData> datas = new ArrayList<>();
+        Calendar cal = Calendar.getInstance();
+        cal.setTime(startOfDay(begin));
+        Date endDay = endOfDay(end);
+        while (!cal.getTime().after(endDay)) {
+            Date day = cal.getTime();
+            Map<String, Double> dayValues = leaveByDay.getOrDefault(day, Collections.emptyMap());
+            for (HrmAttendanceReportField field : fields) {
+                HrmAttendanceReportData d = new HrmAttendanceReportData();
+                d.setEmpId(empId);
+                Double v = dayValues.get(field.getFieldName());
+                d.setValue(v == null ? "0" : formatHours(v));
+                d.setFieldId(field.getFieldId());
+                d.setFieldName(field.getFieldName());
+                d.setWorkDate(day);
+                d.setCreateTime(new Date());
+                d.setCreateUser(1L);
+                datas.add(d);
+            }
+            cal.add(Calendar.DAY_OF_MONTH, 1);
+        }
+        if (!datas.isEmpty()) {
+            dataRep.saveAll(datas);
+        }
+        logger.info("[本地报表] 员工{} {}-{} 生成 type=2 请假数据 {} 条（已去钉钉 getleavetimebynames）",
+                empId, SHORT_FORMAT.get().format(begin), SHORT_FORMAT.get().format(end), datas.size());
+    }
 
-            } else {
-                logger.info(Long.toString(empId)+"已保存了："+Integer.toString(count)+"条记录!");
+    /** 请假数据按日分组：假别(subType) → 当日值（天或小时，按钉钉单位复刻） */
+    private Map<Date, Map<String, Double>> loadLeaveByDay(Long empId, Date begin, Date end) {
+        Map<Date, Map<String, Double>> map = new HashMap<>();
+        if (empId == null) {
+            return map;
+        }
+        Optional<HrmEmployee> emp = employeeRepository.findById(empId);
+        String dingUserId = emp.isPresent() ? emp.get().getDingtalkUserId() : null;
+        if (StringUtils.isBlank(dingUserId)) {
+            logger.warn("[本地报表] 员工{} 未绑定钉钉 userId，请假报表列置 0", empId);
+            return map;
+        }
+        List<tbattendanceapprove> list = approveRepository.findAllByUserIdInAndWorkDateBetween(
+                Collections.singletonList(dingUserId), startOfDay(begin), endOfDay(end));
+        if (list == null) {
+            return map;
+        }
+        for (tbattendanceapprove a : list) {
+            if (!"请假".equals(a.getTagName()) || StringUtils.isBlank(a.getSubType())) {
+                continue;
+            }
+            Date from = a.getBeginTime() != null ? a.getBeginTime() : a.getWorkDate();
+            if (from == null) {
+                continue;
+            }
+            Date to = a.getEndTime() != null ? a.getEndTime() : from;
+            if (to.before(from)) {
+                to = from;
+            }
+            // 单位复刻钉钉：按天请的假 → 天数；按小时请的 → 小时数
+            boolean byDay = isWholeDayLeave(a);
+            double total = byDay ? parseNum(a.getDurationDay()) : parseNum(a.getDuration());
+            if (total <= 0d) {
+                continue;
+            }
+            List<Date> days = workdaysBetween(from, to);
+            if (days.isEmpty()) {
+                days = allDaysBetween(from, to);
+            }
+            if (days.isEmpty()) {
+                continue;
+            }
+            double per = total / days.size();
+            for (Date d : days) {
+                map.computeIfAbsent(startOfDay(d), k -> new HashMap<>())
+                        .merge(a.getSubType(), per, Double::sum);
             }
         }
+        return map;
+    }
+
+    /**
+     * 是否"按天请假"：durationDay × 2 为整数（半天/全天/1.5天…）即为按天填写，
+     * 与审批解析口径 HrmAttendanceApprovalProcessInstanceParser 一致。
+     */
+    private static boolean isWholeDayLeave(tbattendanceapprove a) {
+        BigDecimal dd = toBigDecimal(a.getDurationDay());
+        if (dd == null) {
+            return false;
+        }
+        return dd.multiply(BigDecimal.valueOf(2)).stripTrailingZeros().scale() <= 0;
+    }
+
+    /** 区间内的工作日（无工作日时返回空列表，由调用方回落到全部日历日） */
+    private List<Date> workdaysBetween(Date from, Date to) {
+        List<Date> days = new ArrayList<>();
+        Calendar c = Calendar.getInstance();
+        c.setTime(startOfDay(from));
+        Date last = startOfDay(to);
+        while (!c.getTime().after(last)) {
+            Date d = c.getTime();
+            if (workweekService.countWorkDays(toLocalDate(d), toLocalDate(d)) > 0) {
+                days.add(d);
+            }
+            c.add(Calendar.DAY_OF_MONTH, 1);
+        }
+        return days;
+    }
+
+    private static List<Date> allDaysBetween(Date from, Date to) {
+        List<Date> days = new ArrayList<>();
+        Calendar c = Calendar.getInstance();
+        c.setTime(startOfDay(from));
+        Date last = startOfDay(to);
+        while (!c.getTime().after(last)) {
+            days.add(c.getTime());
+            c.add(Calendar.DAY_OF_MONTH, 1);
+        }
+        return days;
+    }
+
+    private static LocalDate toLocalDate(Date d) {
+        return new java.sql.Date(d.getTime()).toLocalDate();
+    }
+
+    private static double parseNum(String v) {
+        BigDecimal bd = toBigDecimal(v);
+        return bd == null ? 0d : bd.doubleValue();
+    }
+
+    private static BigDecimal toBigDecimal(String v) {
+        if (StringUtils.isBlank(v)) {
+            return null;
+        }
+        try {
+            return new BigDecimal(v.trim());
+        } catch (NumberFormatException e) {
+            return null;
+        }
+    }
+
+    /**
+     * 本地生成 type=1 考勤报表数据（替代钉钉 getcolumnval）。
+     * 数据源：hrm_attendance_judge_result（每人每日一行，含出勤工时/迟到/早退/缺卡/旷工/休息日出勤等）。
+     * 按员工+区间遍历每日，按字段名(fieldName)映射本地值落 hrm_attendance_report_data；
+     * 写入前先删除该员工区间旧的 type=1 数据做幂等。事务由 public 调用方保证。
+     */
+    private void generateLocalReportData(Long empId, Date begin, Date end) {
+        List<HrmAttendanceReportField> allFields = fieldRep.findAll();
+        List<HrmAttendanceReportField> fields = allFields.stream().filter(f -> f.getType() == 1).collect(Collectors.toList());
+        if (fields.isEmpty()) {
+            return;
+        }
+        List<HrmAttendanceJudgeResult> judgeRows =
+                judgeResultRepository.findByEmpIdAndWorkDateBetweenOrderByWorkDateAsc(empId, begin, end);
+        Map<Date, HrmAttendanceJudgeResult> judgeByDay = new LinkedHashMap<>();
+        for (HrmAttendanceJudgeResult j : judgeRows) {
+            if (j != null && j.getWorkDate() != null) {
+                judgeByDay.put(startOfDay(j.getWorkDate()), j);
+            }
+        }
+        List<Long> fieldIds = fields.stream().map(HrmAttendanceReportField::getFieldId).collect(Collectors.toList());
+        dataRep.deleteAllByEmpIdAndWorkDateBetweenAndFieldIdIn(empId, begin, end, fieldIds);
+
+        // 预加载本地数据源：打卡流水（多段打卡）、钉钉审批（补卡/出差/外出/关联审批单）、加班记录
+        Map<Date, List<HrmAttendanceClock>> clockByDay = loadClockByDay(empId, begin, end);
+        Map<Date, List<tbattendanceapprove>> approveByDay = loadApproveByDay(empId, begin, end);
+        Map<Date, List<HrmEmployeeOverTimeRecord>> overtimeByDay = loadOvertimeByDay(empId, begin, end);
+
+        List<HrmAttendanceReportData> datas = new ArrayList<>();
+        Calendar cal = Calendar.getInstance();
+        cal.setTime(startOfDay(begin));
+        Date endDay = endOfDay(end);
+        while (!cal.getTime().after(endDay)) {
+            Date day = cal.getTime();
+            HrmAttendanceJudgeResult j = judgeByDay.get(day);
+            DayContext ctx = new DayContext(day,
+                    clockByDay.getOrDefault(day, Collections.emptyList()),
+                    approveByDay.getOrDefault(day, Collections.emptyList()),
+                    overtimeByDay.getOrDefault(day, Collections.emptyList()));
+            for (HrmAttendanceReportField field : fields) {
+                HrmAttendanceReportData d = new HrmAttendanceReportData();
+                d.setEmpId(empId);
+                d.setValue(resolveLocalColumnValue(field.getFieldName(), j, ctx));
+                d.setFieldId(field.getFieldId());
+                d.setFieldName(field.getFieldName());
+                d.setWorkDate(day);
+                d.setCreateTime(new Date());
+                d.setCreateUser(1L);
+                datas.add(d);
+            }
+            cal.add(Calendar.DAY_OF_MONTH, 1);
+        }
+        if (!datas.isEmpty()) {
+            dataRep.saveAll(datas);
+        }
+        logger.info("[本地报表] 员工{} {}-{} 生成 type=1 数据 {} 条（已去钉钉 getcolumnval）",
+                empId, SHORT_FORMAT.get().format(begin), SHORT_FORMAT.get().format(end), datas.size());
+    }
+
+    /** 按字段名映射本地值（日级，对齐钉钉列）。返回空串表示该列本地暂未覆盖。 */
+    private String resolveLocalColumnValue(String fieldName, HrmAttendanceJudgeResult j, DayContext ctx) {
+        // 打卡流水 / 审批 / 加班类字段不依赖本地判定结果，即使当天无判定行也能算
+        switch (fieldName) {
+            case "上班1打卡时间":
+            case "上班2打卡时间":
+            case "上班3打卡时间":
+                return ctx.punchTimeText(punchStage(fieldName), PUNCH_TYPE_ON, true);
+            case "下班1打卡时间":
+            case "下班2打卡时间":
+            case "下班3打卡时间":
+                return ctx.punchTimeText(punchStage(fieldName), PUNCH_TYPE_OFF, false);
+            case "上班1打卡结果":
+            case "上班2打卡结果":
+            case "上班3打卡结果":
+                return ctx.punchStatusText(punchStage(fieldName), PUNCH_TYPE_ON, true);
+            case "下班1打卡结果":
+            case "下班2打卡结果":
+            case "下班3打卡结果":
+                return ctx.punchStatusText(punchStage(fieldName), PUNCH_TYPE_OFF, false);
+            case "补卡次数":
+                return String.valueOf(ctx.countApprove("补卡"));
+            case "出差时长":
+                return ctx.approveHoursText("出差");
+            case "外出时长":
+                return ctx.approveHoursText("外出");
+            case "加班-审批单统计":
+                return String.valueOf(ctx.countApprove("加班"));
+            case "工作日加班":
+                return ctx.overtimeHoursText(1);
+            case "休息日加班":
+                return ctx.overtimeHoursText(2);
+            case "节假日加班":
+                return ctx.overtimeHoursText(3);
+            case "加班总时长":
+                return ctx.overtimeHoursText(null);
+            case "关联的审批单":
+                return ctx.relatedApproveText();
+            case "工作日（转加班费）":
+            case "休息日（转加班费）":
+            case "节假日（转加班费）":
+            case "工作日（转调休）":
+            case "休息日（转调休）":
+            case "节假日（转调休）":
+                return ""; // 本地无"转加班费/转调休"来源，保持留空
+            default:
+                break;
+        }
+        if (j == null) {
+            return "";
+        }
+        boolean shouldAttend = Boolean.TRUE.equals(j.getShouldAttend());
+        switch (fieldName) {
+            case "工作时长":
+                return j.getWorkHours() == null ? "" : j.getWorkHours().toPlainString();
+            case "出勤天数":
+                return (shouldAttend && j.getFirstPunchTime() != null) ? "1" : "0";
+            case "应出勤天数":
+                return shouldAttend ? "1" : "0";
+            case "休息天数":
+                return "rest".equals(j.getShiftType()) ? "1" : "0";
+            case "迟到时长":
+                return String.valueOf(j.getLateMinutes() == null ? 0 : j.getLateMinutes());
+            case "迟到次数":
+                return (j.getLateMinutes() != null && j.getLateMinutes() > 0) ? "1" : "0";
+            case "早退时长":
+                return String.valueOf(j.getEarlyMinutes() == null ? 0 : j.getEarlyMinutes());
+            case "早退次数":
+                return (j.getEarlyMinutes() != null && j.getEarlyMinutes() > 0) ? "1" : "0";
+            case "上班缺卡次数":
+                return String.valueOf(j.getMissCardOnCount() == null
+                        ? (j.getMissCardCount() == null ? 0 : j.getMissCardCount()) : j.getMissCardOnCount());
+            case "下班缺卡次数":
+                return String.valueOf(j.getMissCardOffCount() == null ? 0 : j.getMissCardOffCount());
+            case "旷工天数":
+                return Boolean.TRUE.equals(j.getAbsenteeism()) ? "1" : "0";
+            case "严重迟到次数":
+            case "严重迟到时长":
+            case "旷工迟到次数":
+            case "旷工迟到天数":
+                return "0";
+            case "休息日出勤":
+                return Boolean.TRUE.equals(j.getRestDayWork()) ? "1" : "0";
+            case "出勤班次":
+            case "班次":
+                return j.getShiftType() == null ? "" : j.getShiftType();
+            case "考勤结果":
+                return buildAttendanceResultText(j);
+            default:
+                return "";
+        }
+    }
+
+    private String buildAttendanceResultText(HrmAttendanceJudgeResult j) {
+        if (Boolean.TRUE.equals(j.getAbsenteeism())) {
+            return "旷工";
+        }
+        List<String> parts = new ArrayList<>();
+        if (j.getLateMinutes() != null && j.getLateMinutes() > 0) {
+            parts.add("迟到" + j.getLateMinutes() + "分");
+        }
+        if (j.getEarlyMinutes() != null && j.getEarlyMinutes() > 0) {
+            parts.add("早退" + j.getEarlyMinutes() + "分");
+        }
+        if (j.getMissCardCount() != null && j.getMissCardCount() > 0) {
+            parts.add("缺卡" + j.getMissCardCount() + "次");
+        }
+        if (parts.isEmpty()) {
+            return Boolean.TRUE.equals(j.getShouldAttend()) ? "正常" : "休息";
+        }
+        return String.join("、", parts);
+    }
+
+    /** 从"上班1打卡时间"这类字段名里取段号（1/2/3） */
+    private static int punchStage(String fieldName) {
+        for (char ch : fieldName.toCharArray()) {
+            if (ch >= '1' && ch <= '3') {
+                return ch - '0';
+            }
+        }
+        return 1;
+    }
+
+    /** 打卡流水按日分组（多段打卡来源：clock_stage + clock_type） */
+    private Map<Date, List<HrmAttendanceClock>> loadClockByDay(Long empId, Date begin, Date end) {
+        Map<Date, List<HrmAttendanceClock>> map = new HashMap<>();
+        List<HrmAttendanceClock> clocks =
+                clockRepository.findAllByClockEmployeeIdAndClockTimeBetween(empId, startOfDay(begin), endOfDay(end));
+        if (clocks == null) {
+            return map;
+        }
+        for (HrmAttendanceClock c : clocks) {
+            Date base = c.getWorkDate() != null ? c.getWorkDate() : c.getClockTime();
+            if (base == null) {
+                continue;
+            }
+            map.computeIfAbsent(startOfDay(base), k -> new ArrayList<>()).add(c);
+        }
+        return map;
+    }
+
+    /** 钉钉审批按日分组（补卡/出差/外出/关联审批单）。审批存的是钉钉 userId，需先从员工档案取。 */
+    private Map<Date, List<tbattendanceapprove>> loadApproveByDay(Long empId, Date begin, Date end) {
+        Map<Date, List<tbattendanceapprove>> map = new HashMap<>();
+        if (empId == null) {
+            return map;
+        }
+        Optional<HrmEmployee> emp = employeeRepository.findById(empId);
+        String dingUserId = emp.isPresent() ? emp.get().getDingtalkUserId() : null;
+        if (StringUtils.isBlank(dingUserId)) {
+            logger.warn("[本地报表] 员工{} 未绑定钉钉 userId，审批类报表列留空", empId);
+            return map;
+        }
+        List<tbattendanceapprove> list = approveRepository.findAllByUserIdInAndWorkDateBetween(
+                Collections.singletonList(dingUserId), startOfDay(begin), endOfDay(end));
+        if (list == null) {
+            return map;
+        }
+        for (tbattendanceapprove a : list) {
+            Date from = a.getBeginTime() != null ? a.getBeginTime() : a.getWorkDate();
+            if (from == null) {
+                continue;
+            }
+            Date to = a.getEndTime() != null ? a.getEndTime() : from;
+            if (to.before(from)) {
+                to = from;
+            }
+            // 跨天审批（如多日出差）在其覆盖的每一天都登记，便于按日折算时长
+            Calendar c = Calendar.getInstance();
+            c.setTime(startOfDay(from));
+            Date last = startOfDay(to);
+            while (!c.getTime().after(last)) {
+                map.computeIfAbsent(c.getTime(), k -> new ArrayList<>()).add(a);
+                c.add(Calendar.DAY_OF_MONTH, 1);
+            }
+        }
+        return map;
+    }
+
+    /** 加班记录按日分组（over_time_type：1工作日 2休息日 3节假日） */
+    private Map<Date, List<HrmEmployeeOverTimeRecord>> loadOvertimeByDay(Long empId, Date begin, Date end) {
+        Map<Date, List<HrmEmployeeOverTimeRecord>> map = new HashMap<>();
+        List<HrmEmployeeOverTimeRecord> list =
+                overTimeRep.findAllByEmployeeIdAndAttendanceTimeBetween(empId, startOfDay(begin), endOfDay(end));
+        if (list == null) {
+            return map;
+        }
+        for (HrmEmployeeOverTimeRecord r : list) {
+            Date base = r.getAttendanceTime() != null ? r.getAttendanceTime() : r.getOverTimeStartTime();
+            if (base == null) {
+                continue;
+            }
+            map.computeIfAbsent(startOfDay(base), k -> new ArrayList<>()).add(r);
+        }
+        return map;
+    }
+
+    /** 某一天的本地数据上下文：打卡流水 + 审批 + 加班记录 */
+    private static class DayContext {
+        private final Date day;
+        private final List<HrmAttendanceClock> clocks;
+        private final List<tbattendanceapprove> approvals;
+        private final List<HrmEmployeeOverTimeRecord> overtimes;
+
+        DayContext(Date day, List<HrmAttendanceClock> clocks,
+                   List<tbattendanceapprove> approvals, List<HrmEmployeeOverTimeRecord> overtimes) {
+            this.day = day;
+            this.clocks = clocks == null ? Collections.emptyList() : clocks;
+            this.approvals = approvals == null ? Collections.emptyList() : approvals;
+            this.overtimes = overtimes == null ? Collections.emptyList() : overtimes;
+        }
+
+        /** 取指定段/类型的一条打卡记录：上班取最早，下班取最晚 */
+        private HrmAttendanceClock punch(int stage, int type, boolean earliest) {
+            HrmAttendanceClock picked = null;
+            for (HrmAttendanceClock c : clocks) {
+                if (c.getClockTime() == null) {
+                    continue;
+                }
+                int st = c.getClockStage() == null ? 1 : c.getClockStage();
+                Integer ct = c.getClockType();
+                if (st != stage || ct == null || ct.intValue() != type) {
+                    continue;
+                }
+                if (picked == null
+                        || (earliest ? c.getClockTime().before(picked.getClockTime())
+                                     : c.getClockTime().after(picked.getClockTime()))) {
+                    picked = c;
+                }
+            }
+            return picked;
+        }
+
+        String punchTimeText(int stage, int type, boolean earliest) {
+            HrmAttendanceClock c = punch(stage, type, earliest);
+            return c == null ? "" : SIMPLE.get().format(c.getClockTime());
+        }
+
+        /** 打卡状态：0正常 1迟到 2早退 3旷工迟到 4加班 5未打卡 */
+        String punchStatusText(int stage, int type, boolean earliest) {
+            HrmAttendanceClock c = punch(stage, type, earliest);
+            if (c == null || c.getClockStatus() == null) {
+                return "";
+            }
+            switch (c.getClockStatus()) {
+                case 0: return "正常";
+                case 1: return "迟到";
+                case 2: return "早退";
+                case 3: return "旷工迟到";
+                case 4: return "加班";
+                case 5: return "未打卡";
+                default: return "";
+            }
+        }
+
+        /** 指定 tagName 的审批单条数（如补卡、加班） */
+        long countApprove(String tagName) {
+            long n = 0;
+            for (tbattendanceapprove a : approvals) {
+                if (tagName.equals(a.getTagName())) {
+                    n++;
+                }
+            }
+            return n;
+        }
+
+        /** 指定 tagName 的审批在该日折算的时长（小时）：取审批区间与当天的交集 */
+        String approveHoursText(String tagName) {
+            double hours = 0d;
+            Date dayStart = startOfDay(day);
+            Date dayEnd = endOfDay(day);
+            for (tbattendanceapprove a : approvals) {
+                if (!tagName.equals(a.getTagName())) {
+                    continue;
+                }
+                hours += overlapHours(a.getBeginTime(), a.getEndTime(), dayStart, dayEnd);
+            }
+            return formatHours(hours);
+        }
+
+        /** 加班时长（小时）。type 为 null 表示全部类型合计 */
+        String overtimeHoursText(Integer type) {
+            double hours = 0d;
+            for (HrmEmployeeOverTimeRecord r : overtimes) {
+                if (r.getOverTimes() == null) {
+                    continue;
+                }
+                if (type != null && (r.getOverTimeType() == null || r.getOverTimeType().intValue() != type.intValue())) {
+                    continue;
+                }
+                hours += r.getOverTimes();
+            }
+            return formatHours(hours);
+        }
+
+        /** 当天关联的审批单名称，如"请假-调休,补卡" */
+        String relatedApproveText() {
+            List<String> names = new ArrayList<>();
+            for (tbattendanceapprove a : approvals) {
+                if (a.getTagName() == null) {
+                    continue;
+                }
+                String name = StringUtils.isBlank(a.getSubType()) ? a.getTagName() : a.getTagName() + "-" + a.getSubType();
+                if (!names.contains(name)) {
+                    names.add(name);
+                }
+            }
+            return String.join(",", names);
+        }
+    }
+
+    /** 两段时间的交集小时数 */
+    private static double overlapHours(Date begin, Date end, Date rangeStart, Date rangeEnd) {
+        if (begin == null) {
+            return 0d;
+        }
+        Date to = end == null ? begin : end;
+        long from = Math.max(begin.getTime(), rangeStart.getTime());
+        long until = Math.min(to.getTime(), rangeEnd.getTime());
+        if (until <= from) {
+            return 0d;
+        }
+        return (until - from) / 3600000d;
+    }
+
+    private static String formatHours(double hours) {
+        if (hours <= 0d) {
+            return "0";
+        }
+        BigDecimal bd = BigDecimal.valueOf(hours).setScale(2, BigDecimal.ROUND_HALF_UP);
+        return bd.stripTrailingZeros().toPlainString();
+    }
+
+    private static Date startOfDay(Date d) {
+        Calendar c = Calendar.getInstance();
+        c.setTime(d);
+        c.set(Calendar.HOUR_OF_DAY, 0);
+        c.set(Calendar.MINUTE, 0);
+        c.set(Calendar.SECOND, 0);
+        c.set(Calendar.MILLISECOND, 0);
+        return c.getTime();
+    }
+
+    private static Date endOfDay(Date d) {
+        Calendar c = Calendar.getInstance();
+        c.setTime(d);
+        c.set(Calendar.HOUR_OF_DAY, 23);
+        c.set(Calendar.MINUTE, 59);
+        c.set(Calendar.SECOND, 59);
+        c.set(Calendar.MILLISECOND, 999);
+        return c.getTime();
     }
 
     void SaveHolidayData(Long empId,OapiAttendanceGetleavetimebynamesResponse  rsp) throws  ApiException{

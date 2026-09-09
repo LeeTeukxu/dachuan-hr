@@ -113,14 +113,67 @@ public class ApiPermissionPathSupport {
 
         put("/workPlanApplication", "/hrm/attendance/scheduling");
 
-        // 排班小程序权限（2026-09-06）：/mp 排班数据加载接口挂租户级菜单开关；
-        // /mpPermission 为 PC 端"排班小程序权限"配置页接口。
-        // 注意：/mp/schedule/*（添加排班）与 /mp/application/*（申请/审批）不进映射表，
-        // 分别由 mp_schedule_permission 员工级配置与直属上级校验控制。
-        putExact("/mp/mySchedule", "/miniapp/schedule/load");
-        putExact("/mp/mySchedule/day", "/miniapp/schedule/load");
-        putExact("/mp/schedule/query", "/miniapp/schedule/load");
+        // 小程序权限（2026-09-09 改版）：
+        // /mpPermission 为 PC 端「小程序权限」配置页接口，仍走菜单权限（谁能进配置页）；
+        // 而以下接口已改为**员工级**能力判定（mp_schedule_permission.can_schedule /
+        // can_view_statistics / can_load_schedule），不再挂菜单——
+        // 旧实现挂菜单后按“租户内任一角色勾选”判定，粒度是公司，与小程序员工登录不符。
+        //   - /mp/dashboard/*                       → 数据统计(can_view_statistics)
+        //   - /mp/mySchedule、/mp/mySchedule/day、
+        //     /mp/schedule/query                    → 排班数据加载(can_load_schedule)
+        //   - /mp/schedule/save、/schedule/employees、
+        //     /schedule/standardProducts、/schedule/batchSetRestDay → 添加排班(can_schedule)
         put("/mpPermission", "/hrm/system/miniappPermission");
+    }
+
+    /** 小程序员工级能力：数据统计（/mp/dashboard/*） */
+    public static final String ABILITY_STATISTICS = "statistics";
+    /** 小程序员工级能力：排班数据加载（我的排班 / 排班查询） */
+    public static final String ABILITY_SCHEDULE_VIEW = "schedule_view";
+    /** 小程序员工级能力：添加排班（保存/可排班员工池/标准产品/批量设休息日） */
+    public static final String ABILITY_SCHEDULE_CREATE = "schedule_create";
+    /** 小程序员工级能力：可切换公司（2026-09-10，2a）；
+     * 与 ABILITY_STATISTICS 组合——切到非本登录公司时需同时具备 ABILITY_STATISTICS 与 ABILITY_SWITCH_COMPANY */
+    public static final String ABILITY_SWITCH_COMPANY = "switch_company";
+
+    /** 小程序接口 → 员工级能力（前缀匹配，命中即需校验该能力） */
+    private static final Map<String, String> MP_PREFIX_ABILITY = new LinkedHashMap<>();
+
+    static {
+        MP_PREFIX_ABILITY.put("/mp/dashboard", ABILITY_STATISTICS);
+    }
+
+    /** 小程序接口 → 员工级能力（精确匹配） */
+    private static final Map<String, String> MP_EXACT_ABILITY = new LinkedHashMap<>();
+
+    static {
+        MP_EXACT_ABILITY.put("/mp/mySchedule", ABILITY_SCHEDULE_VIEW);
+        MP_EXACT_ABILITY.put("/mp/mySchedule/day", ABILITY_SCHEDULE_VIEW);
+        MP_EXACT_ABILITY.put("/mp/schedule/query", ABILITY_SCHEDULE_VIEW);
+        MP_EXACT_ABILITY.put("/mp/schedule/save", ABILITY_SCHEDULE_CREATE);
+        MP_EXACT_ABILITY.put("/mp/schedule/employees", ABILITY_SCHEDULE_CREATE);
+        MP_EXACT_ABILITY.put("/mp/schedule/standardProducts", ABILITY_SCHEDULE_CREATE);
+        MP_EXACT_ABILITY.put("/mp/schedule/batchSetRestDay", ABILITY_SCHEDULE_CREATE);
+    }
+
+    /**
+     * 解析小程序接口所需的员工级能力；非受控接口返回 null（仅校验 token）。
+     * @param path 已剥离 contextPath 的请求路径
+     */
+    public String resolveRequiredAbility(String path) {
+        if (StringUtils.isEmpty(path)) {
+            return null;
+        }
+        String ability = MP_EXACT_ABILITY.get(path);
+        if (ability != null) {
+            return ability;
+        }
+        for (Map.Entry<String, String> entry : MP_PREFIX_ABILITY.entrySet()) {
+            if (path.equals(entry.getKey()) || path.startsWith(entry.getKey() + "/")) {
+                return entry.getValue();
+            }
+        }
+        return null;
     }
 
     /**
@@ -207,7 +260,7 @@ public class ApiPermissionPathSupport {
         exactApiMenuPathMap.put(apiPrefix, new ArrayList<>(Arrays.asList(menuPaths)));
     }
 
-    private String stripContextPath(String requestUri, String contextPath) {
+    public String stripContextPath(String requestUri, String contextPath) {
         if (StringUtils.isEmpty(requestUri)) {
             return "";
         }

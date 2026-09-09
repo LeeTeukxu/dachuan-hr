@@ -87,6 +87,7 @@ public enum AdminMessageEnum {
     HRM_EMPLOYEE_APPRAISAL_RESULT_APPEAL_WAITING(106,8,"人资员工绩效结果申诉待处理通知"),
     HRM_EMPLOYEE_APPRAISAL_RESULT_APPEAL_PASS(107,8,"人资员工绩效结果申诉通过通知"),
     HRM_EMPLOYEE_APPRAISAL_RESULT_APPEAL_REJECT(108,8,"人资员工绩效结果申诉驳回通知"),
+    HRM_DEPT_SYNC_UNMATCHED(208,8,"同步钉钉部门-员工未匹配提醒"),
     //JXC
     JXC_PURCHASE_EXAMINE(53,9,"采购订单待审核审批提醒"),
     JXC_PURCHASE_REJECT(54,9,"采购订单拒绝通知"),

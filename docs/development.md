@@ -3,7 +3,7 @@
 ## Architecture Overview
 - 三端一系统：`hainan/`（Spring Boot 2.1.6 / Java 8，JPA + MyBatis-Plus，本地端口 29080、测试实例 29081）+ `hr_web/`（Vue3 + Element Plus PC 前端）+ `miniapp/`（uni-app Vue3，目标 mp-weixin）。
 - 多租户动态数据源：业务表在各租户库 `hr_XXXX`（JPA/MyBatis 按 `CompanyContext` 路由，`hr_0001~hr_0005` 同实例分 schema）；系统库 `hrsystem` 只放跨租户数据（`tbCompanyList`、`miniapp_user_binding`、`tb_api_permission` 等）。租户连接元数据存 `hrsystem.tbCompanyList.url`，改密需同步。
-- 鉴权：JWT（请求头 `token`，裸 token 无 Bearer）；鉴权失败返回 HTTP 200 + `success:false`（非 401）。拦截器三分支：① `/mp/*` 仅校验 token；② `tb_api_permission`（系统库，73 行）映射表内的路径走菜单权限校验；③ 映射表外的非 `/mp` 路径要求操作员 token（account 非空），员工 token 一律拒绝。
+- 鉴权：JWT（请求头 `token`，裸 token 无 Bearer）；鉴权失败返回 HTTP 200 + `success:false`（非 401）。拦截器四分支：① `/mp/*` 命中 `tb_api_permission` 映射（现仅 /mpPermission 配置页）走菜单/角色权限校验；② 命中 `ApiPermissionPathSupport.ABILITY_*`（/mp/dashboard→数据统计、/mp/mySchedule* 与 /mp/schedule/query→排班数据加载、/mp/schedule/save|employees|standardProducts|batchSetRestDay→添加排班）→ 按员工 `mp_schedule_permission` 字段判定（严格模式，未配置即拒，2026-09-09 起）；③ 其余 `/mp/*` 仅校验 token；④ 映射表外的非 `/mp` 路径要求操作员 token（account 非空），员工 token 一律拒绝。
 - 统一排班语义：PC 添加排班/排班管理与小程序生产排班共用扁平事实表 `tbplanlist`（ProductName=产品、LinkName=岗位、UserID=逗号拼接员工、shift_source=standard/custom/rest、custom_shift_id→hrm_workplan_custom_shift），不建独立排班表。
 - 全部功能文档见 `modules/`（每份 ≤150 行：需求要点 → 设计与契约 → 近期变更）。
 

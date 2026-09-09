@@ -1,0 +1,22 @@
+-- 小程序数据统计接口权限映射（tb_api_permission）
+-- 2026-09-09 新增
+-- 说明：将/mp/dashboard/*接口映射到/hrm/dataStatistics菜单权限
+-- 新租户开通时执行此脚本，或在PC端"刷新权限映射"后生效
+
+INSERT INTO tb_api_permission (api_prefix, menu_paths, match_type, sortno, remark) VALUES
+('/mp/dashboard/personnel', '/hrm/dataStatistics', 'exact', 901, '小程序-人员信息统计'),
+('/mp/dashboard/personnel/structure', '/hrm/dataStatistics', 'exact', 902, '小程序-人员结构分布'),
+('/mp/dashboard/salary', '/hrm/dataStatistics', 'exact', 903, '小程序-薪酬成本统计'),
+('/mp/dashboard/salary/trend', '/hrm/dataStatistics', 'exact', 904, '小程序-薪酬趋势'),
+('/mp/dashboard/salary/deptCompare', '/hrm/dataStatistics', 'exact', 905, '小程序-薪酬部门对比'),
+('/mp/dashboard/performance', '/hrm/dataStatistics', 'exact', 906, '小程序-绩效考核指标'),
+('/mp/dashboard/performance/completion', '/hrm/dataStatistics', 'exact', 907, '小程序-绩效完成率'),
+('/mp/dashboard/flow', '/hrm/dataStatistics', 'exact', 908, '小程序-入离职分析'),
+('/mp/dashboard/flow/trend', '/hrm/dataStatistics', 'exact', 909, '小程序-入离职趋势'),
+('/mp/dashboard/flow/quitDist', '/hrm/dataStatistics', 'exact', 910, '小程序-离职分布'),
+('/mp/dashboard/flow/deptCompare', '/hrm/dataStatistics', 'exact', 911, '小程序-入离职部门对比'),
+('/mp/dashboard/group', '/hrm/dataStatistics', 'exact', 912, '小程序-集团总表'),
+('/mp/dashboard/group/salary', '/hrm/dataStatistics', 'exact', 913, '小程序-集团薪酬概览'),
+('/mp/dashboard/deptTree', '/hrm/dataStatistics', 'exact', 914, '小程序-部门树结构'),
+('/mp/dashboard/deptOverview', '/hrm/dataStatistics', 'exact', 915, '小程序-部门人员概览')
+ON DUPLICATE KEY UPDATE menu_paths=VALUES(menu_paths), match_type=VALUES(match_type), remark=VALUES(remark);

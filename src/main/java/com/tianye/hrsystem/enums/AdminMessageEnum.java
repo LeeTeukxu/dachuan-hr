@@ -19,6 +19,7 @@ public enum AdminMessageEnum {
     HRM_INSURANCE_COMPUTE_RUNNING(205, 8, "社保报表生成中"),
     HRM_INSURANCE_COMPUTE_COMPLETE(206, 8, "社保报表生成完成"),
     HRM_EMPLOYEE_RETIREMENT_REMIND(207, 8, "员工到龄退休提醒"),
+    HRM_DEPT_SYNC_UNMATCHED(208, 8, "同步钉钉部门-员工未匹配提醒"),
 
     OA_TASK_ALLOCATION(1,1,"分配给我的任务"),
     OA_TASK_JOIN(2,1,"我参与的任务"),

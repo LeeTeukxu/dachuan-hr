@@ -92,7 +92,17 @@
             and b.employee_name like concat('%',#{data.employeeName},'%')
         </if>
         <if test="data.deptId != null">
-            and b.dept_id = #{data.deptId}
+            <choose>
+                <when test="data.deptIds != null and data.deptIds.size() > 0">
+                    and b.dept_id in
+                    <foreach collection="data.deptIds" item="deptId" open="(" separator="," close=")">
+                        #{deptId}
+                    </foreach>
+                </when>
+                <otherwise>
+                    and b.dept_id = #{data.deptId}
+                </otherwise>
+            </choose>
         </if>
         <if test="data.type == 1">
             and a.employee_id in (select d.employee_id from hrm_employee_abnormal_change_record d
@@ -151,7 +161,17 @@
             and b.employee_name like concat('%',#{data.employeeName},'%')
         </if>
         <if test="data.deptId != null">
-            and b.dept_id = #{data.deptId}
+            <choose>
+                <when test="data.deptIds != null and data.deptIds.size() > 0">
+                    and b.dept_id in
+                    <foreach collection="data.deptIds" item="deptId" open="(" separator="," close=")">
+                        #{deptId}
+                    </foreach>
+                </when>
+                <otherwise>
+                    and b.dept_id = #{data.deptId}
+                </otherwise>
+            </choose>
         </if>
         <if test="data.type == 1">
             and a.employee_id in (select d.employee_id from hrm_employee_abnormal_change_record d
@@ -199,7 +219,17 @@
             and b.employee_name like concat('%',#{data.employeeName},'%')
         </if>
         <if test="data.deptId != null">
-            and b.dept_id = #{data.deptId}
+            <choose>
+                <when test="data.deptIds != null and data.deptIds.size() > 0">
+                    and b.dept_id in
+                    <foreach collection="data.deptIds" item="deptId" open="(" separator="," close=")">
+                        #{deptId}
+                    </foreach>
+                </when>
+                <otherwise>
+                    and b.dept_id = #{data.deptId}
+                </otherwise>
+            </choose>
         </if>
         <if test="data.type == 1">
             and a.employee_id in (select d.employee_id from hrm_employee_abnormal_change_record d
@@ -250,7 +280,17 @@
             and b.job_number like concat('%',#{data.jobNumber},'%')
         </if>
         <if test="data.deptId != null and data.deptId != ''">
-            and b.dept_id = #{data.deptId}
+            <choose>
+                <when test="data.deptIds != null and data.deptIds.size() > 0">
+                    and b.dept_id in
+                    <foreach collection="data.deptIds" item="deptId" open="(" separator="," close=")">
+                        #{deptId}
+                    </foreach>
+                </when>
+                <otherwise>
+                    and b.dept_id = #{data.deptId}
+                </otherwise>
+            </choose>
         </if>
 <!--        <choose>-->
 <!--            <when test="employeeIds != null and employeeIds.size > 0">-->

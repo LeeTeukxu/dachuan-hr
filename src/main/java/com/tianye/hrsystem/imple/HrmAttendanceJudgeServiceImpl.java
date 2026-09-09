@@ -23,16 +23,20 @@ import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
+import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Calendar;
+import java.util.Comparator;
 import java.util.Date;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 
 /**
@@ -57,6 +61,8 @@ public class HrmAttendanceJudgeServiceImpl implements IHrmAttendanceJudgeService
     private static final int DEFAULT_MAX_MONTHLY_CARD_REPAIR = 3;
     private static final int SECTION_ON_DUTY = 1;
     private static final int SECTION_OFF_DUTY = 2;
+    /** 午休扣除（分钟），与 HrmOvertimeNightStatisticsServiceImpl.LUNCH_BREAK_MINUTES 对齐 */
+    private static final long LUNCH_BREAK_MINUTES = 120L;
 
     @Autowired
     private hrmEmployeeRepository employeeRepository;
@@ -235,8 +241,11 @@ public class HrmAttendanceJudgeServiceImpl implements IHrmAttendanceJudgeService
             result.setLateMinutes(0);
             result.setEarlyMinutes(0);
             result.setMissCardCount(0);
+            result.setMissCardOnCount(0);
+            result.setMissCardOffCount(0);
             result.setAbsenteeism(false);
             result.setRestDayWork(!dayPunches.isEmpty());
+            result.setWorkHours(computeWorkHours(dayPunches, null, employee, false));
             judgeResultRepository.save(result);
             return;
         }
@@ -256,8 +265,11 @@ public class HrmAttendanceJudgeServiceImpl implements IHrmAttendanceJudgeService
             result.setLateMinutes(0);
             result.setEarlyMinutes(0);
             result.setMissCardCount(0);
+            result.setMissCardOnCount(0);
+            result.setMissCardOffCount(0);
             result.setAbsenteeism(false);
             result.setRestDayWork(!dayPunches.isEmpty());
+            result.setWorkHours(computeWorkHours(dayPunches, primaryPlan, employee, false));
             judgeResultRepository.save(result);
             return;
         }
@@ -265,6 +277,8 @@ public class HrmAttendanceJudgeServiceImpl implements IHrmAttendanceJudgeService
         result.setShouldAttend(true);
         List<long[]> sections = resolveShiftSections(primaryPlan, workDate); // epoch millis {A, B} per section
         int missCardCount = 0;
+        int missCardOnCount = 0;
+        int missCardOffCount = 0;
         boolean repairConsumed = false;
         int lateMinutes = 0;
         int earlyMinutes = 0;
@@ -310,6 +324,7 @@ public class HrmAttendanceJudgeServiceImpl implements IHrmAttendanceJudgeService
                 repairConsumed = true;
             } else {
                 missCardCount++;
+                missCardOnCount++;
             }
 
             if (!offDutyTimes.isEmpty()) {
@@ -325,6 +340,7 @@ public class HrmAttendanceJudgeServiceImpl implements IHrmAttendanceJudgeService
                 repairConsumed = true;
             } else {
                 missCardCount++;
+                missCardOffCount++;
             }
         }
 
@@ -333,8 +349,70 @@ public class HrmAttendanceJudgeServiceImpl implements IHrmAttendanceJudgeService
         result.setLateMinutes(lateMinutes);
         result.setEarlyMinutes(earlyMinutes);
         result.setMissCardCount(missCardCount);
+        result.setMissCardOnCount(missCardOnCount);
+        result.setMissCardOffCount(missCardOffCount);
         result.setAbsenteeism(!anyValidPunch);
+        result.setWorkHours(computeWorkHours(dayPunches, primaryPlan, employee, true));
         judgeResultRepository.save(result);
+    }
+
+    /**
+     * 当日出勤工时（小时，保留2位）。对齐钉钉"工作时长"口径：
+     * 按打卡分段累计（上午上班-上午下班-下午上班-下午下班），午休缺口天然排除；
+     * 连班(continuousShift)不扣午休；不连班且打卡未分段（仅一段连续打卡）扣 LUNCH_BREAK_MINUTES。
+     * 无有效打卡返回 0。
+     */
+    private BigDecimal computeWorkHours(List<tbattendancedetail> dayPunches, tbplanlist primaryPlan,
+                                         HrmEmployee employee, boolean shouldAttend) {
+        if (dayPunches == null || dayPunches.isEmpty()) {
+            return BigDecimal.ZERO.setScale(2, RoundingMode.HALF_UP);
+        }
+        List<tbattendancedetail> sorted = new ArrayList<>(dayPunches);
+        sorted.sort(Comparator.comparing(d -> {
+            Date t = d.getUserCheckTime() != null ? d.getUserCheckTime() : d.getBaseCheckTime();
+            return t == null ? new Date(Long.MAX_VALUE) : t;
+        }));
+        long workedMinutes = 0L;
+        int closedSegments = 0;
+        boolean segmented = false; // OFF 之后还有 ON = 午休被打卡切开
+        Date openOnDuty = null;
+        for (tbattendancedetail d : sorted) {
+            Date t = d.getUserCheckTime() != null ? d.getUserCheckTime() : d.getBaseCheckTime();
+            if (t == null) {
+                continue;
+            }
+            String checkType = StringUtils.trimToEmpty(d.getCheckType()).toUpperCase();
+            if (checkType.contains("OFF")) {
+                if (openOnDuty != null) {
+                    workedMinutes += (t.getTime() - openOnDuty.getTime()) / 60_000L;
+                    closedSegments++;
+                    openOnDuty = null;
+                }
+            } else { // ON 或空类型，视为上班卡
+                if (openOnDuty == null) {
+                    if (closedSegments > 0) {
+                        segmented = true;
+                    }
+                    openOnDuty = t;
+                }
+            }
+        }
+        boolean continuousShift = resolveContinuousShiftLocal(primaryPlan, employee);
+        long lunchDeduct = 0L;
+        if (shouldAttend && !continuousShift && !segmented) {
+            lunchDeduct = LUNCH_BREAK_MINUTES;
+        }
+        workedMinutes = Math.max(0L, workedMinutes - lunchDeduct);
+        return BigDecimal.valueOf(workedMinutes)
+                .divide(BigDecimal.valueOf(60), 2, RoundingMode.HALF_UP);
+    }
+
+    /** 连班判定（与加班统计对齐，取前两级：排班行 customContinuousShift > 员工档案 is_continuous_shift） */
+    private boolean resolveContinuousShiftLocal(tbplanlist plan, HrmEmployee employee) {
+        if (plan != null && plan.getCustomContinuousShift() != null) {
+            return Boolean.TRUE.equals(plan.getCustomContinuousShift());
+        }
+        return employee != null && Objects.equals(employee.getIsContinuousShift(), 1);
     }
 
     /** 解析班次的上下班时段（毫秒时间戳 {A,B}），夜班/跨天班 B 落次日；标准班支持 1~3 段 */
